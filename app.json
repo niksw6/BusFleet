@@ -25,6 +25,12 @@
     },
     "plugins": [
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e1109e0f-e950-4d5d-b765-b431b3638bca"
+      }
+    },
+    "owner": "nikyinform"
   }
 }
