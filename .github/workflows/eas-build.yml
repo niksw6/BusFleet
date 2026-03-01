@@ -1,0 +1,40 @@
+name: EAS Android build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  eas-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Login to Expo
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas login --token $EXPO_TOKEN
+
+      - name: Run EAS build (Android APK)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build --platform android --profile production --non-interactive
+
+      - name: Print build URL
+        run: |
+          echo "If the build succeeds, check the build URL above in the logs or visit https://expo.dev/accounts/$(jq -r '.owner' app.json 2>/dev/null || echo '<your-account>')/projects/$(jq -r '.expo.name' app.json 2>/dev/null || echo '<your-project>')/builds" || true
