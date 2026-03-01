@@ -27,7 +27,7 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          eas login --token $EXPO_TOKEN
+          npx expo login --token $EXPO_TOKEN
 
       - name: Run EAS build (Android APK)
         env:
