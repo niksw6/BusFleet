@@ -356,15 +356,7 @@ Proprietary - Fleet Data Management System
 ## Version History
 
 **v1.0.0** - Initial Release
-- Complete authentication flow
-- Dashboard with statistics
-- Driver complaints module
-- Line breakdown reporting
-- Fuel logging system
-- Service scheduling
-- Dark mode support
-- Offline detection
-
+CI trigger: 2026-03-01
 ---
 
 **Built with ❤️ using Expo and React Native**
