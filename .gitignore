@@ -9,6 +9,14 @@ npm-debug.*
 *.mobileprovision
 *.orig.*
 web-build/
+
+# Build outputs
+*.apk
+*.aab
+*.ipa
+android/app/build/
+android/build/
+ios/build/
 .env
 .vscode/
 .idea/
