@@ -6,6 +6,100 @@ import { get, post, handleApiError } from '../client';
  */
 export const maintenanceService = {
   /**
+   * Create service scheduler for preventive maintenance
+   * @param {Object} schedulerData
+   * @returns {Promise}
+   */
+  createServiceScheduler: async (schedulerData) => {
+    try {
+      const normalizedTasks = Array.isArray(schedulerData?.Tasks)
+        ? schedulerData.Tasks.map((task) => {
+            const repeatTypeRaw = String(task?.RepeatType || '').trim().toLowerCase();
+            const repeatTypeCode = repeatTypeRaw === 'o' || repeatTypeRaw === 'once' ? 'O' : 'R';
+            const everyKM = Number(task?.EveryKM || 0);
+            const everyDay = Number(task?.EveryDay || 0);
+            const everyWeek = Number(task?.EveryWeek || 0);
+            const everyMonth = Number(task?.EveryMonth || 0);
+            const isKmBased = everyKM > 0;
+            const notifyKMRaw = Number(task?.NotifyKM || 0);
+            const notifyDayRaw = Number(task?.NotifyDay || 0);
+            const notifyKM = isKmBased && notifyKMRaw <= 0 ? 200 : notifyKMRaw;
+            const notifyDay = !isKmBased && notifyDayRaw <= 0 ? 1 : notifyDayRaw;
+            return {
+              Task: String(task?.Task || '').trim() || 'General Checkup',
+              RepeatType: repeatTypeCode,
+              EveryKM: everyKM,
+              EveryDay: everyDay,
+              EveryWeek: everyWeek,
+              EveryMonth: everyMonth,
+              NotifyKM: notifyKM,
+              NotifyDay: notifyDay,
+            };
+          })
+        : [];
+
+      const normalizedPayload = {
+        CompanyDB: String(schedulerData?.CompanyDB || '').trim(),
+        BusNo: String(schedulerData?.BusNo || '').trim(),
+        LastSrvKM: Number(schedulerData?.LastSrvKM || 0),
+        LastSrvDt: String(schedulerData?.LastSrvDt || '').trim(),
+        Tasks: normalizedTasks,
+      };
+
+      console.log('🛠️ Creating service scheduler:', JSON.stringify(normalizedPayload, null, 2));
+      const response = await post('CreateServiceScheduler', normalizedPayload);
+      console.log('🛠️ Service scheduler created:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('❌ CreateServiceScheduler error:', error);
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get scheduler lines by bus number
+   * @param {string} companyDB
+   * @param {string} busNo
+   * @returns {Promise}
+   */
+  getSchedulerByBus: async (companyDB, busNo) => {
+    try {
+      const response = await get(`GetSchedulerByBus?CompanyDB=${companyDB}&BusNo=${busNo}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get all service schedulers (headers)
+   * @param {string} companyDB
+   * @returns {Promise}
+   */
+  getServiceSchedulers: async (companyDB) => {
+    try {
+      const response = await get(`GetServiceSchedulers?CompanyDB=${companyDB}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get due services
+   * @param {string} companyDB
+   * @returns {Promise}
+   */
+  getDueServices: async (companyDB) => {
+    try {
+      const response = await get(`GetDueServices?CompanyDB=${companyDB}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
    * Create a new fuel log entry
    * @param {Object} fuelData - Fuel log details
    * @returns {Promise} Created fuel log response

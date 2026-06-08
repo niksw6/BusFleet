@@ -5,27 +5,63 @@ import {
   ScrollView,
   RefreshControl,
   ActivityIndicator,
+  TouchableOpacity,
 } from 'react-native';
 import { Text, Divider, Button } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import Toast from 'react-native-toast-message';
+import MaterialIcons from '../components/AppIcon.js';
 
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
-import { complaintService } from '../api/services';
+import { complaintService, maintenanceService, jobCardService } from '../api/services';
 import { getStatusName } from '../utils/helpers';
+import { isSupervisorUser } from '../utils/roleAccess';
 
 const ComplaintDetailScreen = ({ route, navigation }) => {
-  const { complaintNo, dbName, complaintType, jobCardNo: routeJobCardNo } = route.params;
+  const {
+    complaintNo,
+    dbName,
+    complaintType,
+    jobCardNo: routeJobCardNo,
+    jobCardDocEntry: routeJobCardDocEntry,
+    source,
+    busNo: routeBusNo,
+    lastSrvDt,
+    lastSrvKM,
+    active,
+  } = route.params;
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const supervisorUser = isSupervisorUser(user);
   
   // Determine if this is a breakdown or complaint
   const isBreakdown = complaintType?.toLowerCase().includes('breakdown');
+  const isPreventive = String(complaintType || '').toLowerCase().includes('preventive') || source === 'scheduler';
 
   const [loading, setLoading] = useState(true);
+  const [closingIncident, setClosingIncident] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [complaint, setComplaint] = useState(null);
+  const [schedulerLines, setSchedulerLines] = useState([]);
+  const [progressMap, setProgressMap] = useState({
+    incidentCreated: false,
+    jobCardCreated: false,
+    workOrderCreated: false,
+    workOrderSubmitted: false,
+    workOrderDocEntry: null,
+    inProgress: false,
+    closed: false,
+    workOrderCount: 0,
+    canSupervisorClose: false,
+  });
+
+  const formatSchedulerRepeatType = (repeatTypeValue) => {
+    const normalized = String(repeatTypeValue || '').trim().toLowerCase();
+    if (normalized === 'o' || normalized === 'once') return 'Once';
+    if (normalized === 'r' || normalized === 'repeat') return 'Repeat';
+    return repeatTypeValue || '-';
+  };
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -38,14 +74,305 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     }
   };
 
-  useEffect(() => {
-    fetchComplaintDetail();
-  }, [complaintNo]);
+  const normalizeStatus = (statusValue) => String(statusValue || '').trim().toUpperCase();
+
+  const isClosedStatus = (statusValue) => {
+    const status = normalizeStatus(statusValue);
+    return status === 'C' || status === 'CM' || status === 'COMPLETED' || status === 'CLOSED';
+  };
+
+  const resolveWorkOrderCount = async (incidentData) => {
+    const linkedJobCardNo = String(
+      incidentData?.JobCardNo || incidentData?.JobcardNo || routeJobCardNo || '',
+    ).trim();
+    const linkedJobCardDocEntry = Number(
+      incidentData?.JobCardDocEntry || incidentData?.JobCardEntry || routeJobCardDocEntry || 0,
+    );
+
+    if (!linkedJobCardNo && !linkedJobCardDocEntry) {
+      return { count: 0, latestDocEntry: null };
+    }
+
+    try {
+      const workOrdersResponse = await jobCardService.getWorkOrders(dbName || 'MUTSPL_TEST', null);
+      const workOrders = Array.isArray(workOrdersResponse?.Data) ? workOrdersResponse.Data : [];
+      const linkedOrders = workOrders.filter((entry) => {
+        const entryJcDocEntry = Number(entry?.JCDocEnt || entry?.DocEntry || 0);
+        const entryJcDocNum = String(entry?.JCDocNum || entry?.JobCardNo || '').trim();
+        return (
+          (linkedJobCardDocEntry > 0 && entryJcDocEntry === linkedJobCardDocEntry)
+          || (linkedJobCardNo && entryJcDocNum && entryJcDocNum === linkedJobCardNo)
+        );
+      });
+      const latestDocEntry = linkedOrders.reduce((maxDocEntry, entry) => {
+        const currentDocEntry = Number(entry?.DocEntry || 0);
+        return currentDocEntry > maxDocEntry ? currentDocEntry : maxDocEntry;
+      }, 0);
+      return {
+        count: linkedOrders.length,
+        latestDocEntry: latestDocEntry > 0 ? latestDocEntry : null,
+      };
+    } catch (workOrderError) {
+      console.warn('Unable to resolve linked work orders:', workOrderError?.message || workOrderError);
+      return { count: 0, latestDocEntry: null };
+    }
+  };
+
+  const resolveLinkedJobCardInfo = async (incidentData) => {
+    const existingJobCardNo = String(
+      incidentData?.JobCardNo || incidentData?.JobcardNo || routeJobCardNo || '',
+    ).trim();
+    const existingJobCardDocEntry = Number(
+      incidentData?.JobCardDocEntry || incidentData?.JobCardEntry || routeJobCardDocEntry || 0,
+    );
+
+    if (existingJobCardNo || existingJobCardDocEntry > 0) {
+      return {
+        ...incidentData,
+        JobCardNo: existingJobCardNo,
+        JobCardDocEntry: existingJobCardDocEntry || undefined,
+      };
+    }
+
+    try {
+      const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
+      const jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
+      if (jobCards.length === 0) return incidentData;
+
+      const incidentKeyValues = [
+        incidentData?.ComplaintNo,
+        incidentData?.DocEntry,
+        incidentData?.BreakdownNo,
+        complaintNo,
+      ];
+      const incidentKeyStrings = incidentKeyValues
+        .map(value => String(value || '').trim())
+        .filter(Boolean);
+      const incidentKeyNumbers = incidentKeyValues
+        .map(value => Number(value))
+        .filter(value => !Number.isNaN(value));
+      const incidentBusNo = String(incidentData?.BusNo || routeBusNo || '').trim();
+
+      const linkedCard = jobCards.find((card) => {
+        const cardComplaintValues = [
+          card?.CmplaintNo,
+          card?.ComplaintNo,
+          card?.CompNo,
+          card?.CmpNo,
+          card?.BreakdownNo,
+          card?.BrkdnNo,
+          card?.BrkDocEnt,
+          card?.BrkDocEntry,
+          card?.DocEntry,
+        ];
+        const cardComplaintStrings = cardComplaintValues
+          .map(value => String(value || '').trim())
+          .filter(Boolean);
+        const cardComplaintNumbers = cardComplaintValues
+          .map(value => Number(value))
+          .filter(value => !Number.isNaN(value));
+        const complaintMatches = (
+          incidentKeyStrings.some(value => cardComplaintStrings.includes(value))
+          || incidentKeyNumbers.some(value => cardComplaintNumbers.includes(value))
+        );
+
+        if (!complaintMatches) return false;
+
+        if (!incidentBusNo) return true;
+        const cardBusNo = String(card?.BusNo || card?.RegNo || '').trim();
+        return !cardBusNo || cardBusNo === incidentBusNo;
+      });
+
+      if (!linkedCard) return incidentData;
+
+      return {
+        ...incidentData,
+        JobCardNo: String(linkedCard?.JobCardNo || linkedCard?.DocNum || linkedCard?.DocEntry || '').trim(),
+        JobCardDocEntry: Number(linkedCard?.DocEntry || 0) || undefined,
+        JobCardStatus: linkedCard?.Status || incidentData?.JobCardStatus,
+      };
+    } catch (jobCardLookupError) {
+      console.warn('Unable to resolve linked job card:', jobCardLookupError?.message || jobCardLookupError);
+      return incidentData;
+    }
+  };
+
+  const deriveProgressMap = async (incidentData) => {
+    const incidentStatus = normalizeStatus(incidentData?.Status);
+    const jobCardStatus = normalizeStatus(incidentData?.JobCardStatus);
+    const linkedJobCardNo = String(
+      incidentData?.JobCardNo || incidentData?.JobcardNo || routeJobCardNo || '',
+    ).trim();
+    const linkedJobCardDocEntry = Number(
+      incidentData?.JobCardDocEntry || incidentData?.JobCardEntry || routeJobCardDocEntry || 0,
+    );
+    const jobCardCreated = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
+    const { count: workOrderCount, latestDocEntry: workOrderDocEntry } = await resolveWorkOrderCount(incidentData);
+    const workOrderCreated = workOrderCount > 0;
+    const workOrderSubmitted = workOrderCreated;
+    const closed = isClosedStatus(incidentStatus);
+    const inProgress = !closed && (
+      incidentStatus === 'I'
+      || jobCardStatus === 'I'
+      || jobCardStatus === 'IP'
+      || jobCardCreated
+      || workOrderCreated
+    );
+
+    setProgressMap({
+      incidentCreated: true,
+      jobCardCreated,
+      workOrderCreated,
+      workOrderSubmitted,
+      workOrderDocEntry,
+      inProgress,
+      closed,
+      workOrderCount,
+      canSupervisorClose: supervisorUser && !isPreventive && jobCardCreated && workOrderCreated && !closed,
+    });
+  };
+
+  const handleCloseIncident = async () => {
+    if (!complaint) return;
+
+    try {
+      setClosingIncident(true);
+      const formType = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
+      const docEntry = complaint?.ComplaintNo || complaintNo;
+
+      const response = await complaintService.updateComplaintStatus(
+        dbName || 'MUTSPL_TEST',
+        Number(docEntry) || docEntry,
+        'CM',
+        formType,
+      );
+
+      if (!response?.Success) {
+        throw new Error(response?.Message || 'Unable to close incident');
+      }
+
+      const linkedJobCardDocEntry = Number(
+        complaint?.JobCardDocEntry || complaint?.JobCardEntry || routeJobCardDocEntry || 0,
+      );
+      const linkedJobCardNo = String(
+        complaint?.JobCardNo || complaint?.JobcardNo || routeJobCardNo || '',
+      ).trim();
+      const jobCardTarget = linkedJobCardDocEntry > 0 ? linkedJobCardDocEntry : linkedJobCardNo;
+
+      if (jobCardTarget) {
+        try {
+          const jobCardCloseResponse = await jobCardService.updateJobCardStatus(
+            dbName || 'MUTSPL_TEST',
+            jobCardTarget,
+            'CM',
+          );
+          if (!jobCardCloseResponse?.Success) {
+            console.warn('Job card status update skipped:', jobCardCloseResponse?.Message || 'Unknown response');
+          }
+        } catch (jobCardError) {
+          console.warn('Unable to update linked job card status:', jobCardError?.message || jobCardError);
+        }
+      }
+
+      const linkedWorkOrderDocEntry = Number(progressMap?.workOrderDocEntry || 0);
+      if (linkedWorkOrderDocEntry > 0) {
+        try {
+          const workOrderCloseResponse = await jobCardService.closeIncident(
+            dbName || 'MUTSPL_TEST',
+            linkedWorkOrderDocEntry,
+            'W',
+          );
+          if (!workOrderCloseResponse?.Success) {
+            console.warn('Work order close skipped:', workOrderCloseResponse?.Message || 'Unknown response');
+          }
+        } catch (workOrderCloseError) {
+          console.warn('Unable to close linked work order:', workOrderCloseError?.message || workOrderCloseError);
+        }
+      }
+
+      Toast.show({
+        type: 'success',
+        text1: 'Incident Closed',
+        text2: response?.Message || 'Supervisor closed the incident successfully',
+      });
+
+      await fetchComplaintDetail();
+    } catch (error) {
+      console.error('Error closing incident:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Close Failed',
+        text2: error?.message || 'Unable to close incident',
+      });
+    } finally {
+      setClosingIncident(false);
+    }
+  };
 
   const fetchComplaintDetail = async () => {
     try {
       setLoading(true);
       console.log('📄 Fetching incident detail:', complaintNo, 'Type:', complaintType);
+
+      if (isPreventive) {
+        const schedulerBusNo = String(routeBusNo || complaintNo || '').trim();
+        const schedulerResponse = await maintenanceService.getSchedulerByBus(dbName, schedulerBusNo);
+
+        if (schedulerResponse?.Success) {
+          const lines = Array.isArray(schedulerResponse.Data) ? schedulerResponse.Data : [];
+          setSchedulerLines(lines);
+          const preventiveDetail = {
+            ComplaintNo: complaintNo || schedulerBusNo,
+            BusNo: schedulerBusNo,
+            ComplaintType: 'Preventive Maintenance',
+            ComplaintDate: lastSrvDt || '-',
+            ComplaintTime: '',
+            Priority: 'Medium',
+            Status: String(active || 'Y').toUpperCase() === 'Y' ? 'O' : 'D',
+            LastSrvDt: lastSrvDt || '-',
+            LastSrvKM: lastSrvKM || 0,
+          };
+          setComplaint(preventiveDetail);
+          setProgressMap({
+            incidentCreated: true,
+            jobCardCreated: false,
+            workOrderCreated: false,
+            workOrderSubmitted: false,
+            workOrderDocEntry: null,
+            inProgress: !isClosedStatus(preventiveDetail.Status),
+            closed: isClosedStatus(preventiveDetail.Status),
+            workOrderCount: 0,
+            canSupervisorClose: false,
+          });
+        } else {
+          setSchedulerLines([]);
+          const preventiveDetail = {
+            ComplaintNo: complaintNo || schedulerBusNo,
+            BusNo: schedulerBusNo,
+            ComplaintType: 'Preventive Maintenance',
+            ComplaintDate: lastSrvDt || '-',
+            ComplaintTime: '',
+            Priority: 'Medium',
+            Status: String(active || 'Y').toUpperCase() === 'Y' ? 'O' : 'D',
+            LastSrvDt: lastSrvDt || '-',
+            LastSrvKM: lastSrvKM || 0,
+          };
+          setComplaint(preventiveDetail);
+          setProgressMap({
+            incidentCreated: true,
+            jobCardCreated: false,
+            workOrderCreated: false,
+            workOrderSubmitted: false,
+            workOrderDocEntry: null,
+            inProgress: !isClosedStatus(preventiveDetail.Status),
+            closed: isClosedStatus(preventiveDetail.Status),
+            workOrderCount: 0,
+            canSupervisorClose: false,
+          });
+        }
+
+        return;
+      }
       
       // Use appropriate API based on complaint type
       const response = isBreakdown
@@ -80,12 +407,15 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           RouteNo: response.Data.RouteNo || response.Data.Route || response.Data.RoutNo,
           BreakdownPlace: response.Data.BrkPlace || response.Data.BreakdownPlace || response.Data.Location,
           JobCardNo: response.Data.JobCardNo || response.Data.JobcardNo || response.Data.JobCard || routeJobCardNo || '',
-          JobCardDocEntry: response.Data.JobCardDocEntry || response.Data.JobCardEntry,
+          JobCardDocEntry: response.Data.JobCardDocEntry || response.Data.JobCardEntry || routeJobCardDocEntry,
           JobCardStatus: response.Data.JobCardStatus,
           JobCardDate: response.Data.JobCardDate || response.Data.JobCardRegDate,
         };
-        
+
+        normalizedData = await resolveLinkedJobCardInfo(normalizedData);
+
         setComplaint(normalizedData);
+        await deriveProgressMap(normalizedData);
       }
     } catch (error) {
       console.error('Error fetching complaint detail:', error);
@@ -93,6 +423,14 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      fetchComplaintDetail();
+    });
+
+    return unsubscribe;
+  }, [navigation, complaintNo, dbName, complaintType, routeJobCardNo, routeJobCardDocEntry]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -119,8 +457,39 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
   }
 
   const linkedJobCardNo = String(complaint?.JobCardNo || complaint?.JobcardNo || routeJobCardNo || '').trim();
-  const hasLinkedJobCard = linkedJobCardNo.length > 0;
+  const linkedJobCardDocEntry = Number(
+    complaint?.JobCardDocEntry || complaint?.JobCardEntry || routeJobCardDocEntry || 0,
+  );
+  const hasLinkedJobCard = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
+  const linkedJobCardDisplay = linkedJobCardNo || (linkedJobCardDocEntry > 0 ? String(linkedJobCardDocEntry) : '');
   const jobTypeCode = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
+  const openWorkOrderDetail = () => {
+    if (!linkedJobCardDisplay) return;
+
+    navigation.navigate('WorkOrderDetail', {
+      docEntry: linkedJobCardDocEntry > 0 ? linkedJobCardDocEntry : linkedJobCardDisplay,
+      jobCardNo: linkedJobCardDisplay,
+      jobType: jobTypeCode,
+      complaintNo: complaint.ComplaintNo,
+      busNo: complaint.BusNo,
+      depot: complaint.Depot,
+      description: complaint.Description,
+      complaintType: complaint.ComplaintType,
+      regTime: complaint.RegTime,
+      complaintTime: complaint.ComplaintTime,
+      incidentTime: complaint.IncidentTime,
+      dbName: dbName,
+    });
+  };
+
+  const openSubmittedWorkOrder = () => {
+    if (!progressMap.workOrderDocEntry) return;
+
+    navigation.navigate('WorkOrderApiDetail', {
+      workOrderDocEntry: progressMap.workOrderDocEntry,
+      dbName,
+    });
+  };
 
   return (
     <ScrollView
@@ -173,7 +542,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
         </View>
       </View>
 
-      {hasLinkedJobCard ? (
+      {!isPreventive && hasLinkedJobCard ? (
         <View style={[styles.card, { backgroundColor: colors.white, marginBottom: 0 }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: SPACING.sm }]}>
             <MaterialIcons name="assignment" size={20} /> Job Card
@@ -181,25 +550,12 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           <View style={styles.infoRow}>
             <MaterialIcons name="confirmation-number" size={20} color={colors.primary} />
             <Text style={[styles.infoLabel, { color: colors.gray }]}>Job Card No:</Text>
-            <Text style={[styles.infoValue, { color: colors.dark, fontWeight: 'bold' }]}>{linkedJobCardNo}</Text>
+            <Text style={[styles.infoValue, { color: colors.dark, fontWeight: 'bold' }]}>{linkedJobCardDisplay}</Text>
           </View>
           <Button
             mode="contained"
             icon="open-in-new"
-            onPress={() => navigation.navigate('WorkOrderDetail', {
-              docEntry: linkedJobCardNo,
-              jobCardNo: linkedJobCardNo,
-              jobType: jobTypeCode,
-              complaintNo: complaint.ComplaintNo,
-              busNo: complaint.BusNo,
-              depot: complaint.Depot,
-              description: complaint.Description,
-              complaintType: complaint.ComplaintType,
-              regTime: complaint.RegTime,
-              complaintTime: complaint.ComplaintTime,
-              incidentTime: complaint.IncidentTime,
-              dbName: dbName
-            })}
+            onPress={openWorkOrderDetail}
             style={styles.viewJobCardButton}
             contentStyle={{ paddingVertical: 8 }}
           >
@@ -209,7 +565,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       ) : null}
 
       {/* Create Job Card Button - show only when not created yet */}
-      {!hasLinkedJobCard && (complaint.Status === 'O' || complaint.Status === 'I') ? (
+      {!isPreventive && supervisorUser && !hasLinkedJobCard && !progressMap.jobCardCreated && (complaint.Status === 'O' || complaint.Status === 'I') ? (
         <View style={[styles.card, { backgroundColor: colors.white, marginTop: 0 }]}>
           <Button
             mode="contained"
@@ -236,10 +592,89 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
         </View>
       ) : null}
 
+      {!isPreventive && (
+        <View style={[styles.card, { backgroundColor: colors.white }]}> 
+          <Text style={[styles.sectionTitle, { color: colors.dark }]}> 
+            <MaterialIcons name="timeline" size={20} /> Progress Map
+          </Text>
+
+          <View style={styles.progressRow}>
+            <MaterialIcons
+              name={progressMap.incidentCreated ? 'check-circle' : 'radio-button-unchecked'}
+              size={18}
+              color={progressMap.incidentCreated ? colors.primary : colors.gray}
+            />
+            <Text style={[styles.progressText, { color: colors.dark }]}>Incident Created</Text>
+          </View>
+
+          <View style={styles.progressRow}>
+            <MaterialIcons
+              name={progressMap.jobCardCreated ? 'check-circle' : 'radio-button-unchecked'}
+              size={18}
+              color={progressMap.jobCardCreated ? colors.primary : colors.gray}
+            />
+            <Text style={[styles.progressText, { color: colors.dark }]}>Job Card Created</Text>
+          </View>
+
+          <View style={styles.progressRow}>
+            <MaterialIcons
+              name={progressMap.inProgress ? 'check-circle' : 'radio-button-unchecked'}
+              size={18}
+              color={progressMap.inProgress ? colors.primary : colors.gray}
+            />
+            <Text style={[styles.progressText, { color: colors.dark }]}>In Progress</Text>
+          </View>
+
+          <View style={styles.progressRow}>
+            <MaterialIcons
+              name={progressMap.workOrderSubmitted ? 'check-circle' : 'radio-button-unchecked'}
+              size={18}
+              color={progressMap.workOrderSubmitted ? colors.primary : colors.gray}
+            />
+            <Text style={[styles.progressText, { color: colors.dark }]}>Work Order Submitted</Text>
+            {progressMap.workOrderSubmitted && progressMap.workOrderDocEntry ? (
+              <TouchableOpacity onPress={openSubmittedWorkOrder} style={styles.progressLinkButton}>
+                <MaterialIcons name="open-in-new" size={14} color={colors.primary} />
+                <Text style={[styles.progressLinkText, { color: colors.primary }]}>Open</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          <View style={styles.progressRow}>
+            <MaterialIcons
+              name={progressMap.closed ? 'check-circle' : 'radio-button-unchecked'}
+              size={18}
+              color={progressMap.closed ? colors.primary : colors.gray}
+            />
+            <Text style={[styles.progressText, { color: colors.dark }]}>Closed</Text>
+          </View>
+
+          {progressMap.canSupervisorClose && (
+            <Button
+              mode="contained"
+              icon="check-circle"
+              onPress={handleCloseIncident}
+              loading={closingIncident}
+              disabled={closingIncident}
+              style={styles.closeIncidentButton}
+              contentStyle={{ minHeight: 44 }}
+            >
+              Close Incident
+            </Button>
+          )}
+
+          {!progressMap.canSupervisorClose && supervisorUser && !progressMap.closed && (
+            <Text style={[styles.progressHint, { color: colors.gray }]}>
+              Close button will be enabled after Work Order is submitted.
+            </Text>
+          )}
+        </View>
+      )}
+
       {/* Vehicle & Driver Info */}
       <View style={[styles.card, { backgroundColor: colors.white }]}>
         <Text style={[styles.sectionTitle, { color: colors.dark }]}>
-          <MaterialIcons name="info" size={20} /> Vehicle & Driver Information
+          <MaterialIcons name="info" size={20} /> {isPreventive ? 'Vehicle Information' : 'Vehicle & Driver Information'}
         </Text>
 
         <View style={styles.infoRow}>
@@ -248,31 +683,84 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           <Text style={[styles.infoValue, { color: colors.dark }]}>{complaint.Depot}</Text>
         </View>
 
-        <View style={styles.infoRow}>
-          <MaterialIcons name="person" size={20} color={colors.gray} />
-          <Text style={[styles.infoLabel, { color: colors.gray }]}>Driver:</Text>
-          <Text style={[styles.infoValue, { color: colors.dark }]}>
-            {complaint.DriverName} ({complaint.DriverCode})
-          </Text>
-        </View>
+        {!isPreventive && (
+          <View style={styles.infoRow}>
+            <MaterialIcons name="person" size={20} color={colors.gray} />
+            <Text style={[styles.infoLabel, { color: colors.gray }]}>Driver:</Text>
+            <Text style={[styles.infoValue, { color: colors.dark }]}>
+              {complaint.DriverName} ({complaint.DriverCode})
+            </Text>
+          </View>
+        )}
 
         <View style={styles.infoRow}>
           <MaterialIcons name="speed" size={20} color={colors.gray} />
-          <Text style={[styles.infoLabel, { color: colors.gray }]}>Odometer:</Text>
-          <Text style={[styles.infoValue, { color: colors.dark }]}>{complaint.Odometer} km</Text>
+          <Text style={[styles.infoLabel, { color: colors.gray }]}>{isPreventive ? 'Last Service KM:' : 'Odometer:'}</Text>
+          <Text style={[styles.infoValue, { color: colors.dark }]}>{isPreventive ? complaint.LastSrvKM : complaint.Odometer} km</Text>
         </View>
 
-        <View style={styles.infoRow}>
-          <MaterialIcons name="supervisor-account" size={20} color={colors.gray} />
-          <Text style={[styles.infoLabel, { color: colors.gray }]}>Supervisor:</Text>
-          <Text style={[styles.infoValue, { color: colors.dark }]}>
-            {complaint.SupervisorName} ({complaint.SupervisorCode})
-          </Text>
-        </View>
+        {isPreventive ? (
+          <View style={styles.infoRow}>
+            <MaterialIcons name="event" size={20} color={colors.gray} />
+            <Text style={[styles.infoLabel, { color: colors.gray }]}>Last Service:</Text>
+            <Text style={[styles.infoValue, { color: colors.dark }]}>{complaint.LastSrvDt || '-'}</Text>
+          </View>
+        ) : (
+          <View style={styles.infoRow}>
+            <MaterialIcons name="supervisor-account" size={20} color={colors.gray} />
+            <Text style={[styles.infoLabel, { color: colors.gray }]}>Supervisor:</Text>
+            <Text style={[styles.infoValue, { color: colors.dark }]}>
+              {complaint.SupervisorName} ({complaint.SupervisorCode})
+            </Text>
+          </View>
+        )}
       </View>
 
+      {isPreventive && (
+        <View style={[styles.card, { backgroundColor: colors.white }]}>
+          <Text style={[styles.sectionTitle, { color: colors.dark }]}> 
+            <MaterialIcons name="build" size={20} /> Scheduled Tasks
+          </Text>
+          {schedulerLines.length > 0 ? schedulerLines.map((taskLine, index) => (
+            <View key={`${taskLine.LineId || index}`} style={[styles.faultItem, { backgroundColor: colors.light }]}> 
+              <View style={styles.faultHeader}>
+                <MaterialIcons name="check-circle-outline" size={20} color={colors.primary} />
+                <Text style={[styles.faultTitle, { color: colors.dark }]}>{taskLine.Task || `Task ${index + 1}`}</Text>
+              </View>
+              <Text style={[styles.faultDescription, { color: colors.gray }]}>Repeat Type: {formatSchedulerRepeatType(taskLine.RepeatType)}</Text>
+              {Number(taskLine.EveryDay || 0) > 0 && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Every Day: {taskLine.EveryDay}</Text>
+              )}
+              {Number(taskLine.EveryWeek || 0) > 0 && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Every Week: {taskLine.EveryWeek}</Text>
+              )}
+              {Number(taskLine.EveryMonth || 0) > 0 && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Every Month: {taskLine.EveryMonth}</Text>
+              )}
+              {Number(taskLine.EveryKM || 0) > 0 && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Every KM: {taskLine.EveryKM}</Text>
+              )}
+              {Number(taskLine.NotifyDay || 0) > 0 && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Notify Day: {taskLine.NotifyDay}</Text>
+              )}
+              {Number(taskLine.NotifyKM || 0) > 0 && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Notify KM: {taskLine.NotifyKM}</Text>
+              )}
+              {String(taskLine.DueStatus || '').trim() !== '' && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Due Status: {taskLine.DueStatus}</Text>
+              )}
+              {String(taskLine.NextDueDt || '').trim() !== '' && (
+                <Text style={[styles.faultDescription, { color: colors.gray }]}>Next Due Date: {taskLine.NextDueDt}</Text>
+              )}
+            </View>
+          )) : (
+            <Text style={[styles.description, { color: colors.gray }]}>No scheduled tasks found for this bus.</Text>
+          )}
+        </View>
+      )}
+
       {/* Description */}
-      {complaint.Description && (
+      {!isPreventive && complaint.Description && (
         <View style={[styles.card, { backgroundColor: colors.white }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>
             <MaterialIcons name="description" size={20} /> Description
@@ -284,7 +772,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       )}
 
       {/* Faults */}
-      {complaint.Faults && complaint.Faults.length > 0 && (
+      {!isPreventive && complaint.Faults && complaint.Faults.length > 0 && (
         <View style={[styles.card, { backgroundColor: colors.white }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>
             <MaterialIcons name="build" size={20} /> Faults
@@ -344,6 +832,10 @@ const styles = StyleSheet.create({
   viewJobCardButton: {
     borderRadius: BORDER_RADIUS.md,
   },
+  closeIncidentButton: {
+    marginTop: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+  },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -376,6 +868,37 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginLeft: SPACING.sm,
     width: 100,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  progressText: {
+    fontSize: 14,
+    fontWeight: '500',
+    marginLeft: SPACING.sm,
+  },
+  progressMeta: {
+    fontSize: 12,
+    marginLeft: SPACING.xs,
+    fontWeight: '500',
+  },
+  progressHint: {
+    fontSize: 12,
+    marginTop: SPACING.xs,
+  },
+  progressLinkButton: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.xs,
+    paddingVertical: 2,
+  },
+  progressLinkText: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 4,
   },
   infoValue: {
     fontSize: 14,
@@ -420,3 +943,4 @@ const styles = StyleSheet.create({
 });
 
 export default ComplaintDetailScreen;
+

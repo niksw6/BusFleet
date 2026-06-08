@@ -1,6 +1,6 @@
 import React from 'react';
 import { TouchableOpacity, StyleSheet } from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from './AppIcon.js';
 import { useSelector } from 'react-redux';
 import { COLORS, DARK_COLORS, SHADOWS } from '../constants/theme';
 
@@ -41,3 +41,4 @@ const styles = StyleSheet.create({
 });
 
 export default FAB;
+

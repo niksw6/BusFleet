@@ -1,4 +1,4 @@
-import { get, handleApiError } from '../client';
+import { get, post, handleApiError } from '../client';
 
 /**
  * Dashboard Service
@@ -74,12 +74,32 @@ export const dashboardService = {
    * @returns {Promise} List of notifications
    */
   getNotifications: async (companyDB, userId) => {
+    console.log(`[Notifications] getNotifications called - CompanyDB: "${companyDB}" User: "${userId}"`);
     try {
-      const response = await get(`GetNotifications?CompanyDB=${companyDB}&UserId=${userId}`);
+      const response = await get(`GetNotifications?CompanyDB=${companyDB}&User=${userId}`);
+      console.log(`[Notifications] getNotifications response:`, JSON.stringify(response.data).slice(0, 200));
       return response.data;
     } catch (error) {
-      console.warn('GetNotifications API not available');
-      return { Success: true, Data: [] };
+      console.error(`[Notifications] getNotifications FAILED - CompanyDB: "${companyDB}" User: "${userId}" Error: ${error.message}`);
+      throw error;
+    }
+  },
+
+  /**
+   * Get notification count for current user
+   * @param {string} companyDB - Company database name
+   * @param {string} userId - User ID
+   * @returns {Promise} Unread count response
+   */
+  getNotificationCount: async (companyDB, userId) => {
+    console.log(`[Notifications] getNotificationCount called - CompanyDB: "${companyDB}" User: "${userId}"`);
+    try {
+      const response = await get(`GetNotificationCount?CompanyDB=${companyDB}&User=${userId}`);
+      console.log(`[Notifications] getNotificationCount response:`, JSON.stringify(response.data));
+      return response.data;
+    } catch (error) {
+      console.error(`[Notifications] getNotificationCount FAILED - CompanyDB: "${companyDB}" User: "${userId}" Error: ${error.message}`);
+      return { Success: true, Data: 0 };
     }
   },
 
@@ -90,10 +110,10 @@ export const dashboardService = {
    */
   markNotificationAsRead: async (notificationId) => {
     try {
-      const response = await get(`MarkNotificationAsRead?NotificationId=${notificationId}`);
+      const response = await post('MarkNotificationRead', notificationId);
       return response.data;
     } catch (error) {
-      console.warn('MarkNotificationAsRead API not available');
+      console.warn('MarkNotificationRead API not available');
       return { Success: true };
     }
   },

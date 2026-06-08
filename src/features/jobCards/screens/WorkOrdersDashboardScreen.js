@@ -10,10 +10,10 @@ import {
 } from 'react-native';
 import { Text, Button, DataTable } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
-import KPICard from '../../../shared/components/KPICard';
+import StandardListCard from '../../../shared/components/StandardListCard';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { jobCardService } from '../../../api/services';
@@ -237,35 +237,11 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
   };
 
   const getStatusColor = (status) => {
-    switch (status) {
-      case 'O':
-        return '#0070F2';
-      case 'I':
-        return '#FF9500';
-      case 'C':
-      case 'CM':
-        return '#2B7D2B';
-      case 'D':
-      case 'X':
-        return '#BB0000';
-      default:
-        return '#6A6D70';
-    }
+    return colors.primary;
   };
 
   const getPriorityColor = (priority) => {
-    switch (priority?.toLowerCase()) {
-      case 'critical':
-        return '#BB0000'; // Red
-      case 'high':
-        return '#E91E63'; // Pink/Red
-      case 'medium':
-        return '#FF9500'; // Orange
-      case 'low':
-        return '#2B7D2B'; // Green
-      default:
-        return colors.gray;
-    }
+    return colors.primary;
   };
 
   const getDisplayTime = (item) => {
@@ -308,13 +284,12 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
   };
 
   const renderWorkOrderCard = ({ item }) => (
-    <TouchableOpacity
-      style={[styles.workOrderCard, { backgroundColor: colors.white }]}
+    <StandardListCard
+      accentColor={colors.primary}
       onPress={() => navigation.navigate('WorkOrderApiDetail', {
         workOrderDocEntry: item.DocEntry,
         dbName,
       })}
-      activeOpacity={0.8}
     >
       {/* Compact Header: WO + Status + Priority */}
       <View style={styles.cardHeader}>
@@ -328,16 +303,16 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
           {item.Priority && (
             <View style={[
               styles.priorityChip,
-              { backgroundColor: getPriorityColor(item.Priority) }
+              { backgroundColor: `${getPriorityColor(item.Priority)}15` }
             ]}>
-              <Text style={styles.priorityChipText}>{item.Priority}</Text>
+              <Text style={[styles.priorityChipText, { color: colors.primary }]}>{item.Priority}</Text>
             </View>
           )}
           <View style={[
             styles.statusChip,
-            { backgroundColor: getStatusColor(item.Status) }
+            { backgroundColor: `${getStatusColor(item.Status)}15` }
           ]}>
-            <Text style={styles.statusChipText}>{getStatusLabel(item.Status)}</Text>
+            <Text style={[styles.statusChipText, { color: colors.primary }]}>{getStatusLabel(item.Status)}</Text>
           </View>
         </View>
       </View>
@@ -405,18 +380,18 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
           </Text>
         </View>
       )}
-    </TouchableOpacity>
+    </StandardListCard>
   );
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
       <ScreenHeader
         title="Work Orders"
-        subtitle={`${stats.total} Total Orders`}
+        subtitle=""
         onMenuPress={() => navigation.openDrawer()}
         onNotificationPress={() => navigation.navigate('Notifications')}
         showNotifications={true}
-        useGradient={true}
+        useGradient={false}
       />
 
       <ScrollView
@@ -430,54 +405,6 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
           />
         }
       >
-        {/* KPI Cards - Modern Compact Design */}
-        <View style={styles.kpiContainer}>
-          <KPICard
-            title="Total WOs"
-            value={stats.total}
-            icon="edit"
-            iconColor="#6366F1"
-            isDarkMode={isDarkMode}
-            compact={true}
-          />
-          
-          <KPICard
-            title="Medium"
-            value={stats.mediumPriority}
-            icon="warning"
-            iconColor="#FF9500"
-            isDarkMode={isDarkMode}
-            compact={true}
-          />
-          
-          <KPICard
-            title="High"
-            value={stats.highPriority}
-            icon="priority-high"
-            iconColor="#E91E63"
-            isDarkMode={isDarkMode}
-            compact={true}
-          />
-          
-          <KPICard
-            title="Critical"
-            value={stats.critical}
-            icon="error"
-            iconColor="#BB0000"
-            isDarkMode={isDarkMode}
-            compact={true}
-          />
-          
-          <KPICard
-            title="Overdue"
-            value={stats.overdue}
-            icon="schedule"
-            iconColor="#9C27B0"
-            isDarkMode={isDarkMode}
-            compact={true}
-          />
-        </View>
-
         {/* Workorder Status Section */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>Workorder Status</Text>
@@ -583,14 +510,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  kpiContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    paddingHorizontal: SPACING.sm,
-    paddingTop: SPACING.md,
-    paddingBottom: SPACING.sm,
-  },
   section: {
     marginTop: SPACING.sm,
     paddingHorizontal: SPACING.sm,
@@ -600,13 +519,13 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '600',
     marginBottom: SPACING.sm,
   },
   tabContainer: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    borderBottomColor: COLORS.border,
     marginBottom: SPACING.sm,
   },
   tab: {
@@ -645,7 +564,7 @@ const styles = StyleSheet.create({
   },
   filterTitle: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   filterChipsWrap: {
     flexDirection: 'row',
@@ -655,14 +574,17 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   filterChip: {
+    minWidth: 60,
+    height: 36,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 16,
+    borderRadius: 10,
     borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   filterChipText: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '400',
   },
   searchBox: {
     flex: 1,
@@ -670,7 +592,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: SPACING.sm,
     borderRadius: BORDER_RADIUS.md,
-    height: 40,
+    height: 44,
   },
   searchInput: {
     flex: 1,
@@ -709,8 +631,8 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   woNumberTextCompact: {
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
   },
   badgesRow: {
     flexDirection: 'row',
@@ -718,24 +640,24 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   priorityChip: {
+    minHeight: 24,
     paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: 12,
+    justifyContent: 'center',
   },
   priorityChipText: {
-    color: '#fff',
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   statusChip: {
+    minHeight: 24,
     paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: 12,
+    justifyContent: 'center',
   },
   statusChipText: {
-    color: '#fff',
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   infoRowCompact: {
     flexDirection: 'row',
@@ -751,12 +673,12 @@ const styles = StyleSheet.create({
   },
   infoTextCompact: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '400',
   },
   datesDivider: {
     width: 1,
     height: 14,
-    backgroundColor: '#E0E0E0',
+    backgroundColor: COLORS.border,
   },
   mechanicsRow: {
     flexDirection: 'row',
@@ -767,13 +689,13 @@ const styles = StyleSheet.create({
   },
   mechanicsText: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '400',
     flex: 1,
   },
   memoCompact: {
-    backgroundColor: '#FFFBF0',
+    backgroundColor: `${COLORS.primary}10`,
     borderLeftWidth: 2,
-    borderLeftColor: '#FF9500',
+    borderLeftColor: COLORS.primary,
     padding: SPACING.xs,
     borderRadius: 4,
     marginTop: SPACING.xs,
@@ -794,3 +716,4 @@ const styles = StyleSheet.create({
 });
 
 export default WorkOrdersDashboardScreen;
+

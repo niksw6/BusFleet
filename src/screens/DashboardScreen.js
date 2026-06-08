@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import DashboardCard from '../components/DashboardCard';
@@ -453,3 +453,4 @@ const styles = StyleSheet.create({
 });
 
 export default DashboardScreen;
+

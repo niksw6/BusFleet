@@ -10,14 +10,16 @@ import {
 import { Text, TextInput, Button } from 'react-native-paper';
 import { Formik } from 'formik';
 import { useDispatch, useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 import { Picker } from '@react-native-picker/picker';
 import Toast from 'react-native-toast-message';
 
 import { loginStart, loginSuccess, loginFailure } from '../../../store/slices/authSlice';
-import { authService } from '../../../api/services';
+import { setUnreadCount } from '../../../store/slices/notificationSlice';
+import { authService, dashboardService } from '../../../api/services';
 import { storeDBName, storeUserData, getLastCompany, storeLastCompany } from '../../../utils/storage';
 import { loginValidationSchema } from '../../../utils/validations';
+import { mapUsertypeToRole } from '../../../utils/roleAccess';
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 
@@ -82,7 +84,17 @@ const LoginScreen = ({ navigation }) => {
       // Handle different response formats - API returns Status: true/false
       if (response && (response.Status === true || response.success === true || response.Success === true)) {
         console.log('Login successful!');
-        const user = response.user || response.User || response.data || { name: values.username };
+        const userFromApi = response.user || response.User || response.data || { name: values.username };
+        const detectedRole =
+          userFromApi?.role ||
+          userFromApi?.Role ||
+          mapUsertypeToRole(response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype);
+        const user = {
+          ...userFromApi,
+          User: userFromApi?.User || values.username,
+          Usertype: response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype || null,
+          role: detectedRole || userFromApi?.role || userFromApi?.Role || 'Supervisor',
+        };
         const token = response.token || response.Token || response.accessToken || 'mock-token';
         
         await storeDBName(values.company);
@@ -94,6 +106,11 @@ const LoginScreen = ({ navigation }) => {
           dbName: values.company,
           token: token,
         }));
+
+        // Fetch notification count immediately after login so badge shows before user opens notifications
+        dashboardService.getNotificationCount(values.company, values.username)
+          .then(res => { if (res?.Success) dispatch(setUnreadCount(Number(res?.Data) || 0)); })
+          .catch(() => {});
 
         Toast.show({
           type: 'success',
@@ -326,3 +343,4 @@ const styles = StyleSheet.create({
 });
 
 export default LoginScreen;
+

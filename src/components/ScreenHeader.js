@@ -1,9 +1,10 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import MaterialIcons from './AppIcon.js';
+import LinearGradient from 'react-native-linear-gradient';
 import { useSelector } from 'react-redux';
+import { useNavigation } from '@react-navigation/native';
 import { COLORS, DARK_COLORS, SPACING } from '../constants/theme';
 
 /**
@@ -26,8 +27,23 @@ const ScreenHeader = ({
   showNotifications = true,
   useGradient = true,
 }) => {
+  const navigation = useNavigation();
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
+  const unreadCount = useSelector(state => state.notification.unreadCount);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+
+  const handleNotificationPress = () => {
+    if (typeof onNotificationPress === 'function') {
+      onNotificationPress();
+      return;
+    }
+
+    try {
+      navigation.navigate('Notifications');
+    } catch (error) {
+      navigation.navigate('Main', { screen: 'Notifications' });
+    }
+  };
 
   const headerContent = (
     <View style={styles.headerContent}>
@@ -47,10 +63,17 @@ const ScreenHeader = ({
       
       {showNotifications ? (
         <TouchableOpacity
-          onPress={onNotificationPress}
+          onPress={handleNotificationPress}
           style={styles.notificationButton}
         >
           <MaterialIcons name="notifications" size={24} color="#fff" />
+          {unreadCount > 0 && (
+            <View style={[styles.badge, { backgroundColor: colors.danger || COLORS.danger }]}> 
+              <Text style={[styles.badgeText, { color: colors.white || COLORS.white }]}>
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </Text>
+            </View>
+          )}
         </TouchableOpacity>
       ) : (
         <View style={{ width: 40 }} />
@@ -116,7 +139,26 @@ const styles = StyleSheet.create({
   },
   notificationButton: {
     padding: 4,
+    minWidth: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: '700',
   },
 });
 
 export default ScreenHeader;
+

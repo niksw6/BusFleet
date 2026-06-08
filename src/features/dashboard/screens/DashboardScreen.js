@@ -9,16 +9,17 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import { ListSkeleton } from '../../../shared/components/SkeletonLoader';
 import { StatusBadge } from '../../../shared/components/Badge';
+import FAB from '../../../shared/components/FAB';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { dashboardService, complaintService } from '../../../api/services';
+import { complaintService, jobCardService, maintenanceService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
+import { isMechanicUser, isSupervisorUser } from '../../../utils/roleAccess';
 
 /**
  * Work Dashboard Screen - Professional Incident Management
@@ -30,6 +31,14 @@ const DashboardScreen = ({ navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const mechanicUser = isMechanicUser(user);
+  const supervisorUser = isSupervisorUser(user);
+  const showMechanicDashboard = mechanicUser && !supervisorUser;
+  const alpha = (hexColor, alphaHex = '1A') => (
+    typeof hexColor === 'string' && hexColor.startsWith('#') && (hexColor.length === 7 || hexColor.length === 4)
+      ? `${hexColor}${alphaHex}`
+      : hexColor
+  );
 
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -49,26 +58,64 @@ const DashboardScreen = ({ navigation }) => {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      
-      // Fetch dashboard statistics
-      const statusResponse = await dashboardService.getDashboardStatus(dbName || 'MUTSPL_TEST');
-      
-      if (statusResponse?.Success && statusResponse?.Data) {
-        const data = statusResponse.Data;
-        
-        // Calculate combined totals
-        const totalOpen = (data.DriverComplaints?.Open || 0) + (data.LineBreakdowns?.Open || 0);
-        const totalInProgress = (data.DriverComplaints?.InProgress || 0) + (data.LineBreakdowns?.InProgress || 0);
-        const totalCompleted = (data.DriverComplaints?.Completed || 0) + (data.LineBreakdowns?.Completed || 0);
-        const total = (data.DriverComplaints?.Total || 0) + (data.LineBreakdowns?.Total || 0);
-        
+
+      if (showMechanicDashboard) {
+        const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
+        const jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
+
+        const openCount = jobCards.filter((card) => {
+          const status = String(card?.Status || '').trim().toUpperCase();
+          return status === 'O' || status === 'OPEN';
+        }).length;
+
+        const inProgressCount = jobCards.filter((card) => {
+          const status = String(card?.Status || '').trim().toUpperCase();
+          return status === 'I' || status === 'IN PROGRESS' || status === 'INPROGRESS';
+        }).length;
+
+        const completedCount = jobCards.filter((card) => {
+          const status = String(card?.Status || '').trim().toUpperCase();
+          return status === 'C' || status === 'CM' || status === 'COMPLETED';
+        }).length;
+
         setStats({
-          total,
-          open: totalOpen,
-          inProgress: totalInProgress,
-          completed: totalCompleted,
+          total: jobCards.length,
+          open: openCount,
+          inProgress: inProgressCount,
+          completed: completedCount,
         });
+
+        setRecentIncidents([]);
+        return;
       }
+
+      const companyDb = dbName || 'MUTSPL_TEST';
+      const [incidentsResponse, serviceSchedulersResponse] = await Promise.all([
+        complaintService.getIncidents(companyDb, null, null),
+        maintenanceService.getServiceSchedulers(companyDb),
+      ]);
+
+      const incidents = Array.isArray(incidentsResponse?.Data) ? incidentsResponse.Data : [];
+      const preventive = Array.isArray(serviceSchedulersResponse?.Data)
+        ? serviceSchedulersResponse.Data.map((schedulerItem) => ({
+            Status: String(schedulerItem.Active || '').toUpperCase() === 'Y' ? 'O' : 'D',
+          }))
+        : [];
+
+      const allIncidents = [...incidents, ...preventive];
+      const openCount = allIncidents.filter(item => String(item?.Status || '').trim().toUpperCase() === 'O').length;
+      const inProgressCount = allIncidents.filter(item => String(item?.Status || '').trim().toUpperCase() === 'I').length;
+      const completedCount = allIncidents.filter((item) => {
+        const status = String(item?.Status || '').trim().toUpperCase();
+        return status === 'C' || status === 'CM' || status === 'COMPLETED';
+      }).length;
+
+      setStats({
+        total: allIncidents.length,
+        open: openCount,
+        inProgress: inProgressCount,
+        completed: completedCount,
+      });
       
       // Fetch recent incidents (complaints + breakdowns)
       await fetchRecentIncidents();
@@ -99,7 +146,7 @@ const DashboardScreen = ({ navigation }) => {
         const incidents = response.Data.map(item => ({
           ...item,
           type: item.ComplaintType,
-          typeColor: item.ComplaintType === 'Breakdown' ? '#EF4444' : '#3B82F6',
+          typeColor: item.ComplaintType === 'Breakdown' ? colors.danger : colors.primary,
           // Normalize field names
           RegDate: item.IncidentDate,
           RegTime: item.IncidentTime,
@@ -186,7 +233,7 @@ const DashboardScreen = ({ navigation }) => {
         onMenuPress={() => navigation.openDrawer()}
         onNotificationPress={() => navigation.navigate('Notifications')}
         showNotifications={true}
-        useGradient={true}
+        useGradient={false}
       />
 
       <ScrollView
@@ -209,101 +256,99 @@ const DashboardScreen = ({ navigation }) => {
             {/* KPI Cards */}
             <View style={styles.kpiSection}>
               <View style={styles.sectionHeader}>
-                <Text style={[styles.sectionTitle, { color: colors.dark }]}>Performance Overview</Text>
-                <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>Real-time incident tracking</Text>
+                <Text style={[styles.sectionTitle, { color: colors.dark }]}>
+                  {showMechanicDashboard ? 'Job Cards Overview' : 'Performance Overview'}
+                </Text>
+                <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
+                  {showMechanicDashboard ? 'Real-time job card tracking' : 'Real-time incident tracking'}
+                </Text>
               </View>
               
               <View style={styles.kpiGrid}>
                 {/* Total Incidents */}
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
-                  onPress={() => navigation.navigate('Complaints')}
+                  onPress={() => {
+                    if (showMechanicDashboard) {
+                      navigation.navigate('JobCards');
+                      return;
+                    }
+                    navigation.navigate('Complaints');
+                  }}
                   activeOpacity={0.7}
                 >
                   <View style={styles.kpiHeader}>
-                    <LinearGradient
-                      colors={['#6366F1', '#4F46E5']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.kpiIconContainer}
-                    >
-                      <MaterialIcons name="assignment" size={26} color="#fff" />
-                    </LinearGradient>
+                    <View style={[styles.kpiIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
+                      <MaterialIcons name="assignment" size={26} color={colors.primary} />
+                    </View>
                   </View>
-                  <Text style={[styles.kpiValue, { color: '#6366F1' }]}>{stats.total}</Text>
-                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>Total Incidents</Text>
-                  <View style={[styles.kpiIndicator, { backgroundColor: '#6366F1' + '15' }]}>
-                    <Text style={[styles.kpiIndicatorText, { color: '#6366F1' }]}>All Time</Text>
-                  </View>
+                  <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.total}</Text>
+                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>
+                    {showMechanicDashboard ? 'Total Job Cards' : 'Total Incidents'}
+                  </Text>
                 </TouchableOpacity>
 
                 {/* Open */}
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
-                  onPress={() => navigation.navigate('Complaints', { initialFilter: 'O' })}
+                  onPress={() => {
+                    if (showMechanicDashboard) {
+                      navigation.navigate('JobCards');
+                      return;
+                    }
+                    navigation.navigate('Complaints', { initialFilter: 'O' });
+                  }}
                   activeOpacity={0.7}
                 >
                   <View style={styles.kpiHeader}>
-                    <LinearGradient
-                      colors={['#3B82F6', '#2563EB']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.kpiIconContainer}
-                    >
-                      <MaterialIcons name="inbox" size={26} color="#fff" />
-                    </LinearGradient>
+                    <View style={[styles.kpiIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
+                      <MaterialIcons name="inbox" size={26} color={colors.primary} />
+                    </View>
                   </View>
-                  <Text style={[styles.kpiValue, { color: '#3B82F6' }]}>{stats.open}</Text>
+                  <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.open}</Text>
                   <Text style={[styles.kpiLabel, { color: colors.gray }]}>Open</Text>
-                  <View style={[styles.kpiIndicator, { backgroundColor: '#3B82F6' + '15' }]}>
-                    <Text style={[styles.kpiIndicatorText, { color: '#3B82F6' }]}>Pending</Text>
-                  </View>
                 </TouchableOpacity>
 
                 {/* In Progress */}
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
-                  onPress={() => navigation.navigate('Complaints', { initialFilter: 'I' })}
+                  onPress={() => {
+                    if (showMechanicDashboard) {
+                      navigation.navigate('JobCards');
+                      return;
+                    }
+                    navigation.navigate('Complaints', { initialFilter: 'I' });
+                  }}
                   activeOpacity={0.7}
                 >
                   <View style={styles.kpiHeader}>
-                    <LinearGradient
-                      colors={['#F59E0B', '#D97706']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.kpiIconContainer}
-                    >
-                      <MaterialIcons name="sync" size={26} color="#fff" />
-                    </LinearGradient>
+                    <View style={[styles.kpiIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
+                      <MaterialIcons name="sync" size={26} color={colors.primary} />
+                    </View>
                   </View>
-                  <Text style={[styles.kpiValue, { color: '#F59E0B' }]}>{stats.inProgress}</Text>
+                  <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.inProgress}</Text>
                   <Text style={[styles.kpiLabel, { color: colors.gray }]}>In Progress</Text>
-                  <View style={[styles.kpiIndicator, { backgroundColor: '#F59E0B' + '15' }]}>
-                    <Text style={[styles.kpiIndicatorText, { color: '#F59E0B' }]}>Active</Text>
-                  </View>
                 </TouchableOpacity>
 
                 {/* Completed */}
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
-                  onPress={() => navigation.navigate('Complaints', { initialFilter: 'C' })}
+                  onPress={() => {
+                    if (showMechanicDashboard) {
+                      navigation.navigate('JobCards');
+                      return;
+                    }
+                    navigation.navigate('Complaints', { initialFilter: 'CM' });
+                  }}
                   activeOpacity={0.7}
                 >
                   <View style={styles.kpiHeader}>
-                    <LinearGradient
-                      colors={['#10B981', '#059669']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.kpiIconContainer}
-                    >
-                      <MaterialIcons name="check-circle" size={26} color="#fff" />
-                    </LinearGradient>
+                    <View style={[styles.kpiIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
+                      <MaterialIcons name="check-circle" size={26} color={colors.primary} />
+                    </View>
                   </View>
-                  <Text style={[styles.kpiValue, { color: '#10B981' }]}>{stats.completed}</Text>
+                  <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.completed}</Text>
                   <Text style={[styles.kpiLabel, { color: colors.gray }]}>Completed</Text>
-                  <View style={[styles.kpiIndicator, { backgroundColor: '#10B981' + '15' }]}>
-                    <Text style={[styles.kpiIndicatorText, { color: '#10B981' }]}>Resolved</Text>
-                  </View>
                 </TouchableOpacity>
               </View>
             </View>
@@ -316,67 +361,64 @@ const DashboardScreen = ({ navigation }) => {
               </View>
               
               <View style={styles.actionsGrid}>
-                <TouchableOpacity
-                  style={styles.actionCardWrapper}
-                  onPress={() => navigation.navigate('Complaints')}
-                  activeOpacity={0.8}
-                >
-                  <LinearGradient
-                    colors={['#3B82F6', '#2563EB']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.actionCard}
+                {!showMechanicDashboard && (
+                  <TouchableOpacity
+                    style={styles.actionCardWrapper}
+                    onPress={() => navigation.navigate('Complaints')}
+                    activeOpacity={0.8}
                   >
-                    <View style={styles.actionIconContainer}>
-                      <MaterialIcons name="assignment" size={36} color="#fff" />
+                    <View style={[styles.actionCard, { backgroundColor: colors.white, borderColor: colors.border }]}> 
+                      <View style={[styles.actionIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
+                        <MaterialIcons name="assignment" size={30} color={colors.primary} />
+                      </View>
+                      <Text style={[styles.actionLabel, { color: colors.dark }]}>Incidents</Text>
+                      <Text style={[styles.actionSubtext, { color: colors.gray }]}>View & manage</Text>
                     </View>
-                    <Text style={styles.actionLabel}>Incidents</Text>
-                    <Text style={styles.actionSubtext}>View & manage</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
+                  </TouchableOpacity>
+                )}
 
                 <TouchableOpacity
                   style={styles.actionCardWrapper}
-                  onPress={() => navigation.navigate('WorkOrders')}
-                  activeOpacity={0.8}
-                >
-                  <LinearGradient
-                    colors={['#06B6D4', '#0891B2']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.actionCard}
-                  >
-                    <View style={styles.actionIconContainer}>
-                      <MaterialIcons name="receipt-long" size={36} color="#fff" />
-                    </View>
-                    <Text style={styles.actionLabel}>Work Orders</Text>
-                    <Text style={styles.actionSubtext}>View open work list</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.actionCardWrapper, styles.actionCardWrapperSingleRow]}
                   onPress={() => navigation.navigate('JobCards')}
                   activeOpacity={0.8}
                 >
-                  <LinearGradient
-                    colors={['#8B5CF6', '#7C3AED']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.actionCard}
-                  >
-                    <View style={styles.actionIconContainer}>
-                      <MaterialIcons name="build-circle" size={36} color="#fff" />
+                  <View style={[styles.actionCard, { backgroundColor: colors.white, borderColor: colors.border }]}> 
+                    <View style={[styles.actionIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
+                      <MaterialIcons name="build-circle" size={30} color={colors.primary} />
                     </View>
-                    <Text style={styles.actionLabel}>Job Cards</Text>
-                    <Text style={styles.actionSubtext}>Track job cards</Text>
-                  </LinearGradient>
+                    <Text style={[styles.actionLabel, { color: colors.dark }]}>Job Cards</Text>
+                    <Text style={[styles.actionSubtext, { color: colors.gray }]}>Track job cards</Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.actionCardWrapper,
+                      !showMechanicDashboard && styles.actionCardWrapperSingleRow,
+                  ]}
+                  onPress={() => navigation.navigate('WorkOrders')}
+                  activeOpacity={0.8}
+                >
+                  <View style={[styles.actionCard, { backgroundColor: colors.white, borderColor: colors.border }]}> 
+                    <View style={[styles.actionIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
+                      <MaterialIcons name="receipt-long" size={30} color={colors.primary} />
+                    </View>
+                    <Text style={[styles.actionLabel, { color: colors.dark }]}>Work Orders</Text>
+                    <Text style={[styles.actionSubtext, { color: colors.gray }]}>View open work list</Text>
+                  </View>
                 </TouchableOpacity>
               </View>
             </View>
           </View>
         )}
       </ScrollView>
+
+      {supervisorUser && (
+        <FAB
+          icon="add"
+          onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
+        />
+      )}
     </View>
   );
 };
@@ -393,10 +435,9 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
     marginBottom: 4,
-    letterSpacing: 0.3,
   },
   sectionSubtitle: {
     fontSize: 13,
@@ -415,11 +456,12 @@ const styles = StyleSheet.create({
     width: '48.5%',
     padding: SPACING.md,
     borderRadius: BORDER_RADIUS.lg,
-    elevation: 3,
+    borderWidth: 1,
+    elevation: 1,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
     marginBottom: SPACING.md,
   },
   kpiHeader: {
@@ -432,21 +474,21 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.lg,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 2,
+    elevation: 0,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
   },
   kpiValue: {
-    fontSize: 28,
-    fontWeight: 'bold',
+    fontSize: 26,
+    fontWeight: '700',
     marginBottom: 4,
     marginTop: 4,
   },
   kpiLabel: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
     marginBottom: SPACING.xs,
   },
   kpiIndicator: {
@@ -460,7 +502,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
   // Actions Section
   actionsSection: {
@@ -481,39 +522,37 @@ const styles = StyleSheet.create({
   actionCard: {
     padding: SPACING.lg,
     borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 120,
-    elevation: 4,
+    elevation: 1,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
   },
   actionIconContainer: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: SPACING.sm,
   },
   actionLabel: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
     marginTop: SPACING.xs,
     textAlign: 'center',
-    letterSpacing: 0.3,
   },
   actionSubtext: {
     fontSize: 12,
-    fontWeight: '500',
-    color: 'rgba(255,255,255,0.85)',
+    fontWeight: '400',
     marginTop: 4,
     textAlign: 'center',
   },
 });
 
 export default DashboardScreen;
+

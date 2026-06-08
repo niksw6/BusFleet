@@ -7,28 +7,85 @@ import {
   TouchableOpacity,
   ScrollView,
 } from 'react-native';
-import { Text, Searchbar, Chip } from 'react-native-paper';
+import { Text, Searchbar, Chip, Menu } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 
 import { PriorityBadge } from '../../../shared/components/Badge';
 import FAB from '../../../shared/components/FAB';
+import StandardListCard from '../../../shared/components/StandardListCard';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDate, truncateText, getStatusName, getComplaintTypeBadge } from '../../../utils/helpers';
-import { complaintService } from '../../../api/services';
+import { complaintService, maintenanceService } from '../../../api/services';
+import { isSupervisorUser } from '../../../utils/roleAccess';
+
+const normalizeStatusFilter = (filter) => {
+  if (filter === 'C') return 'CM';
+  return filter || 'All';
+};
+
+const normalizeDataType = (type) => {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (!normalized) return 'all';
+  if (normalized.includes('breakdown')) return 'breakdowns';
+  if (normalized.includes('preventive')) return 'preventive';
+  if (normalized.includes('complaint')) return 'complaints';
+  if (normalized === 'all') return 'all';
+  return 'all';
+};
+
+const mapSchedulerDateTime = (lastServiceDate) => {
+  if (!lastServiceDate) {
+    return { date: '-', time: '' };
+  }
+
+  const parsedDate = new Date(lastServiceDate);
+  if (Number.isNaN(parsedDate.getTime())) {
+    const raw = String(lastServiceDate);
+    const split = raw.split(' ');
+    return {
+      date: split[0] || raw,
+      time: split.length > 1 ? split.slice(1).join(' ') : '',
+    };
+  }
+
+  const date = `${parsedDate.getMonth() + 1}/${parsedDate.getDate()}/${parsedDate.getFullYear()}`;
+  const hours = parsedDate.getHours();
+  const minutes = String(parsedDate.getMinutes()).padStart(2, '0');
+  const amPm = hours >= 12 ? 'PM' : 'AM';
+  const hour12 = hours % 12 || 12;
+  return {
+    date,
+    time: `${hour12}:${minutes} ${amPm}`,
+  };
+};
 
 const ComplaintsScreen = ({ navigation, route }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const dbName = useSelector(state => state.auth.dbName);
+  const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const supervisorUser = isSupervisorUser(user);
+  const selectedChipTextColor = colors.white || COLORS.white;
 
   const [complaints, setComplaints] = useState([]);
+  const [preventiveMaintenances, setPreventiveMaintenances] = useState([]);
   const [filteredComplaints, setFilteredComplaints] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedFilter, setSelectedFilter] = useState(route.params?.initialFilter || 'All');
-  const [dataType, setDataType] = useState(route.params?.type || 'all'); // Default to 'all'
+  const [selectedFilter, setSelectedFilter] = useState(normalizeStatusFilter(route.params?.initialFilter));
+  const [dataType, setDataType] = useState(normalizeDataType(route.params?.type));
+  const [typeMenuVisible, setTypeMenuVisible] = useState(false);
+
+  const typeOptions = [
+    { key: 'all', label: 'All Incidents' },
+    { key: 'complaints', label: 'Driver Complaints' },
+    { key: 'breakdowns', label: 'Breakdown' },
+    { key: 'preventive', label: 'Preventive Maintenance' },
+  ];
+
+  const selectedTypeLabel = typeOptions.find(option => option.key === dataType)?.label || 'All Incidents';
 
   useEffect(() => {
     fetchComplaints();
@@ -44,31 +101,36 @@ const ComplaintsScreen = ({ navigation, route }) => {
   // Update filter and type when route params change
   useEffect(() => {
     if (route.params?.initialFilter) {
-      setSelectedFilter(route.params.initialFilter);
+      setSelectedFilter(normalizeStatusFilter(route.params.initialFilter));
     }
-    if (route.params?.type) {
-      setDataType(route.params.type);
+    if (Object.prototype.hasOwnProperty.call(route.params || {}, 'type')) {
+      setDataType(normalizeDataType(route.params?.type));
     }
   }, [route.params?.initialFilter, route.params?.type]);
 
   useEffect(() => {
     filterComplaints();
-  }, [searchQuery, selectedFilter, complaints, dataType]); // Added dataType
+  }, [searchQuery, selectedFilter, complaints, preventiveMaintenances, dataType]);
 
   const fetchComplaints = async () => {
     try {
-      // Fetch all incidents (no type filter - get both complaints and breakdowns)
-      const response = await complaintService.getIncidents(
-        dbName || 'MUTSPL_TEST',
-        null, // status (fetch all, filter locally)
-        null  // type (fetch all, filter locally)
-      );
-      
-      console.log('📋 Incidents API Response:', response);
-      
-      if (response.Success && Array.isArray(response.Data)) {
+      const companyDb = dbName || 'MUTSPL_TEST';
+
+      const [incidentsResponse, serviceSchedulersResponse] = await Promise.all([
+        complaintService.getIncidents(
+          companyDb,
+          null,
+          null,
+        ),
+        maintenanceService.getServiceSchedulers(companyDb),
+      ]);
+
+      console.log('📋 Incidents API Response:', incidentsResponse);
+      console.log('🛠️ ServiceSchedulers API Response:', serviceSchedulersResponse);
+
+      if (incidentsResponse?.Success && Array.isArray(incidentsResponse.Data)) {
         // Normalize field names from GetIncidents API to match component expectations
-        const normalizedData = response.Data.map(item => ({
+        const normalizedData = incidentsResponse.Data.map(item => ({
           ...item,
           ComplaintNo: item.DocEntry,           // Map DocEntry to ComplaintNo
           ComplaintDate: item.IncidentDate,     // Map IncidentDate to ComplaintDate
@@ -76,14 +138,38 @@ const ComplaintsScreen = ({ navigation, route }) => {
           JobCardNo: item.JobCardNo || item.JobcardNo || '',
         }));
         setComplaints(normalizedData);
-      } else if (Array.isArray(response)) {
-        setComplaints(response);
+      } else if (Array.isArray(incidentsResponse)) {
+        setComplaints(incidentsResponse);
       } else {
         setComplaints([]);
+      }
+
+      if (serviceSchedulersResponse?.Success && Array.isArray(serviceSchedulersResponse.Data)) {
+        const normalizedPreventiveList = serviceSchedulersResponse.Data.map((schedulerItem, index) => {
+          const { date, time } = mapSchedulerDateTime(schedulerItem.LastSrvDt);
+          return {
+            ComplaintNo: schedulerItem.Code || schedulerItem.BusNo || `M-${index + 1}`,
+            ComplaintType: 'Preventive Maintenance',
+            ComplaintDate: date,
+            ComplaintTime: time,
+            BusNo: schedulerItem.BusNo || schedulerItem.Code || '-',
+            Priority: 'Medium',
+            Status: String(schedulerItem.Active || '').toUpperCase() === 'Y' ? 'O' : 'D',
+            JobCardNo: '',
+            Active: schedulerItem.Active,
+            LastSrvDt: schedulerItem.LastSrvDt,
+            LastSrvKM: schedulerItem.LastSrvKM,
+            _source: 'scheduler',
+          };
+        });
+        setPreventiveMaintenances(normalizedPreventiveList);
+      } else {
+        setPreventiveMaintenances([]);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
       setComplaints([]);
+      setPreventiveMaintenances([]);
     }
   };
 
@@ -94,25 +180,37 @@ const ComplaintsScreen = ({ navigation, route }) => {
   };
 
   const filterComplaints = () => {
-    let filtered = complaints;
+    let filtered = dataType === 'preventive'
+      ? [...preventiveMaintenances]
+      : [...complaints, ...preventiveMaintenances];
 
     // Filter by type (breakdowns or complaints)
     if (dataType === 'breakdowns') {
       filtered = filtered.filter(c => c.ComplaintType === 'Breakdown');
+    } else if (dataType === 'preventive') {
+      filtered = filtered.filter(c => String(c.ComplaintType || '').toLowerCase().includes('preventive'));
     } else if (dataType === 'complaints') {
-      filtered = filtered.filter(c => c.ComplaintType === 'Driver Complaints');
+      filtered = filtered.filter(c => {
+        const complaintType = String(c.ComplaintType || '').toLowerCase();
+        return complaintType === 'driver complaints' || complaintType.includes('driver complaint');
+      });
     }
     // If dataType is 'all' or unset, show everything
 
     // Filter by status
     if (selectedFilter !== 'All') {
-      filtered = filtered.filter(c => c.Status === selectedFilter);
+      if (selectedFilter === 'CM') {
+        filtered = filtered.filter(c => c.Status === 'CM' || c.Status === 'C');
+      } else {
+        filtered = filtered.filter(c => c.Status === selectedFilter);
+      }
     }
 
     // Filter by search query
     if (searchQuery) {
       filtered = filtered.filter(c =>
         c.BusNo?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        String(c.ComplaintNo || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
         c.ComplaintType?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         c.Priority?.toLowerCase().includes(searchQuery.toLowerCase())
       );
@@ -121,20 +219,14 @@ const ComplaintsScreen = ({ navigation, route }) => {
     setFilteredComplaints(filtered);
   };
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'O': return '#0070F2'; // Blue - Open
-      case 'I': return '#FF9500'; // Orange - In Progress
-      case 'C': return '#2B7D2B'; // Green - Completed
-      case 'CM': return '#2B7D2B'; // Green - Completed
-      case 'D': return '#BB0000'; // Red - Declined
-      default: return '#6A6D70'; // Gray
-    }
-  };
+  const getStatusColor = () => colors.primary;
+
+  const getPriorityColor = () => colors.primary;
 
   const getIncidentTypeCode = (complaintType) => {
     const value = String(complaintType || '').toLowerCase();
     if (value.includes('breakdown')) return 'B';
+    if (value.includes('preventive')) return 'M';
     if (value.includes('driver')) return 'D';
     return 'D';
   };
@@ -144,18 +236,24 @@ const ComplaintsScreen = ({ navigation, route }) => {
     const incidentTypeCode = getIncidentTypeCode(item.ComplaintType);
     
     return (
-      <TouchableOpacity
-        style={[styles.card, { backgroundColor: colors.white, borderLeftColor: typeBadge.color, borderLeftWidth: 4 }]}
-        onPress={() => navigation.navigate('ComplaintDetail', { 
-          complaintNo: item.ComplaintNo, 
-          dbName: dbName || 'MUTSPL_TEST',
-          complaintType: item.ComplaintType,
-          jobCardNo: item.JobCardNo || item.JobcardNo || ''
-        })}
-        activeOpacity={0.7}
+      <StandardListCard
+        accentColor={colors.primary}
+        onPress={() => {
+          navigation.navigate('ComplaintDetail', {
+            complaintNo: item.ComplaintNo,
+            dbName: dbName || 'MUTSPL_TEST',
+            complaintType: item.ComplaintType,
+            jobCardNo: item.JobCardNo || item.JobcardNo || '',
+            source: item._source || 'incident',
+            busNo: item.BusNo || '',
+            lastSrvDt: item.LastSrvDt || '',
+            lastSrvKM: item.LastSrvKM || 0,
+            active: item.Active || 'Y',
+          });
+        }}
       >
         <View style={styles.cardHeader}>
-          <View style={[styles.incidentTitleBar, { backgroundColor: typeBadge.color + '15' }]}>
+          <View style={styles.incidentTitleBar}>
             <Text style={[styles.incidentTitleText, { color: colors.dark }]}>
               Incident #{incidentTypeCode}-{item.ComplaintNo || '-'}
             </Text>
@@ -165,9 +263,9 @@ const ComplaintsScreen = ({ navigation, route }) => {
 
         {/* Complaint Type Badge */}
         <View style={styles.typeRow}>
-          <View style={[styles.typeBadge, { backgroundColor: typeBadge.color + '15' }]}>
-            <MaterialIcons name={typeBadge.icon} size={14} color={typeBadge.color} />
-            <Text style={[styles.typeText, { color: typeBadge.color }]}>
+          <View style={[styles.typeBadge, { backgroundColor: `${colors.primary}12` }]}>
+            <MaterialIcons name={typeBadge.icon} size={14} color={colors.primary} />
+            <Text style={[styles.typeText, { color: colors.primary }]}>
               {typeBadge.label}
             </Text>
           </View>
@@ -181,15 +279,15 @@ const ComplaintsScreen = ({ navigation, route }) => {
             </Text>
           </View>
           <View style={styles.footerBadgesRow}>
-            <View style={[styles.priorityBadge, { backgroundColor: getStatusColor(item.Status) }]}>
-              <Text style={styles.priorityText}>{getStatusName(item.Status)}</Text>
+            <View style={[styles.priorityBadge, { backgroundColor: `${getStatusColor(item.Status)}15` }]}>
+              <Text style={[styles.priorityText, { color: colors.primary }]}>{getStatusName(item.Status)}</Text>
             </View>
-            <View style={[styles.priorityBadge, styles.footerPriorityBadge, { backgroundColor: item.Priority === 'High' ? '#BB0000' : item.Priority === 'Medium' ? '#FF9500' : '#2B7D2B' }]}>
-              <Text style={styles.priorityText}>{item.Priority}</Text>
+            <View style={[styles.priorityBadge, styles.footerPriorityBadge, { backgroundColor: `${getPriorityColor(item.Priority)}15` }]}>
+              <Text style={[styles.priorityText, { color: colors.primary }]}>{item.Priority}</Text>
             </View>
           </View>
         </View>
-      </TouchableOpacity>
+      </StandardListCard>
     );
   };
 
@@ -198,7 +296,6 @@ const ComplaintsScreen = ({ navigation, route }) => {
     { key: 'O', label: 'Open' },
     { key: 'I', label: 'In Progress' },
     { key: 'CM', label: 'Completed' },
-    { key: 'D', label: 'Declined' },
   ];
 
   return (
@@ -207,70 +304,67 @@ const ComplaintsScreen = ({ navigation, route }) => {
         title="Incidents"
         subtitle={`${filteredComplaints.length} ${
           dataType === 'breakdowns' ? 'Breakdown' : 
+          dataType === 'preventive' ? 'Preventive Maintenance' :
           dataType === 'complaints' ? 'Complaint' : 
           'Incident'
         }${filteredComplaints.length !== 1 ? 's' : ''}`}
         onMenuPress={() => navigation.openDrawer()}
         onNotificationPress={() => navigation.navigate('Notifications')}
         showNotifications={true}
-        useGradient={true}
+        useGradient={false}
       />
 
       <View style={styles.searchContainer}>
         <Searchbar
-          placeholder="Search incidents..."
+          placeholder="Search by bus, incident no, type..."
           onChangeText={setSearchQuery}
           value={searchQuery}
-          style={styles.searchBar}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+          returnKeyType="search"
+          clearIcon="close"
+          onClearIconPress={() => setSearchQuery('')}
+          inputStyle={styles.searchInput}
+          style={[
+            styles.searchBar,
+            { backgroundColor: colors.white, borderColor: colors.border || COLORS.border, borderWidth: 1 },
+          ]}
         />
       </View>
 
-      {/* Type Filter - All / Complaints / Breakdowns */}
-      <View style={styles.typeFilterContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <Chip
-            selected={dataType === 'all'}
-            onPress={() => setDataType('all')}
-            style={[
-              styles.typeChip,
-              dataType === 'all' && { backgroundColor: colors.primary },
-            ]}
-            textStyle={{
-              color: dataType === 'all' ? '#fff' : colors.dark,
-              fontWeight: dataType === 'all' ? '600' : '400',
-            }}
+      {/* Type Filter Dropdown */}
+      <View style={[styles.typeFilterContainer, { borderBottomColor: colors.border || COLORS.border }]}>
+        <View style={styles.typeFilterRow}>
+          <Text style={[styles.typeFilterLabel, { color: colors.gray }]}>Type</Text>
+          <Menu
+            visible={typeMenuVisible}
+            onDismiss={() => setTypeMenuVisible(false)}
+            anchor={
+              <TouchableOpacity
+                style={[styles.typeDropdownButton, { backgroundColor: colors.white, borderColor: colors.border || COLORS.border }]}
+                onPress={() => setTypeMenuVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.typeDropdownText, { color: colors.dark }]} numberOfLines={1}>
+                  {selectedTypeLabel}
+                </Text>
+                <MaterialIcons name="arrow-drop-down" size={20} color={colors.gray} />
+              </TouchableOpacity>
+            }
           >
-            All Incidents
-          </Chip>
-          <Chip
-            selected={dataType === 'complaints'}
-            onPress={() => setDataType('complaints')}
-            style={[
-              styles.typeChip,
-              dataType === 'complaints' && { backgroundColor: '#3B82F6' },
-            ]}
-            textStyle={{
-              color: dataType === 'complaints' ? '#fff' : colors.dark,
-              fontWeight: dataType === 'complaints' ? '600' : '400',
-            }}
-          >
-            Driver Complaints
-          </Chip>
-          <Chip
-            selected={dataType === 'breakdowns'}
-            onPress={() => setDataType('breakdowns')}
-            style={[
-              styles.typeChip,
-              dataType === 'breakdowns' && { backgroundColor: '#EF4444' },
-            ]}
-            textStyle={{
-              color: dataType === 'breakdowns' ? '#fff' : colors.dark,
-              fontWeight: dataType === 'breakdowns' ? '600' : '400',
-            }}
-          >
-            Breakdowns
-          </Chip>
-        </ScrollView>
+            {typeOptions.map((option) => (
+              <Menu.Item
+                key={option.key}
+                title={option.label}
+                onPress={() => {
+                  setDataType(option.key);
+                  setTypeMenuVisible(false);
+                }}
+              />
+            ))}
+          </Menu>
+        </View>
       </View>
 
       {/* Status Filter */}
@@ -283,10 +377,11 @@ const ComplaintsScreen = ({ navigation, route }) => {
               onPress={() => setSelectedFilter(filter.key)}
               style={[
                 styles.filterChip,
+                { backgroundColor: colors.white, borderColor: colors.border || COLORS.border },
                 selectedFilter === filter.key && { backgroundColor: colors.primary },
               ]}
               textStyle={{
-                color: selectedFilter === filter.key ? '#fff' : colors.gray,
+                color: selectedFilter === filter.key ? selectedChipTextColor : colors.gray,
               }}
             >
               {filter.label}
@@ -313,16 +408,24 @@ const ComplaintsScreen = ({ navigation, route }) => {
           <View style={styles.emptyContainer}>
             <MaterialIcons name="inbox" size={64} color={colors.gray} />
             <Text style={[styles.emptyText, { color: colors.gray }]}>
-              No {dataType === 'breakdowns' ? 'breakdowns' : dataType === 'complaints' ? 'complaints' : 'incidents'} found
+              No {dataType === 'breakdowns' ? 'breakdowns' : dataType === 'preventive' ? 'preventive maintenance incidents' : dataType === 'complaints' ? 'complaints' : 'incidents'} found
             </Text>
           </View>
         }
       />
 
-      <FAB
-        icon="add"
-        onPress={() => navigation.navigate('CreateIncident', { type: dataType === 'breakdowns' ? 'breakdown' : 'complaint' })}
-      />
+      {supervisorUser && (
+        <FAB
+          icon="add"
+          onPress={() => navigation.navigate('CreateIncident', {
+            type: dataType === 'breakdowns'
+              ? 'breakdown'
+              : dataType === 'preventive'
+                ? 'preventive'
+                : 'complaint',
+          })}
+        />
+      )}
     </View>
   );
 };
@@ -335,18 +438,53 @@ const styles = StyleSheet.create({
     padding: SPACING.sm,
   },
   searchBar: {
-    elevation: 2,
+    elevation: 0,
     borderRadius: 10,
+    height: 46,
+    justifyContent: 'center',
+  },
+  searchInput: {
+    fontSize: 14,
+    paddingVertical: 0,
+    textAlignVertical: 'center',
   },
   typeFilterContainer: {
     paddingHorizontal: SPACING.sm,
     paddingVertical: SPACING.xs,
     borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
+    borderBottomColor: COLORS.border,
+  },
+  typeFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  typeFilterLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  typeDropdownButton: {
+    minWidth: 200,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  typeDropdownText: {
+    fontSize: 13,
+    fontWeight: '500',
+    flex: 1,
+    marginRight: SPACING.xs,
   },
   typeChip: {
     marginRight: SPACING.xs,
     height: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
   },
   filtersContainer: {
     paddingHorizontal: SPACING.sm,
@@ -355,6 +493,10 @@ const styles = StyleSheet.create({
   },
   filterChip: {
     marginRight: SPACING.xs,
+    height: 32,
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
   },
   listContent: {
     padding: SPACING.sm,
@@ -362,13 +504,6 @@ const styles = StyleSheet.create({
   },
   card: {
     padding: SPACING.sm,
-    marginBottom: SPACING.sm,
-    borderRadius: BORDER_RADIUS.md,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.18,
-    shadowRadius: 1.0,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -382,8 +517,8 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.sm,
   },
   incidentTitleText: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
   },
   incidentSubtitleText: {
     fontSize: 12,
@@ -409,7 +544,7 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.sm,
   },
   typeText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     marginLeft: 6,
   },
@@ -436,15 +571,17 @@ const styles = StyleSheet.create({
   date: {
     fontSize: 12,
     marginLeft: 4,
+    fontWeight: '500',
   },
   priorityBadge: {
+    minHeight: 24,
     paddingHorizontal: SPACING.sm,
-    paddingVertical: 4,
     borderRadius: 12,
+    justifyContent: 'center',
   },
   priorityText: {
-    color: '#fff',
-    fontSize: 11,
+    color: COLORS.white,
+    fontSize: 10,
     fontWeight: '600',
   },
   footerBadgesRow: {
@@ -460,9 +597,11 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.xxl,
   },
   emptyText: {
-    fontSize: 16,
+    fontSize: 15,
     marginTop: SPACING.md,
+    fontWeight: '500',
   },
 });
 
 export default ComplaintsScreen;
+

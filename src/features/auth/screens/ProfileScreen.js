@@ -2,7 +2,7 @@ import React from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { Text, List, Divider, Switch } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import { logout } from '../../../store/slices/authSlice';
@@ -16,6 +16,13 @@ const ProfileScreen = ({ navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const companyName =
+    (typeof dbName === 'string' && dbName.trim()) ||
+    (typeof user?.CompanyDatabaseName === 'string' && user.CompanyDatabaseName.trim()) ||
+    (typeof user?.DBName === 'string' && user.DBName.trim()) ||
+    (typeof user?.companyName === 'string' && user.companyName.trim()) ||
+    (typeof user?.company === 'string' && user.company.trim()) ||
+    'Company not set';
 
   const handleLogout = () => {
     Alert.alert(
@@ -62,7 +69,7 @@ const ProfileScreen = ({ navigation }) => {
           <Text style={[styles.name, { color: isDarkMode ? colors.text : colors.dark }]}>{user?.name || user?.Name || user?.FirstName || 'User'}</Text>
           <Text style={[styles.email, { color: colors.textSecondary }]}>{user?.email || user?.username || ''}</Text>
           <View style={[styles.companyBadge, { backgroundColor: colors.primary + '15' }]}>
-            <Text style={[styles.company, { color: colors.primary }]}>{dbName}</Text>
+            <Text style={[styles.company, { color: colors.primary }]}>{companyName}</Text>
           </View>
         </View>
 
@@ -239,3 +246,4 @@ const styles = StyleSheet.create({
 });
 
 export default ProfileScreen;
+

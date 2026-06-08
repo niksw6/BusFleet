@@ -7,6 +7,30 @@ import { masterService } from './master.service';
  */
 export const complaintService = {
   /**
+   * Close incident (complaint/breakdown) via new API
+   * @param {string} companyDB - Company database name
+   * @param {string|number} docEntry - Incident document entry
+   * @param {'B'|'D'} formType - B for breakdown, D for driver complaint
+   * @returns {Promise} Close response
+   */
+  closeIncident: async (companyDB, docEntry, formType = 'D') => {
+    try {
+      const payload = {
+        CompanyDB: companyDB,
+        DocEntry: Number(docEntry) || docEntry,
+        FormType: formType,
+      };
+      console.log('📤 Closing incident:', JSON.stringify(payload, null, 2));
+      const response = await post('CloseIncident', payload);
+      console.log('📥 Close incident response:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('❌ Close incident error:', error);
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
    * Create a new incident (unified API for complaints and breakdowns)
    * @param {Object} incidentData - Incident details
    * @returns {Promise} Created incident response
@@ -172,18 +196,59 @@ export const complaintService = {
    * @param {string} status - New status (O, I, CM, D)
    * @returns {Promise} Update response
    */
-  updateComplaintStatus: async (companyDB, docEntry, status) => {
+  updateComplaintStatus: async (companyDB, docEntry, status, formType = 'D') => {
     try {
       const response = await post('UpdateComplaintStatus', {
         CompanyDB: companyDB,
         DocEntry: docEntry,
         Status: status,
+      }, {
+        suppressErrorLog: true,
       });
-      return response.data;
+
+      if (response?.data?.Success && (status === 'CM' || status === 'C')) {
+        try {
+          await complaintService.closeIncident(companyDB, docEntry, formType === 'B' ? 'B' : 'D');
+        } catch (closeError) {
+          console.warn('CloseIncident failed after status update:', closeError?.message || closeError);
+        }
+      }
+
+      return {
+        ...response.data,
+        Synced: true,
+      };
     } catch (error) {
-      // If API doesn't exist, return success (fallback)
-      console.warn('UpdateComplaintStatus API not available');
-      return { Success: true, Message: 'Status updated (local only)' };
+      const normalizedStatus = String(status || '').toUpperCase();
+
+      if (normalizedStatus === 'CM' || normalizedStatus === 'C') {
+        try {
+          const closeResponse = await complaintService.closeIncident(
+            companyDB,
+            docEntry,
+            formType === 'B' ? 'B' : 'D',
+          );
+
+          return {
+            ...closeResponse,
+            Synced: false,
+            ClosedByFallback: true,
+          };
+        } catch (closeError) {
+          console.warn('UpdateComplaintStatus and CloseIncident both failed:', closeError?.message || closeError);
+          return {
+            Success: false,
+            Synced: false,
+            Message: 'Unable to update incident status',
+          };
+        }
+      }
+
+      return {
+        Success: false,
+        Synced: false,
+        Message: 'UpdateComplaintStatus API not available',
+      };
     }
   },
 

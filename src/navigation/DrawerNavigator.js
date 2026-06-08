@@ -1,9 +1,9 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image } from 'react-native';
 import { createDrawerNavigator, DrawerContentScrollView } from '@react-navigation/drawer';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../components/AppIcon.js';
 import { useSelector, useDispatch } from 'react-redux';
-import { LinearGradient } from 'expo-linear-gradient';
+import LinearGradient from 'react-native-linear-gradient';
 import { Badge } from 'react-native-paper';
 
 // Feature-based imports
@@ -13,6 +13,7 @@ import { ProfileScreen } from '../features/auth';
 import { JobCardsScreen, WorkOrdersDashboardScreen } from '../features/jobCards';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { logout } from '../store/slices/authSlice';
+import { isMechanicUser, getUserRole } from '../utils/roleAccess';
 
 const Drawer = createDrawerNavigator();
 
@@ -24,14 +25,16 @@ const CustomDrawerContent = (props) => {
   const unreadCount = useSelector(state => state.notification.unreadCount);
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const mechanicUser = isMechanicUser(user);
+  const userRole = getUserRole(user);
 
-  const menuItems = [
+  const baseMenuItems = [
     { 
       name: 'Dashboard', 
       label: 'Dashboard', 
       icon: 'dashboard', 
-      color: '#3B82F6',
-      gradient: ['#3B82F6', '#2563EB']
+      color: colors.primary,
+      gradient: [colors.primary, colors.primaryDark || colors.primary]
     },
     { 
       name: 'Complaints', 
@@ -70,6 +73,9 @@ const CustomDrawerContent = (props) => {
       gradient: ['#6366F1', '#4F46E5']
     },
   ];
+  const menuItems = mechanicUser
+    ? baseMenuItems.filter(item => item.name !== 'Complaints')
+    : baseMenuItems;
 
   const handleLogout = () => {
     dispatch(logout());
@@ -93,7 +99,7 @@ const CustomDrawerContent = (props) => {
       >
         <View style={styles.avatarContainer}>
           <LinearGradient
-            colors={['#3B82F6', '#8B5CF6']}
+            colors={[colors.primary, colors.primaryDark || colors.primary]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.avatar}
@@ -102,6 +108,7 @@ const CustomDrawerContent = (props) => {
           </LinearGradient>
         </View>
         <Text style={styles.userName}>{user?.name || 'User Name'}</Text>
+        <Text style={styles.userRole}>{userRole}</Text>
         {(user?.Code || user?.code || user?.id) && (
           <Text style={styles.userCode}>ID: {user?.Code || user?.code || user?.id}</Text>
         )}
@@ -168,24 +175,11 @@ const CustomDrawerContent = (props) => {
           onPress={() => navigation.navigate('WorkflowGuide')}
           activeOpacity={0.7}
         >
-          <View style={[styles.iconContainer, { backgroundColor: '#3B82F615' }]}>
-            <MaterialIcons name="info" size={24} color="#3B82F6" />
+          <View style={[styles.iconContainer, { backgroundColor: `${colors.primary}15` }]}>
+            <MaterialIcons name="info" size={24} color={colors.primary} />
           </View>
           <Text style={[styles.menuLabel, { color: isDarkMode ? colors.text : '#475569' }]}>
             How It Works
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.settingsItem}
-          onPress={() => navigation.navigate('Profile')}
-          activeOpacity={0.7}
-        >
-          <View style={[styles.iconContainer, { backgroundColor: '#64748B15' }]}>
-            <MaterialIcons name="settings" size={24} color="#64748B" />
-          </View>
-          <Text style={[styles.menuLabel, { color: isDarkMode ? colors.text : '#475569' }]}>
-            Settings
           </Text>
         </TouchableOpacity>
 
@@ -214,7 +208,9 @@ const CustomDrawerContent = (props) => {
 
 const DrawerNavigator = () => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
+  const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const mechanicUser = isMechanicUser(user);
 
   return (
     <Drawer.Navigator
@@ -245,13 +241,15 @@ const DrawerNavigator = () => {
           headerShown: false,
         }}
       />
-      <Drawer.Screen
-        name="Complaints"
-        component={ComplaintsScreen}
-        options={{
-          headerShown: false,
-        }}
-      />
+      {!mechanicUser && (
+        <Drawer.Screen
+          name="Complaints"
+          component={ComplaintsScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+      )}
       <Drawer.Screen
         name="JobCards"
         component={JobCardsScreen}
@@ -414,3 +412,4 @@ const styles = StyleSheet.create({
 });
 
 export default DrawerNavigator;
+

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, ScrollView } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import Loader from '../../../shared/components/Loader';
@@ -219,3 +219,4 @@ const styles = StyleSheet.create({
 });
 
 export default WorkOrderApiDetailScreen;
+

@@ -9,19 +9,20 @@ import {
 } from 'react-native';
 import { Text, Button, Divider, TextInput as PaperTextInput } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { jobCardService, masterService } from '../../../api/services';
+import { complaintService, jobCardService, masterService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
+import { isMechanicUser } from '../../../utils/roleAccess';
 
 /**
  * Work Order Detail Screen
  * Mimics HeavyVehicleInspection.com work order detail view
- * Shows tabs: Mechanics, PartDetails, Details, WorkOrder
+ * Shows tabs: Mechanics, PartDetails, WorkOrder, Details
  */
 const WorkOrderDetailScreen = ({ route, navigation }) => {
   const {
@@ -39,9 +40,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const mechanicUser = isMechanicUser(user);
+  const inputBorderColor = colors.border || COLORS.border;
 
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('Details');
+  const [activeTab, setActiveTab] = useState('Mechanics');
   const [workOrder, setWorkOrder] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [parts, setParts] = useState([]);
@@ -64,11 +67,16 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [workOrderExpandedMap, setWorkOrderExpandedMap] = useState({});
 
   const tabs = [
-    'Details',
     'Mechanics',
     'PartDetails',
     'WorkOrder',
+    'Details',
   ];
+
+  const hasSubmittedWorkOrder = !loadingWorkOrderEntries && workOrderEntries.length > 0;
+  const isWorkOrderLocked = hasSubmittedWorkOrder;
+  const mechanicCount = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics.length : 0;
+  const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
 
   useEffect(() => {
     fetchWorkOrderDetails();
@@ -80,7 +88,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const fetchRelatedWorkOrders = async () => {
     try {
       setLoadingWorkOrderEntries(true);
-      const response = await jobCardService.getWorkOrders(dbName || 'MUTSPL_TEST', 'O');
+      const response = await jobCardService.getWorkOrders(dbName || 'MUTSPL_TEST', null);
       if (response?.Success && Array.isArray(response?.Data)) {
         const currentDocEntry = Number(workOrder?.DocEntry || docEntry || 0);
         const currentJobCardNo = String(workOrder?.JobCardNo || jobCardNo || '').trim();
@@ -223,17 +231,20 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const getSelectedParts = () => workOrder?.Parts || [];
 
   const updateSelectedParts = (updatedParts) => {
+    if (isWorkOrderLocked) return;
     setWorkOrder(prev => ({ ...(prev || {}), Parts: updatedParts }));
     setParts(updatedParts);
   };
 
   const updatePartField = (index, field, value) => {
+    if (isWorkOrderLocked) return;
     const updated = [...getSelectedParts()];
     updated[index] = { ...updated[index], [field]: value };
     updateSelectedParts(updated);
   };
 
   const updatePartFields = (index, fields) => {
+    if (isWorkOrderLocked) return;
     const updated = [...getSelectedParts()];
     updated[index] = { ...updated[index], ...fields };
     updateSelectedParts(updated);
@@ -356,25 +367,25 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'O': return '#0070F2'; // Blue - Open
-      case 'I': return '#FF9500'; // Orange - In Progress
-      case 'C': return '#2B7D2B'; // Green - Completed
-      case 'CM': return '#2B7D2B'; // Green - Completed
-      case 'D': return '#BB0000'; // Red - Declined
-      default: return '#6A6D70'; // Gray
+      case 'O': return colors.statusOpen || colors.primary;
+      case 'I': return colors.statusInProgress || colors.warning;
+      case 'C': return colors.statusCompleted || colors.success;
+      case 'CM': return colors.statusCompleted || colors.success;
+      case 'D': return colors.statusDeclined || colors.danger;
+      default: return colors.statusCancelled || colors.gray;
     }
   };
 
   const getPriorityColor = (priority) => {
     switch (priority) {
       case 'High':
-        return '#FF5252';
+        return colors.priorityHigh || colors.danger;
       case 'Medium':
-        return '#FFA726';
+        return colors.priorityMedium || colors.warning;
       case 'Low':
-        return '#66BB6A';
+        return colors.priorityLow || colors.success;
       default:
-        return '#6A6D70';
+        return colors.gray;
     }
   };
 
@@ -438,6 +449,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   };
 
   const openFaultSelector = (type, key) => {
+    if (isWorkOrderLocked) return;
     setFaultSelectionTarget({ type, key });
     setShowFaultModal(true);
   };
@@ -459,6 +471,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   };
 
   const toggleMechanicSelection = (mechanicName) => {
+    if (isWorkOrderLocked) return;
     const isAlreadySelected = selectedMechanics.includes(mechanicName);
 
     if (isAlreadySelected) {
@@ -477,6 +490,15 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   };
 
   const handleCreateWorkOrder = async () => {
+    if (isWorkOrderLocked) {
+      Toast.show({
+        type: 'info',
+        text1: 'Single Work Order Policy',
+        text2: 'A work order is already submitted for this job card.',
+      });
+      return;
+    }
+
     if (!workEntry.description.trim() || !workEntry.hours.trim()) {
       Toast.show({
         type: 'error',
@@ -615,6 +637,24 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         setWorkEntry({ description: '', hours: '' });
         setSelectedMechanics([]);
         await fetchRelatedWorkOrders();
+
+        if (complaintNo) {
+          const incidentFormType = String(routeComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
+          try {
+            const statusSyncResponse = await complaintService.updateComplaintStatus(
+              dbName || 'MUTSPL_TEST',
+              Number(complaintNo) || complaintNo,
+              'I',
+              incidentFormType,
+            );
+
+            if (!statusSyncResponse?.Success || !statusSyncResponse?.Synced) {
+              console.log('ℹ️ Incident status sync skipped:', statusSyncResponse?.Message || 'UpdateComplaintStatus API not available');
+            }
+          } catch (incidentStatusError) {
+            console.log('ℹ️ Incident status sync skipped:', incidentStatusError?.message || incidentStatusError);
+          }
+        }
 
         Toast.show({
           type: 'success',
@@ -797,7 +837,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         For each part, select both Fault and Warehouse code.
       </Text>
 
-      <TouchableOpacity onPress={() => setShowPartsModal(true)} activeOpacity={0.7}>
+      <TouchableOpacity
+        onPress={() => {
+          if (!isWorkOrderLocked) setShowPartsModal(true);
+        }}
+        activeOpacity={isWorkOrderLocked ? 1 : 0.7}
+      >
         <View pointerEvents="none">
           <PaperTextInput
             label="Select Spare Parts"
@@ -827,6 +872,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                   <Text style={[styles.partCode, { color: colors.gray }]}>Code: {part.ItemCode || '-'}</Text>
                 </View>
                 <TouchableOpacity onPress={() => {
+                  if (isWorkOrderLocked) return;
                   const updated = getSelectedParts().filter((_, i) => i !== index);
                   updateSelectedParts(updated);
                 }}>
@@ -837,8 +883,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               <View style={styles.partFieldRow}>
                 <TouchableOpacity
                   style={styles.partFieldFull}
-                  onPress={() => openFaultSelector('part', index)}
-                  activeOpacity={0.7}
+                  onPress={() => {
+                    if (!isWorkOrderLocked) openFaultSelector('part', index);
+                  }}
+                  activeOpacity={isWorkOrderLocked ? 1 : 0.7}
                 >
                   <View pointerEvents="none">
                     <PaperTextInput
@@ -860,15 +908,17 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                   onChangeText={(text) => updatePartField(index, 'ReqQty', parseInt(text, 10) || 0)}
                   keyboardType="numeric"
                   style={[styles.partFieldInput, styles.partFieldHalf]}
+                  editable={!isWorkOrderLocked}
                 />
 
                 <TouchableOpacity
                   style={styles.partFieldHalf}
                   onPress={() => {
+                    if (isWorkOrderLocked) return;
                     setSelectedPartIndex(index);
                     setShowWarehouseModal(true);
                   }}
-                  activeOpacity={0.7}
+                  activeOpacity={isWorkOrderLocked ? 1 : 0.7}
                 >
                   <View pointerEvents="none">
                     <PaperTextInput
@@ -902,8 +952,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           {workOrder.Mechanics.map((mechanic, index) => (
             <TouchableOpacity
               key={index}
-              activeOpacity={0.7}
-              onPress={() => toggleMechanicSelection(getMechanicName(mechanic))}
+              activeOpacity={isWorkOrderLocked ? 1 : 0.7}
+              onPress={() => {
+                if (!isWorkOrderLocked) toggleMechanicSelection(getMechanicName(mechanic));
+              }}
               style={[
                 styles.mechanicCard,
                 workOrder?.Mechanics?.length === 1 && styles.singleMechanicCard,
@@ -942,8 +994,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               </Text>
               <TouchableOpacity
                 style={styles.mappingFaultSelector}
-                onPress={() => openFaultSelector('mechanic', mechanicName)}
-                activeOpacity={0.7}
+                onPress={() => {
+                  if (!isWorkOrderLocked) openFaultSelector('mechanic', mechanicName);
+                }}
+                activeOpacity={isWorkOrderLocked ? 1 : 0.7}
               >
                 <View pointerEvents="none">
                   <PaperTextInput
@@ -978,6 +1032,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             placeholder="Describe the work performed..."
             multiline
             numberOfLines={3}
+            editable={!isWorkOrderLocked}
           />
         </View>
 
@@ -989,6 +1044,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             onChangeText={(text) => setWorkEntry({ ...workEntry, hours: text })}
             placeholder="Enter hours (e.g., 2.5)"
             keyboardType="decimal-pad"
+            editable={!isWorkOrderLocked}
           />
         </View>
 
@@ -1170,10 +1226,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             <View style={styles.infoRow}>
               <MaterialIcons name="flag" size={16} color={colors.gray} />
               <Text style={[styles.infoLabel, { color: colors.gray }]}>Priority:</Text>
-              <View style={[styles.priorityBadgeInline, { 
-                backgroundColor: workOrder?.Priority === 'High' ? '#FF5252' : 
-                               workOrder?.Priority === 'Medium' ? '#FFA726' : '#66BB6A' 
-              }]}>
+              <View style={[styles.priorityBadgeInline, { backgroundColor: getPriorityColor(workOrder?.Priority || 'Low') }]}>
                 <Text style={styles.priorityTextInline}>{workOrder?.Priority || '-'}</Text>
               </View>
             </View>
@@ -1189,8 +1242,30 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         </View>
       </View>
 
+      <View style={[styles.summaryStrip, { backgroundColor: colors.white, borderColor: inputBorderColor }]}> 
+        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
+          <Text style={[styles.summaryValue, { color: colors.dark }]}>{mechanicCount}</Text>
+          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Mechanics</Text>
+        </View>
+        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
+          <Text style={[styles.summaryValue, { color: colors.dark }]}>{partCount}</Text>
+          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Parts</Text>
+        </View>
+        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
+          <Text style={[styles.summaryValue, { color: colors.dark }]}>{workOrderEntries.length}</Text>
+          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Work Orders</Text>
+        </View>
+      </View>
+
+      {isWorkOrderLocked && (
+        <View style={[styles.lockBanner, { backgroundColor: colors.white, borderColor: inputBorderColor }]}> 
+          <MaterialIcons name="lock" size={16} color={colors.primary} />
+          <Text style={[styles.lockBannerText, { color: colors.dark }]}>One work order per job card is allowed. Editing is locked.</Text>
+        </View>
+      )}
+
       {/* Tabs */}
-      <View style={[styles.tabsContainer, { backgroundColor: colors.white }]}>
+      <View style={[styles.tabsContainer, { backgroundColor: colors.white, borderBottomColor: inputBorderColor }]}>
         {tabs.map((tab) => (
           <TouchableOpacity
             key={tab}
@@ -1220,20 +1295,20 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       <View
         style={[
           styles.bottomActionBar,
-          { backgroundColor: colors.white, borderTopColor: colors.border || '#E0E0E0' }
+          { backgroundColor: colors.white, borderTopColor: inputBorderColor }
         ]}
       >
         <Button
           mode="contained"
           onPress={handleCreateWorkOrder}
           loading={submittingWorkOrder}
-          disabled={submittingWorkOrder}
+          disabled={submittingWorkOrder || isWorkOrderLocked}
           buttonColor={colors.primary}
           style={styles.bottomActionButton}
           contentStyle={styles.bottomActionButtonContent}
           labelStyle={styles.bottomActionLabel}
         >
-          Create Work Order
+          {isWorkOrderLocked ? 'Work Order Submitted' : 'Create Work Order'}
         </Button>
       </View>
 
@@ -1241,6 +1316,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         visible={showPartsModal}
         onClose={() => setShowPartsModal(false)}
         onSelect={(value, item) => {
+          if (isWorkOrderLocked) return;
           const currentParts = getSelectedParts();
           const exists = currentParts.some(p => p.ItemCode === item.ItemCode);
           if (exists) {
@@ -1270,10 +1346,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         searchKeys={['ItemName', 'ItemCode']}
         renderItem={(item) => (
           <View>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
+            <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
               {item.ItemName || 'Unknown'}
             </Text>
-            <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+            <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
               Code: {item.ItemCode}
             </Text>
           </View>
@@ -1287,6 +1363,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           setSelectedPartIndex(null);
         }}
         onSelect={(value, item) => {
+          if (isWorkOrderLocked) return;
           const targetIndex = selectedPartIndex;
           if (targetIndex === null || targetIndex === undefined) return;
           const selectedCode = String(item?.WhsCode || value || '').trim();
@@ -1307,10 +1384,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         searchKeys={['WhsCode', 'WhsName']}
         renderItem={(item) => (
           <View>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
+            <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
               {item.WhsName || '-'}
             </Text>
-            <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+            <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
               Code: {item.WhsCode || '-'}
             </Text>
           </View>
@@ -1333,10 +1410,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         searchKeys={['FaultCode', 'FaultDesc']}
         renderItem={(item) => (
           <View>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
+            <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
               {item.FaultCode || '-'}
             </Text>
-            <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+            <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
               {item.FaultDesc || '-'}
             </Text>
           </View>
@@ -1446,6 +1523,49 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm,
   },
+  summaryStrip: {
+    marginHorizontal: SPACING.sm,
+    marginTop: SPACING.xs,
+    marginBottom: SPACING.xs,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.xs,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: SPACING.xs,
+  },
+  summaryCard: {
+    flex: 1,
+    borderRadius: BORDER_RADIUS.sm,
+    minHeight: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryValue: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  summaryLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  lockBanner: {
+    marginHorizontal: SPACING.sm,
+    marginBottom: SPACING.xs,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.sm,
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+  },
+  lockBannerText: {
+    fontSize: 12,
+    fontWeight: '500',
+    flex: 1,
+  },
   bottomActionButton: {
     width: '100%',
     borderRadius: BORDER_RADIUS.md,
@@ -1531,7 +1651,7 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: COLORS.border,
     borderRadius: BORDER_RADIUS.sm,
     padding: SPACING.sm,
     height: 40,
@@ -1542,7 +1662,7 @@ const styles = StyleSheet.create({
   },
   textArea: {
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: COLORS.border,
     borderRadius: BORDER_RADIUS.sm,
     padding: SPACING.sm,
     minHeight: 80,
@@ -1550,7 +1670,7 @@ const styles = StyleSheet.create({
   },
   picker: {
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: COLORS.border,
     borderRadius: BORDER_RADIUS.sm,
     padding: SPACING.sm,
     height: 40,
@@ -1558,7 +1678,7 @@ const styles = StyleSheet.create({
   },
   selectInput: {
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: COLORS.border,
     borderRadius: BORDER_RADIUS.sm,
     padding: SPACING.sm,
     height: 40,
@@ -1890,3 +2010,4 @@ const styles = StyleSheet.create({
 });
 
 export default WorkOrderDetailScreen;
+

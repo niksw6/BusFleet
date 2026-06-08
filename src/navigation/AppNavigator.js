@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSelector, useDispatch } from 'react-redux';
-import * as SplashScreen from 'expo-splash-screen';
+// Removed expo-splash-screen usage
 
 // Feature-based imports
 import { LoginScreen } from '../features/auth';
@@ -17,19 +17,24 @@ import WorkOrderScreen from '../screens/WorkOrderScreen';
 import WorkflowGuideScreen from '../screens/WorkflowGuideScreen';
 
 import { loginSuccess } from '../store/slices/authSlice';
+import { setUnreadCount } from '../store/slices/notificationSlice';
 import { getUserData, getDBName } from '../utils/storage';
 import { setNavigationRef } from '../api/client';
+import { dashboardService } from '../api/services';
 import { COLORS, DARK_COLORS } from '../constants/theme';
+import { isSupervisorUser } from '../utils/roleAccess';
 
 const Stack = createNativeStackNavigator();
 
-SplashScreen.preventAutoHideAsync();
+// no-op splash handling
 
 const AppNavigator = () => {
   const dispatch = useDispatch();
   const isAuthenticated = useSelector(state => state.auth.isAuthenticated);
+  const user = useSelector(state => state.auth.user);
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const supervisorUser = isSupervisorUser(user);
 
   const [appIsReady, setAppIsReady] = useState(false);
 
@@ -45,12 +50,19 @@ const AppNavigator = () => {
             dbName: dbName,
             token: null,
           }));
+
+          // Fetch notification count on session restore so badge is populated before BottomTab mounts
+          const userId = userData?.User || userData?.user || userData?.username || userData?.Code || userData?.code || userData?.Name || userData?.name || '';
+          if (userId) {
+            dashboardService.getNotificationCount(dbName, userId)
+              .then(res => { if (res?.Success) dispatch(setUnreadCount(Number(res?.Data) || 0)); })
+              .catch(() => {});
+          }
         }
       } catch (e) {
         console.warn('Error restoring session:', e);
       } finally {
         setAppIsReady(true);
-        await SplashScreen.hideAsync();
       }
     }
 
@@ -65,8 +77,15 @@ const AppNavigator = () => {
     <NavigationContainer
       ref={(ref) => setNavigationRef(ref)}
       theme={{
+        ...(isDarkMode ? DarkTheme : DefaultTheme),
         colors: {
+          ...(isDarkMode ? DarkTheme.colors : DefaultTheme.colors),
           background: isDarkMode ? colors.background : colors.light,
+          primary: colors.primary,
+          card: isDarkMode ? colors.card : colors.white,
+          text: isDarkMode ? colors.text : colors.dark,
+          border: isDarkMode ? colors.gray : colors.grayLight,
+          notification: colors.danger,
         },
       }}
     >
@@ -99,17 +118,19 @@ const AppNavigator = () => {
                 headerShown: false,
               }}
             />
-            <Stack.Screen
-              name="CreateIncident"
-              component={CreateIncidentScreen}
-              options={({ route }) => {
-                const type = route.params?.type;
-                let title = 'Create Incident';
-                if (type === 'breakdown') title = 'Report Breakdown';
-                else if (type === 'complaint') title = 'Report Incident';
-                return { title, presentation: 'modal' };
-              }}
-            />
+            {supervisorUser && (
+              <Stack.Screen
+                name="CreateIncident"
+                component={CreateIncidentScreen}
+                options={({ route }) => {
+                  const type = route.params?.type;
+                  let title = 'Create Incident';
+                  if (type === 'breakdown') title = 'Report Breakdown';
+                  else if (type === 'complaint') title = 'Report Incident';
+                  return { title, presentation: 'modal' };
+                }}
+              />
+            )}
             <Stack.Screen
               name="CreateFuelLog"
               component={CreateFuelLogScreen}
@@ -133,14 +154,16 @@ const AppNavigator = () => {
                 title: 'Incident Details',
               }}
             />
-            <Stack.Screen
-              name="CreateJobCard"
-              component={CreateJobCardScreen}
-              options={{
-                title: 'Create Job Card',
-                presentation: 'modal',
-              }}
-            />
+            {supervisorUser && (
+              <Stack.Screen
+                name="CreateJobCard"
+                component={CreateJobCardScreen}
+                options={{
+                  title: 'Create Job Card',
+                  presentation: 'modal',
+                }}
+              />
+            )}
             <Stack.Screen
               name="WorkOrder"
               component={WorkOrderScreen}

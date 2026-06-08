@@ -11,10 +11,10 @@ import { Text, TextInput, Button, Chip } from 'react-native-paper';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
-import { complaintService, jobCardService, masterService } from '../../../api/services';
+import { complaintService, jobCardService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import ModalSelector from '../../../shared/components/ModalSelector';
@@ -39,6 +39,45 @@ const jobCardValidationSchema = Yup.object().shape({
   instructions: Yup.string().notRequired(),
 });
 
+const formatToHHMM = (value, fallback = '0000') => {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.length >= 4) {
+    return digits.slice(0, 4);
+  }
+  if (digits.length > 0) {
+    return digits.padStart(4, '0');
+  }
+  return fallback;
+};
+
+const normalizeJobCardComplaintType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return 'Driver Complaints';
+
+  if (normalized === 'b' || normalized.includes('breakdown')) {
+    return 'Breakdown';
+  }
+
+  if (normalized.includes('driver complaint') || normalized === 'd' || normalized === 'complaint') {
+    return 'Driver Complaints';
+  }
+
+  if (normalized.includes('preventive')) {
+    return 'Preventive Maintenance';
+  }
+
+  if (normalized.includes('mechanical')) {
+    return 'Mechanical';
+  }
+
+  return String(value || '').trim();
+};
+
+const isJobCardSeriesNotFoundError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('qbs_jc_o') || message.includes('data qbs_jc_o not found');
+};
+
 const CreateJobCardScreen = ({ route, navigation }) => {
   const { complaintNo, busNo, depot, faults, priority, complaintType, driverName, driverCode, odometer, routeNo, breakdownPlace, dbName } = route.params;
   
@@ -53,14 +92,8 @@ const CreateJobCardScreen = ({ route, navigation }) => {
   const [formValues, setFormValues] = useState(null);
   const [mechanics, setMechanics] = useState([]);
   const [routes, setRoutes] = useState([]);
-  const [spareParts, setSpareParts] = useState([]);
   const [showMechanicModal, setShowMechanicModal] = useState(false);
-  const [showPartsModal, setShowPartsModal] = useState(false);
-  const [showPartsReceivedModal, setShowPartsReceivedModal] = useState(false);
-  const [showOperationsModal, setShowOperationsModal] = useState(false);
   const [showRouteModal, setShowRouteModal] = useState(false);
-  const [selectedPartForQty, setSelectedPartForQty] = useState(null);
-  const [selectedPartReceivedForQty, setSelectedPartReceivedForQty] = useState(null);
   const [loadingMechanics, setLoadingMechanics] = useState(true);
   const [loadingData, setLoadingData] = useState(true);
   const [tempSelectedMechanics, setTempSelectedMechanics] = useState([]);
@@ -74,15 +107,13 @@ const CreateJobCardScreen = ({ route, navigation }) => {
     try {
       setLoadingData(true);
       console.log('🔍 Fetching all data for CreateJobCard...');
-      const [mechanicsRes, routesRes, sparePartsRes] = await Promise.all([
+      const [mechanicsRes, routesRes] = await Promise.all([
         complaintService.getMechanics(dbName || 'MUTSPL_TEST'),
         complaintService.getRoutes(dbName || 'MUTSPL_TEST'),
-        masterService.getSpareParts(dbName || 'MUTSPL_TEST'),
       ]);
 
       console.log('📊 Mechanics response:', mechanicsRes);
       console.log('📊 Routes response:', routesRes);
-      console.log('📊 Spare parts response:', sparePartsRes);
 
       if (mechanicsRes.Success) {
         console.log('✅ Setting mechanics:', mechanicsRes.Data?.length || 0, 'items');
@@ -95,10 +126,6 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         }
         setRoutes(routesRes.Data || []);
       }
-      if (sparePartsRes.Success) {
-        console.log('✅ Setting spare parts:', sparePartsRes.Data?.length || 0, 'items');
-        setSpareParts(sparePartsRes.Data || []);
-      }
 
       setLoadingMechanics(false);
       setLoadingData(false);
@@ -110,7 +137,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
   };
 
   const initialValues = {
-    complaintType: complaintType || 'Mechanical',
+    complaintType: normalizeJobCardComplaintType(complaintType),
     driver: driverCode || '',
     driverName: driverName || '',
     odometer: odometer || '',
@@ -119,8 +146,6 @@ const CreateJobCardScreen = ({ route, navigation }) => {
     breakdownPlace: breakdownPlace || '',
     assignedMechanics: [],
     instructions: '',
-    parts: [],
-    partsReceived: [],
     operations: [],
   };
 
@@ -136,44 +161,53 @@ const CreateJobCardScreen = ({ route, navigation }) => {
 
       // Format current date and time
       const now = new Date();
-      const formattedDate = now.toISOString().split('T')[0];
+      const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T00:00:00`;
       const formattedHours = now.getHours().toString().padStart(2, '0');
       const formattedMinutes = now.getMinutes().toString().padStart(2, '0');
-      const formattedTime = `${formattedHours}:${formattedMinutes}`;
-      const formattedDateTime = `${formattedDate}T${formattedHours}:${formattedMinutes}:00`;
-      const jobTypeCode = getJobTypeCode(formValues.complaintType || complaintType);
+      const formattedTimeHHMM = `${formattedHours}${formattedMinutes}`;
+      const complaintTypeForApi = normalizeJobCardComplaintType(formValues.complaintType || complaintType);
+      const normalizedOperations = (formValues.operations || []).map(operation => ({
+        ...operation,
+        U_RTime: formatToHHMM(operation?.U_RTime, formattedTimeHHMM),
+      }));
+      const jobTypeCode = getJobTypeCode(complaintTypeForApi);
 
-      const jobCardData = {
+      const createJobCardPayload = (payloadComplaintType) => ({
         CompanyDB: dbName || 'MUTSPL_TEST',
-        ComplaintType: formValues.complaintType || 'Mechanical',
+        ComplaintType: payloadComplaintType,
         BusNo: busNo || '',
         Depot: depot || '',
         Driver: formValues.driverName || '',
+        DrvCode: formValues.driver || '',
+        DrvName: formValues.driverName || '',
         Description: formValues.instructions || '',
         Priority: priority || 'Medium',
         Status: 'O',
         Odometer: String(formValues.odometer || '0'),
+        Odometr: String(formValues.odometer || '0'),
         RegDate: formattedDate,
-        RegTime: formattedDateTime,
-        ComplaintTime: formattedTime,
+        RegTime: formattedTimeHHMM,
+        ComplaintTime: formattedTimeHHMM,
+        U_RTime: formattedTimeHHMM,
         RouteNo: parseInt(formValues.routeNo) || 0,
         BreakdownPlace: formValues.breakdownPlace || '',
         FormType: jobTypeCode,
         JobType: jobTypeCode,
         CmplaintNo: complaintNo || '',
+        ComplaintNo: complaintNo || '',
         Branch: '1',
         BranchNm: depot || '',
         Supervisr: user?.Code || user?.code || '',
         SprvsrNm: user?.FirstName || user?.name || '',
-        Operations: formValues.operations || [],
-        Parts: formValues.parts || [],
-        Mechanics: formValues.assignedMechanics && formValues.assignedMechanics.length > 0 
+        Operations: normalizedOperations,
+        Parts: [],
+        Mechanics: formValues.assignedMechanics && formValues.assignedMechanics.length > 0
           ? formValues.assignedMechanics.map(m => ({
               Mechanic: m.FirstName || '',
             }))
           : [],
-        PartsReceived: formValues.partsReceived || [],
-        Faults: faults && faults.length > 0 
+        PartsReceived: [],
+        Faults: faults && faults.length > 0
           ? faults.map(f => ({
               Fault: f.Fault || '',
               Dscption: f.Description || f.Dscption || f.FaultDescription || '',
@@ -181,22 +215,123 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           : [],
         ExtRmk: '',
         IntRmk: '',
-      };
+      });
 
-      console.log('💼 Creating job card:', JSON.stringify(jobCardData, null, 2));
+      const complaintTypeCandidates = [complaintTypeForApi];
+      if (jobTypeCode === 'D') {
+        ['Driver Complaints', 'Mechanical', 'Driver Complaint'].forEach((candidate) => {
+          if (!complaintTypeCandidates.includes(candidate)) {
+            complaintTypeCandidates.push(candidate);
+          }
+        });
+      }
 
-      const response = await jobCardService.createJobCard(jobCardData);
+      let response;
+      let lastCreateError;
+
+      for (let attempt = 0; attempt < complaintTypeCandidates.length; attempt += 1) {
+        const attemptComplaintType = complaintTypeCandidates[attempt];
+        const attemptPayload = createJobCardPayload(attemptComplaintType);
+
+        console.log('💼 Creating job card:', JSON.stringify(attemptPayload, null, 2));
+        console.log('🔍 ComplaintType (API):', attemptComplaintType, '| Input:', formValues.complaintType || complaintType, '| Attempt:', attempt + 1);
+
+        try {
+          response = await jobCardService.createJobCard(attemptPayload);
+          if (response?.Success) {
+            break;
+          }
+
+          const responseMessage = String(response?.Message || '');
+          if (responseMessage.toLowerCase().includes('qbs_jc_o')) {
+            throw new Error('Job card series setup missing (QBS_JC_O). Please contact backend admin.');
+          }
+
+          if (!responseMessage.toLowerCase().includes('qbs_jc_o')) {
+            break;
+          }
+
+          lastCreateError = new Error(responseMessage);
+        } catch (createError) {
+          lastCreateError = createError;
+          if (isJobCardSeriesNotFoundError(createError)) {
+            throw new Error('Job card series setup missing (QBS_JC_O). Please contact backend admin.');
+          }
+
+          if (attempt === complaintTypeCandidates.length - 1) {
+            throw createError;
+          }
+          console.warn('⚠️ Retrying CreateJobCard with fallback ComplaintType due to backend series error.');
+        }
+      }
+
+      if (!response?.Success && lastCreateError) {
+        throw lastCreateError;
+      }
       
       console.log('✅ Job card created:', response);
       
       if (response.Success) {
+        const responseData = response?.Data;
+        const createdDocEntryFromData = Number(
+          responseData?.DocEntry
+          ?? responseData?.JobCardDocEntry
+          ?? responseData,
+        );
+        const createdJobCardNo = String(
+          responseData?.JobCardNo
+          || responseData?.DocNum
+          || response?.JobCardNo
+          || response?.DocNum
+          || '',
+        ).trim();
+        const createdJobCardDocEntry = Number(
+          responseData?.DocEntry
+          || responseData?.JobCardDocEntry
+          || response?.DocEntry
+          || response?.JobCardDocEntry
+          || createdDocEntryFromData
+          || 0,
+        );
+        const incidentFormType = complaintTypeForApi === 'Breakdown' ? 'B' : 'D';
+        try {
+          const statusSyncResponse = await complaintService.updateComplaintStatus(
+            dbName || 'MUTSPL_TEST',
+            Number(complaintNo) || complaintNo,
+            'I',
+            incidentFormType,
+          );
+
+          if (statusSyncResponse?.Success && statusSyncResponse?.Synced) {
+            console.log('✅ Incident status updated to In Progress for complaint:', complaintNo);
+          } else {
+            console.log('ℹ️ Incident status sync skipped:', statusSyncResponse?.Message || 'UpdateComplaintStatus API not available');
+          }
+        } catch (statusError) {
+          console.log('ℹ️ Incident status sync skipped:', statusError?.message || statusError);
+        }
+
         Toast.show({
           type: 'success',
           text1: 'Success',
           text2: response.Message || 'Job card created successfully',
         });
+
+        navigation.navigate({
+          name: 'ComplaintDetail',
+          params: {
+            complaintNo,
+            dbName,
+            complaintType,
+            busNo,
+            jobCardNo: createdJobCardNo || undefined,
+            jobCardDocEntry: createdJobCardDocEntry > 0 ? createdJobCardDocEntry : undefined,
+          },
+          merge: true,
+        });
+
         setLoading(false);
-        navigation.goBack();
+        return;
       } else {
         Toast.show({
           type: 'error',
@@ -412,194 +547,6 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 <Text style={styles.errorText}>{errors.assignedMechanics}</Text>
               )}
 
-              {/* Parts Selection */}
-              <Text style={[styles.label, { color: colors.dark, marginTop: SPACING.md }]}>Parts</Text>
-              <TouchableOpacity onPress={() => setShowPartsModal(true)} activeOpacity={0.7}>
-                <View pointerEvents="none">
-                  <TextInput
-                    label="Select Parts"
-                    mode="outlined"
-                    value={values.parts.length > 0 ? `${values.parts.length} part(s) selected` : ''}
-                    style={styles.input}
-                    placeholder="Tap to select parts"
-                    editable={false}
-                    right={<TextInput.Icon icon="package-variant" />}
-                  />
-                </View>
-              </TouchableOpacity>
-              {values.parts.length > 0 && (
-                <View style={styles.selectedParts}>
-                  {values.parts.map((part, index) => (
-                    <View key={index} style={[styles.partCard, { backgroundColor: colors.light, borderColor: colors.gray }]}>
-                      <View style={styles.partHeader}>
-                        <Text style={[styles.partName, { color: colors.dark }]}>{part.ItemName}</Text>
-                        <TouchableOpacity onPress={() => {
-                          const updated = values.parts.filter((_, i) => i !== index);
-                          setFieldValue('parts', updated);
-                        }}>
-                          <MaterialIcons name="close" size={20} color={colors.gray} />
-                        </TouchableOpacity>
-                      </View>
-                      <Text style={[styles.partCode, { color: colors.gray }]}>Code: {part.ItemCode}</Text>
-                      <View style={styles.qtyInputsRow}>
-                        <View style={styles.qtyInput}>
-                          <Text style={[styles.qtyLabel, { color: colors.gray }]}>Req Qty</Text>
-                          <TextInput
-                            mode="outlined"
-                            value={String(part.ReqQty || '')}
-                            onChangeText={(text) => {
-                              const updated = [...values.parts];
-                              updated[index] = { ...updated[index], ReqQty: parseInt(text) || 0 };
-                              setFieldValue('parts', updated);
-                            }}
-                            keyboardType="numeric"
-                            dense
-                            style={styles.qtyField}
-                          />
-                        </View>
-                        <View style={styles.qtyInput}>
-                          <Text style={[styles.qtyLabel, { color: colors.gray }]}>Add Qty</Text>
-                          <TextInput
-                            mode="outlined"
-                            value={String(part.AddQty || '')}
-                            onChangeText={(text) => {
-                              const updated = [...values.parts];
-                              updated[index] = { ...updated[index], AddQty: parseInt(text) || 0 };
-                              setFieldValue('parts', updated);
-                            }}
-                            keyboardType="numeric"
-                            dense
-                            style={styles.qtyField}
-                          />
-                        </View>
-                        <View style={styles.qtyInput}>
-                          <Text style={[styles.qtyLabel, { color: colors.gray }]}>Iss Qty</Text>
-                          <TextInput
-                            mode="outlined"
-                            value={String(part.IssQty || '')}
-                            onChangeText={(text) => {
-                              const updated = [...values.parts];
-                              updated[index] = { ...updated[index], IssQty: parseInt(text) || 0 };
-                              setFieldValue('parts', updated);
-                            }}
-                            keyboardType="numeric"
-                            dense
-                            style={styles.qtyField}
-                          />
-                        </View>
-                      </View>
-                      <TextInput
-                        label="Warehouse"
-                        mode="outlined"
-                        value={part.Whs || ''}
-                        onChangeText={(text) => {
-                          const updated = [...values.parts];
-                          updated[index] = { ...updated[index], Whs: text };
-                          setFieldValue('parts', updated);
-                        }}
-                        dense
-                        style={[styles.input, { marginTop: 8 }]}
-                        placeholder="Enter warehouse code"
-                      />
-                    </View>
-                  ))}
-                </View>
-              )}
-
-              {/* Parts Received Selection */}
-              <Text style={[styles.label, { color: colors.dark, marginTop: SPACING.md }]}>Parts Received</Text>
-              <TouchableOpacity onPress={() => setShowPartsReceivedModal(true)} activeOpacity={0.7}>
-                <View pointerEvents="none">
-                  <TextInput
-                    label="Select Parts Received"
-                    mode="outlined"
-                    value={values.partsReceived.length > 0 ? `${values.partsReceived.length} part(s) received` : ''}
-                    style={styles.input}
-                    placeholder="Tap to select parts received"
-                    editable={false}
-                    right={<TextInput.Icon icon="package-variant-closed" />}
-                  />
-                </View>
-              </TouchableOpacity>
-              {values.partsReceived.length > 0 && (
-                <View style={styles.selectedParts}>
-                  {values.partsReceived.map((part, index) => (
-                    <View key={index} style={[styles.partCard, { backgroundColor: colors.light, borderColor: colors.gray }]}>
-                      <View style={styles.partHeader}>
-                        <Text style={[styles.partName, { color: colors.dark }]}>{part.ItemName}</Text>
-                        <TouchableOpacity onPress={() => {
-                          const updated = values.partsReceived.filter((_, i) => i !== index);
-                          setFieldValue('partsReceived', updated);
-                        }}>
-                          <MaterialIcons name="close" size={20} color={colors.gray} />
-                        </TouchableOpacity>
-                      </View>
-                      <Text style={[styles.partCode, { color: colors.gray }]}>Code: {part.ItemCode}</Text>
-                      <View style={styles.qtyInputsRow}>
-                        <View style={styles.qtyInput}>
-                          <Text style={[styles.qtyLabel, { color: colors.gray }]}>Req Qty</Text>
-                          <TextInput
-                            mode="outlined"
-                            value={String(part.ReqQty || '')}
-                            onChangeText={(text) => {
-                              const updated = [...values.partsReceived];
-                              updated[index] = { ...updated[index], ReqQty: parseInt(text) || 0 };
-                              setFieldValue('partsReceived', updated);
-                            }}
-                            keyboardType="numeric"
-                            dense
-                            style={styles.qtyField}
-                          />
-                        </View>
-                        <View style={styles.qtyInput}>
-                          <Text style={[styles.qtyLabel, { color: colors.gray }]}>Add Qty</Text>
-                          <TextInput
-                            mode="outlined"
-                            value={String(part.AddQty || '')}
-                            onChangeText={(text) => {
-                              const updated = [...values.partsReceived];
-                              updated[index] = { ...updated[index], AddQty: parseInt(text) || 0 };
-                              setFieldValue('partsReceived', updated);
-                            }}
-                            keyboardType="numeric"
-                            dense
-                            style={styles.qtyField}
-                          />
-                        </View>
-                        <View style={styles.qtyInput}>
-                          <Text style={[styles.qtyLabel, { color: colors.gray }]}>Rcvd Qty</Text>
-                          <TextInput
-                            mode="outlined"
-                            value={String(part.RcvdQty || '')}
-                            onChangeText={(text) => {
-                              const updated = [...values.partsReceived];
-                              updated[index] = { ...updated[index], RcvdQty: parseInt(text) || 0 };
-                              setFieldValue('partsReceived', updated);
-                            }}
-                            keyboardType="numeric"
-                            dense
-                            style={styles.qtyField}
-                          />
-                        </View>
-                      </View>
-                      <TextInput
-                        label="Warehouse"
-                        mode="outlined"
-                        value={part.Whs || ''}
-                        onChangeText={(text) => {
-                          const updated = [...values.partsReceived];
-                          updated[index] = { ...updated[index], Whs: text };
-                          setFieldValue('partsReceived', updated);
-                        }}
-                        dense
-                        style={[styles.input, { marginTop: 8 }]}
-                        placeholder="Enter warehouse code"
-                      />
-                    </View>
-                  ))}
-                </View>
-              )}
-
               {/* Operations (Placeholder - API not ready) */}
               <Text style={[styles.label, { color: colors.dark, marginTop: SPACING.md }]}>Operations</Text>
               <View pointerEvents="none">
@@ -732,90 +679,6 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         )}
       />
 
-      {/* Parts Selector Modal */}
-      <ModalSelector
-        visible={showPartsModal}
-        onClose={() => setShowPartsModal(false)}
-        onSelect={(value, item) => {
-          if (formikRef.current) {
-            const currentParts = formikRef.current.values.parts || [];
-            // Check if part already selected
-            const exists = currentParts.some(p => p.ItemCode === item.ItemCode);
-            if (!exists) {
-              const newPart = {
-                ItemCode: item.ItemCode,
-                ItemName: item.ItemName,
-                ReqQty: 0,
-                AddQty: 0,
-                IssQty: 0,
-                Whs: '',
-              };
-              formikRef.current.setFieldValue('parts', [...currentParts, newPart]);
-            }
-          }
-          setShowPartsModal(false);
-        }}
-        title="Select Spare Parts"
-        data={spareParts}
-        loading={loadingData}
-        searchPlaceholder="Search parts..."
-        displayKey="ItemName"
-        valueKey="ItemCode"
-        searchKeys={['ItemName', 'ItemCode']}
-        renderItem={(item) => (
-          <View>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
-              {item.ItemName || 'Unknown'}
-            </Text>
-            <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
-              Code: {item.ItemCode}
-            </Text>
-          </View>
-        )}
-      />
-
-      {/* Parts Received Selector Modal */}
-      <ModalSelector
-        visible={showPartsReceivedModal}
-        onClose={() => setShowPartsReceivedModal(false)}
-        onSelect={(value, item) => {
-          if (formikRef.current) {
-            const currentPartsReceived = formikRef.current.values.partsReceived || [];
-            // Check if part already selected
-            const exists = currentPartsReceived.some(p => p.ItemCode === item.ItemCode);
-            if (!exists) {
-              const newPart = {
-                ItemCode: item.ItemCode,
-                ItemName: item.ItemName,
-                ReqQty: 0,
-                AddQty: 0,
-                RcvdQty: 0,
-                Whs: '',
-              };
-              formikRef.current.setFieldValue('partsReceived', [...currentPartsReceived, newPart]);
-            }
-          }
-          setShowPartsReceivedModal(false);
-        }}
-        title="Select Parts Received"
-        data={spareParts}
-        loading={loadingData}
-        searchPlaceholder="Search parts..."
-        displayKey="ItemName"
-        valueKey="ItemCode"
-        searchKeys={['ItemName', 'ItemCode']}
-        renderItem={(item) => (
-          <View>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
-              {item.ItemName || 'Unknown'}
-            </Text>
-            <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
-              Code: {item.ItemCode}
-            </Text>
-          </View>
-        )}
-      />
-
       <ConfirmationModal
         visible={showConfirmation}
         onClose={() => setShowConfirmation(false)}
@@ -913,47 +776,6 @@ const styles = StyleSheet.create({
     marginRight: SPACING.xs,
     marginBottom: SPACING.xs,
   },
-  selectedParts: {
-    marginTop: SPACING.sm,
-    marginBottom: SPACING.md,
-  },
-  partCard: {
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.md,
-    borderWidth: 1,
-  },
-  partHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: SPACING.xs,
-  },
-  partName: {
-    fontSize: 16,
-    fontWeight: '600',
-    flex: 1,
-  },
-  partCode: {
-    fontSize: 13,
-    marginBottom: SPACING.md,
-  },
-  qtyInputsRow: {
-    flexDirection: 'row',
-    gap: SPACING.sm,
-    marginBottom: SPACING.xs,
-  },
-  qtyInput: {
-    flex: 1,
-  },
-  qtyLabel: {
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  qtyField: {
-    backgroundColor: 'transparent',
-    fontSize: 14,
-  },
   submitButton: {
     marginTop: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
@@ -961,3 +783,4 @@ const styles = StyleSheet.create({
 });
 
 export default CreateJobCardScreen;
+

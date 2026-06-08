@@ -1,13 +1,12 @@
 import React from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
-import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import MaterialIcons from '../../components/AppIcon.js';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 
 /**
- * Modern KPI Card Component - 2026 Design
- * Compact, mobile-optimized with gradient backgrounds
+ * KPI Card Component
+ * Compact, simple and classy flat design
  */
 const KPICard = ({ 
   title, 
@@ -21,35 +20,23 @@ const KPICard = ({
   compact = true
 }) => {
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  
-  // Modern gradient colors based on icon color
-  const getGradient = (color) => {
-    const gradients = {
-      '#0070F2': ['#0070F2', '#0052CC'],
-      '#FF9500': ['#FF9500', '#FF7A00'],
-      '#BB0000': ['#BB0000', '#990000'],
-      '#9C27B0': ['#9C27B0', '#7B1FA2'],
-      '#2B7D2B': ['#2B7D2B', '#1B5E20'],
-    };
-    return gradients[color] || [color, color];
-  };
+  const accent = iconColor || colors.primary;
+  const alpha = (hexColor, alphaHex = '14') => (
+    typeof hexColor === 'string' && hexColor.startsWith('#') && (hexColor.length === 7 || hexColor.length === 4)
+      ? `${hexColor}${alphaHex}`
+      : hexColor
+  );
 
   const cardContent = (
     <View style={[
       compact ? styles.containerCompact : styles.container,
-      { backgroundColor: colors.white },
+      { backgroundColor: colors.white, borderColor: colors.border || COLORS.border },
       styles.shadow
     ]}>
-      {/* Icon with gradient background */}
       <View style={styles.row}>
-        <LinearGradient
-          colors={getGradient(iconColor)}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.iconGradient}
-        >
-          <MaterialIcons name={icon} size={20} color="#FFFFFF" />
-        </LinearGradient>
+        <View style={[styles.iconGradient, { backgroundColor: alpha(accent, '14') }]}>
+          <MaterialIcons name={icon} size={20} color={accent} />
+        </View>
         
         <View style={styles.textSection}>
           <Text style={[styles.titleCompact, { color: colors.gray }]} numberOfLines={1}>
@@ -89,11 +76,13 @@ const styles = StyleSheet.create({
   },
   containerCompact: {
     borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
     padding: SPACING.sm,
     minHeight: 70,
   },
   container: {
     borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
     padding: SPACING.md,
     minHeight: 100,
   },
@@ -131,3 +120,4 @@ const styles = StyleSheet.create({
 });
 
 export default KPICard;
+

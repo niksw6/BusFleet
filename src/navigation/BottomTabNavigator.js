@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { MaterialIcons } from '@expo/vector-icons';
-import { useSelector } from 'react-redux';
+import MaterialIcons from '../components/AppIcon.js';
+import { useDispatch, useSelector } from 'react-redux';
 import { Badge } from 'react-native-paper';
 
 // Feature-based imports
@@ -10,13 +10,46 @@ import { DashboardScreen, NotificationsScreen } from '../features/dashboard';
 import { ComplaintsScreen } from '../features/complaints';
 import { ProfileScreen } from '../features/auth';
 import { COLORS, DARK_COLORS } from '../constants/theme';
+import { dashboardService } from '../api/services';
+import { setUnreadCount } from '../store/slices/notificationSlice';
 
 const Tab = createBottomTabNavigator();
 
 const BottomTabNavigator = () => {
+  const dispatch = useDispatch();
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const unreadCount = useSelector(state => state.notification.unreadCount);
+  const dbName = useSelector(state => state.auth.dbName);
+  const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+
+  useEffect(() => {
+    let intervalId;
+
+    const resolveUserId = () => (
+      user?.User || user?.user || user?.username || user?.Code || user?.code || user?.Name || user?.name || ''
+    );
+
+    const fetchNotificationCount = async () => {
+      try {
+        const userId = resolveUserId();
+        if (!userId) return;
+        const response = await dashboardService.getNotificationCount(dbName || 'MUTSPL_TEST', userId);
+        if (response?.Success) {
+          dispatch(setUnreadCount(Number(response?.Data) || 0));
+        }
+      } catch (error) {
+        console.error('Error fetching notification count:', error?.message || error);
+      }
+    };
+
+    fetchNotificationCount();
+    intervalId = setInterval(fetchNotificationCount, 30000);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [dispatch, dbName, user]);
 
   return (
     <Tab.Navigator
@@ -114,3 +147,4 @@ const styles = StyleSheet.create({
 });
 
 export default BottomTabNavigator;
+

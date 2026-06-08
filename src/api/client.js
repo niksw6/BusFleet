@@ -22,6 +22,14 @@ const request = async (url, options = {}) => {
     if (dbName) {
       headers['DBName'] = dbName;
     }
+
+    // Explicitly attach session cookie to every request.
+    // 'credentials: include' is unreliable on Android release builds;
+    // sending the Cookie header directly is the only reliable approach.
+    const sessionCookie = await getSessionCookie();
+    if (sessionCookie) {
+      headers['Cookie'] = sessionCookie;
+    }
     
     const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
     
@@ -65,7 +73,9 @@ const request = async (url, options = {}) => {
     }
     
     if (!response.ok) {
-      console.error(`❌ API Response Error: ${response.status}`, data);
+      if (!options.suppressErrorLog) {
+        console.error(`❌ API Response Error: ${response.status}`, data);
+      }
       throw new Error(data.Message || data.message || 'Request failed');
     }
     
@@ -75,7 +85,9 @@ const request = async (url, options = {}) => {
     
     return { data, status: response.status, ok: response.ok };
   } catch (error) {
-    console.error(`❌ API Request Failed for ${url}:`, error.message);
+    if (!options.suppressErrorLog) {
+      console.error(`❌ API Request Failed for ${url}:`, error.message);
+    }
     if (error.name === 'AbortError') {
       throw new Error('Request timeout');
     }

@@ -2,8 +2,8 @@ import React from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import MaterialIcons from '../components/AppIcon.js';
+import LinearGradient from 'react-native-linear-gradient';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 
 /**
@@ -379,3 +379,4 @@ const styles = StyleSheet.create({
 });
 
 export default WorkflowGuideScreen;
+

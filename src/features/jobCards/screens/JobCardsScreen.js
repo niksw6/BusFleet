@@ -5,17 +5,24 @@ import {
   FlatList,
   RefreshControl,
   TouchableOpacity,
+  ScrollView,
 } from 'react-native';
 import { Text, Searchbar, Chip } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 
 import ScreenHeader from '../../../components/ScreenHeader';
+import StandardListCard from '../../../shared/components/StandardListCard';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { jobCardService } from '../../../api/services';
 import { getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
 
-const JobCardsScreen = ({ navigation }) => {
+const normalizeJobCardFilter = (filter) => {
+  if (filter === 'C') return 'CM';
+  return filter || 'All';
+};
+
+const JobCardsScreen = ({ navigation, route }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const dbName = useSelector(state => state.auth.dbName);
   const user = useSelector(state => state.auth.user);
@@ -25,6 +32,7 @@ const JobCardsScreen = ({ navigation }) => {
   const [filteredJobCards, setFilteredJobCards] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedFilter, setSelectedFilter] = useState(normalizeJobCardFilter(route?.params?.initialFilter));
 
   useEffect(() => {
     fetchJobCards();
@@ -32,7 +40,13 @@ const JobCardsScreen = ({ navigation }) => {
 
   useEffect(() => {
     filterJobCards();
-  }, [searchQuery, jobCards]);
+  }, [searchQuery, selectedFilter, jobCards]);
+
+  useEffect(() => {
+    if (route?.params?.initialFilter) {
+      setSelectedFilter(normalizeJobCardFilter(route.params.initialFilter));
+    }
+  }, [route?.params?.initialFilter]);
 
   const fetchJobCards = async () => {
     try {
@@ -56,13 +70,26 @@ const JobCardsScreen = ({ navigation }) => {
   };
 
   const filterJobCards = () => {
+    let filtered = [...jobCards];
+
+    if (selectedFilter !== 'All') {
+      if (selectedFilter === 'CM') {
+        filtered = filtered.filter((card) => {
+          const status = String(card?.Status || '').trim().toUpperCase();
+          return status === 'CM' || status === 'C' || status === 'COMPLETED';
+        });
+      } else {
+        filtered = filtered.filter((card) => String(card?.Status || '').trim().toUpperCase() === selectedFilter);
+      }
+    }
+
     if (!searchQuery.trim()) {
-      setFilteredJobCards(jobCards);
+      setFilteredJobCards(filtered);
       return;
     }
 
     const query = searchQuery.toLowerCase();
-    const filtered = jobCards.filter(
+    filtered = filtered.filter(
       card =>
         formatJobCardDisplayNo(card).toLowerCase().includes(query) ||
         String(card.JobCardNo || '').toLowerCase().includes(query) ||
@@ -74,28 +101,19 @@ const JobCardsScreen = ({ navigation }) => {
     setFilteredJobCards(filtered);
   };
 
+  const filters = [
+    { key: 'All', label: 'All' },
+    { key: 'O', label: 'Open' },
+    { key: 'I', label: 'In Progress' },
+    { key: 'CM', label: 'Completed' },
+  ];
+
   const getPriorityColor = (priority) => {
-    switch (priority) {
-      case 'High':
-        return '#FF5252';
-      case 'Medium':
-        return '#FFA726';
-      case 'Low':
-        return '#66BB6A';
-      default:
-        return colors.gray;
-    }
+    return colors.primary;
   };
 
   const getStatusColor = (status) => {
-    switch (status) {
-      case 'O': return '#0070F2'; // Blue - Open
-      case 'I': return '#FF9500'; // Orange - In Progress
-      case 'C': return '#2B7D2B'; // Green - Completed
-      case 'CM': return '#2B7D2B'; // Green - Completed
-      case 'D': return '#BB0000'; // Red - Declined
-      default: return '#6A6D70'; // Gray
-    }
+    return colors.primary;
   };
 
   const getDisplayDate = (item) => {
@@ -147,8 +165,8 @@ const JobCardsScreen = ({ navigation }) => {
   };
 
   const renderJobCard = ({ item }) => (
-    <TouchableOpacity
-      style={[styles.card, { backgroundColor: colors.white }]}
+    <StandardListCard
+      accentColor={colors.primary}
       onPress={() =>
         navigation.navigate('WorkOrderDetail', {
           docEntry: item.DocEntry || item.JobCardNo,
@@ -165,7 +183,6 @@ const JobCardsScreen = ({ navigation }) => {
           dbName: dbName || 'MUTSPL_TEST',
         })
       }
-      activeOpacity={0.7}
     >
       <View style={styles.cardHeader}>
         <View style={[styles.titleFocusBar, { backgroundColor: colors.light }]}>
@@ -272,21 +289,21 @@ const JobCardsScreen = ({ navigation }) => {
         <View style={styles.footerBadgesRow}>
           {item.Status && (
             <View
-              style={[styles.priorityBadge, { backgroundColor: getStatusColor(item.Status) }]}
+              style={[styles.priorityBadge, { backgroundColor: `${getStatusColor(item.Status)}15` }]}
             >
-              <Text style={styles.priorityText}>{getStatusName(item.Status)}</Text>
+              <Text style={[styles.priorityText, { color: colors.primary }]}>{getStatusName(item.Status)}</Text>
             </View>
           )}
           {item.Priority && (
             <View
-              style={[styles.priorityBadge, styles.priorityFooterBadge, { backgroundColor: getPriorityColor(item.Priority) }]}
+              style={[styles.priorityBadge, styles.priorityFooterBadge, { backgroundColor: `${getPriorityColor(item.Priority)}15` }]}
             >
-              <Text style={styles.priorityText}>{item.Priority}</Text>
+              <Text style={[styles.priorityText, { color: colors.primary }]}>{item.Priority}</Text>
             </View>
           )}
         </View>
       </View>
-    </TouchableOpacity>
+    </StandardListCard>
   );
 
   return (
@@ -301,11 +318,43 @@ const JobCardsScreen = ({ navigation }) => {
 
       <View style={styles.searchContainer}>
         <Searchbar
-          placeholder="Search job cards..."
+          placeholder="Search by JC no, bus, incident..."
           onChangeText={setSearchQuery}
           value={searchQuery}
-          style={styles.searchBar}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+          returnKeyType="search"
+          clearIcon="close"
+          onClearIconPress={() => setSearchQuery('')}
+          inputStyle={styles.searchInput}
+          style={[
+            styles.searchBar,
+            { backgroundColor: colors.white, borderColor: colors.border || COLORS.border, borderWidth: 1 },
+          ]}
         />
+      </View>
+
+      <View style={styles.filtersContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          {filters.map((filter) => (
+            <Chip
+              key={filter.key}
+              selected={selectedFilter === filter.key}
+              onPress={() => setSelectedFilter(filter.key)}
+              style={[
+                styles.filterChip,
+                { backgroundColor: colors.white, borderColor: colors.border || COLORS.border },
+                selectedFilter === filter.key && { backgroundColor: colors.primary },
+              ]}
+              textStyle={{
+                color: selectedFilter === filter.key ? (colors.white || COLORS.white) : colors.gray,
+              }}
+            >
+              {filter.label}
+            </Chip>
+          ))}
+        </ScrollView>
       </View>
 
       <FlatList
@@ -344,16 +393,33 @@ const styles = StyleSheet.create({
   searchBar: {
     elevation: 0,
     borderRadius: BORDER_RADIUS.md,
+    height: 46,
+    justifyContent: 'center',
+  },
+  searchInput: {
+    fontSize: 14,
+    paddingVertical: 0,
+    textAlignVertical: 'center',
+  },
+  filtersContainer: {
+    paddingHorizontal: SPACING.md,
+    paddingBottom: SPACING.sm,
+  },
+  filterChip: {
+    marginRight: SPACING.xs,
+    height: 32,
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
   },
   listContent: {
     padding: SPACING.md,
     paddingTop: 0,
   },
   card: {
-    marginBottom: SPACING.md,
+    marginBottom: 0,
     borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
-    elevation: 2,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -372,8 +438,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   jobCardNo: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 15,
+    fontWeight: '600',
   },
   busNo: {
     fontSize: 12,
@@ -389,11 +455,12 @@ const styles = StyleSheet.create({
   infoText: {
     fontSize: 13,
     marginLeft: SPACING.xs,
+    fontWeight: '400',
   },
   instructions: {
-    fontSize: 13,
+    fontSize: 12,
     marginTop: SPACING.xs,
-    lineHeight: 18,
+    lineHeight: 17,
   },
   tasksContainer: {
     flexDirection: 'row',
@@ -403,6 +470,8 @@ const styles = StyleSheet.create({
   },
   taskChip: {
     height: 28,
+    borderRadius: 8,
+    justifyContent: 'center',
   },
   cardFooter: {
     flexDirection: 'row',
@@ -411,7 +480,7 @@ const styles = StyleSheet.create({
     marginTop: SPACING.sm,
     paddingTop: SPACING.sm,
     borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
+    borderTopColor: COLORS.border,
   },
   dateContainer: {
     flexDirection: 'row',
@@ -420,23 +489,24 @@ const styles = StyleSheet.create({
   date: {
     fontSize: 12,
     marginLeft: SPACING.xs,
+    fontWeight: '500',
   },
   footerBadgesRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   priorityBadge: {
+    minHeight: 24,
     paddingHorizontal: SPACING.sm,
-    paddingVertical: 4,
     borderRadius: 12,
+    justifyContent: 'center',
   },
   priorityFooterBadge: {
     marginLeft: SPACING.xs,
   },
   priorityText: {
-    color: '#fff',
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   emptyContainer: {
     alignItems: 'center',
@@ -445,8 +515,10 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     marginTop: SPACING.md,
-    fontSize: 16,
+    fontSize: 15,
+    fontWeight: '500',
   },
 });
 
 export default JobCardsScreen;
+

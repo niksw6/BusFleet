@@ -18,11 +18,21 @@ const authSlice = createSlice({
       state.error = null;
     },
     loginSuccess: (state, action) => {
+      const payload = action.payload || {};
+      const user = payload.user || {};
+      const normalizedDbName =
+        (typeof payload.dbName === 'string' && payload.dbName.trim()) ||
+        (typeof user.CompanyDatabaseName === 'string' && user.CompanyDatabaseName.trim()) ||
+        (typeof user.DBName === 'string' && user.DBName.trim()) ||
+        (typeof user.companyName === 'string' && user.companyName.trim()) ||
+        (typeof user.company === 'string' && user.company.trim()) ||
+        null;
+
       state.loading = false;
       state.isAuthenticated = true;
-      state.user = action.payload.user;
-      state.dbName = action.payload.dbName;
-      state.token = action.payload.token;
+      state.user = payload.user;
+      state.dbName = normalizedDbName;
+      state.token = payload.token;
       state.error = null;
     },
     loginFailure: (state, action) => {

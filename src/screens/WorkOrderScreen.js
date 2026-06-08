@@ -11,7 +11,7 @@ import { Text, TextInput, Button, Chip, Divider } from 'react-native-paper';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
@@ -594,3 +594,4 @@ const styles = StyleSheet.create({
 });
 
 export default WorkOrderScreen;
+

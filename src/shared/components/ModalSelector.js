@@ -8,7 +8,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { Text, TextInput, Button, Divider, ActivityIndicator } from 'react-native-paper';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../components/AppIcon.js';
 import { useSelector } from 'react-redux';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 
@@ -303,3 +303,4 @@ const styles = StyleSheet.create({
 });
 
 export default ModalSelector;
+

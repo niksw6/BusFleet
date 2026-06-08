@@ -11,15 +11,16 @@ import { Text, TextInput, Button } from 'react-native-paper';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
 import { useSelector } from 'react-redux';
-import { MaterialIcons } from '@expo/vector-icons';
+import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
-import { complaintService } from '../../../api/services';
+import { complaintService, maintenanceService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDate, formatTime } from '../../../utils/helpers';
+import { isSupervisorUser } from '../../../utils/roleAccess';
 
 /**
  * Simplified Incident Creation Screen - Matches API Fields Exactly
@@ -30,9 +31,17 @@ const validationSchema = Yup.object().shape({
   vehicleNumber: Yup.string().required('Vehicle number is required'),
   incidentType: Yup.string().required('Incident type is required'),
   incidentDate: Yup.date().required('Date is required'),
-  incidentTime: Yup.string().required('Time is required'),
+  incidentTime: Yup.string().when('incidentType', {
+    is: (val) => !isPreventiveMaintenanceType(val),
+    then: (schema) => schema.required('Time is required'),
+    otherwise: (schema) => schema,
+  }),
   odometer: Yup.string().required('Odometer reading is required'),
-  priority: Yup.string().required('Priority is required'),
+  priority: Yup.string().when('incidentType', {
+    is: (val) => !isPreventiveMaintenanceType(val),
+    then: (schema) => schema.required('Priority is required'),
+    otherwise: (schema) => schema,
+  }),
   location: Yup.string().when('incidentType', {
     is: (val) => val?.toLowerCase().includes('breakdown'),
     then: (schema) => schema.required('Location is required for breakdown'),
@@ -43,7 +52,360 @@ const validationSchema = Yup.object().shape({
     then: (schema) => schema.required('Route number is required for breakdown'),
     otherwise: (schema) => schema,
   }),
+  preventiveCategory: Yup.string().when('incidentType', {
+    is: (val) => isPreventiveMaintenanceType(val),
+    then: (schema) => schema.required('Preventive maintenance type is required'),
+    otherwise: (schema) => schema,
+  }),
+  preventiveTaskConfigs: Yup.array().when('incidentType', {
+    is: (val) => isPreventiveMaintenanceType(val),
+    then: () => Yup.array()
+      .of(
+        Yup.object().shape({
+          Task: Yup.string().required('Task is required'),
+          RepeatOnce: Yup.boolean(),
+          RepeatType: Yup.string().required('Repeat type is required'),
+          RepeatValue: Yup.number()
+            .typeError('Repeat value must be a number')
+            .integer('Repeat value must be a whole number')
+            .positive('Repeat value must be greater than 0')
+            .required('Repeat value is required'),
+          NotifyDay: Yup.number()
+            .typeError('Notify Day must be a number')
+            .integer('Notify Day must be a whole number')
+            .min(0, 'Notify Day cannot be negative'),
+          NotifyKM: Yup.number()
+            .typeError('Notify KM must be a number')
+            .integer('Notify KM must be a whole number')
+            .min(0, 'Notify KM cannot be negative'),
+        }),
+      )
+      .min(1, 'At least one task is required'),
+    otherwise: (schema) => schema,
+  }),
 });
+
+const normalizeIncidentComplaintType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return 'Driver Complaints';
+
+  if (normalized === 'b' || normalized.includes('breakdown')) {
+    return 'Breakdown';
+  }
+
+  if (
+    normalized === 'd' ||
+    normalized.includes('driver complaint') ||
+    normalized.includes('mechanical') ||
+    normalized.includes('preventive')
+  ) {
+    return 'Driver Complaints';
+  }
+
+  return 'Driver Complaints';
+};
+
+function isPreventiveMaintenanceType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized.includes('preventive');
+}
+
+const formatDateYMD = (value) => {
+  const dateObj = new Date(value);
+  return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+};
+
+const buildSchedulerTask = (taskName) => {
+  const normalizedTask = String(taskName || '').trim();
+  const lower = normalizedTask.toLowerCase();
+
+  if (lower.includes('oil')) {
+    return {
+      Task: normalizedTask || 'Oil Change',
+      RepeatType: 'Once',
+      EveryKM: 5000,
+      EveryDay: 0,
+      EveryWeek: 0,
+      EveryMonth: 0,
+      NotifyKM: 200,
+      NotifyDay: 0,
+    };
+  }
+
+  return {
+    Task: normalizedTask || 'General Checkup',
+    RepeatType: 'Repeat',
+    EveryKM: 0,
+    EveryDay: 0,
+    EveryWeek: 0,
+    EveryMonth: 3,
+    NotifyKM: 0,
+    NotifyDay: 5,
+  };
+};
+
+const getPreventiveTaskTemplates = (preventiveCategory, fallbackTask) => {
+  const category = String(preventiveCategory || '').trim();
+
+  const templates = {
+    'Schedule Service': [
+      {
+        Task: 'Oil Change',
+        RepeatType: 'Once',
+        EveryKM: 5000,
+        EveryDay: 0,
+        EveryWeek: 0,
+        EveryMonth: 0,
+        NotifyKM: 200,
+        NotifyDay: 0,
+      },
+      {
+        Task: 'General Checkup',
+        RepeatType: 'Repeat',
+        EveryKM: 0,
+        EveryDay: 0,
+        EveryWeek: 0,
+        EveryMonth: 3,
+        NotifyKM: 0,
+        NotifyDay: 5,
+      },
+    ],
+    'Daily/Weekly/Monthly Checks': [
+      {
+        Task: 'Daily Safety Check',
+        RepeatType: 'Repeat',
+        EveryKM: 0,
+        EveryDay: 1,
+        EveryWeek: 0,
+        EveryMonth: 0,
+        NotifyKM: 0,
+        NotifyDay: 0,
+      },
+      {
+        Task: 'Weekly Condition Check',
+        RepeatType: 'Repeat',
+        EveryKM: 0,
+        EveryDay: 0,
+        EveryWeek: 1,
+        EveryMonth: 0,
+        NotifyKM: 0,
+        NotifyDay: 1,
+      },
+      {
+        Task: 'Monthly Inspection Check',
+        RepeatType: 'Repeat',
+        EveryKM: 0,
+        EveryDay: 0,
+        EveryWeek: 0,
+        EveryMonth: 1,
+        NotifyKM: 0,
+        NotifyDay: 3,
+      },
+    ],
+    'BEST SNAP Check': [
+      {
+        Task: 'BEST SNAP Check',
+        RepeatType: 'Repeat',
+        EveryKM: 0,
+        EveryDay: 0,
+        EveryWeek: 0,
+        EveryMonth: 1,
+        NotifyKM: 0,
+        NotifyDay: 2,
+      },
+    ],
+    'Survey/Preventive checks/Campaigns Checks': [
+      {
+        Task: 'Survey / Preventive / Campaign Checks',
+        RepeatType: 'Repeat',
+        EveryKM: 0,
+        EveryDay: 0,
+        EveryWeek: 0,
+        EveryMonth: 1,
+        NotifyKM: 0,
+        NotifyDay: 5,
+      },
+    ],
+    'Battery maintainance': [
+      {
+        Task: 'Battery maintainance',
+        RepeatType: 'Repeat',
+        EveryKM: 0,
+        EveryDay: 0,
+        EveryWeek: 1,
+        EveryMonth: 0,
+        NotifyKM: 0,
+        NotifyDay: 2,
+      },
+    ],
+  };
+
+  const selected = templates[category];
+  if (Array.isArray(selected) && selected.length > 0) return selected;
+  return [buildSchedulerTask(fallbackTask)];
+};
+
+const toInteger = (value, defaultValue = 0) => {
+  const parsed = parseInt(String(value ?? '').trim(), 10);
+  return Number.isNaN(parsed) ? defaultValue : parsed;
+};
+
+const getEditablePreventiveTaskConfigByTask = (taskName) => {
+  const taskTemplate = buildSchedulerTask(taskName);
+
+  let repeatTypeLabel = 'Monthly';
+  let repeatValue = 1;
+
+  if ((taskTemplate.EveryKM || 0) > 0) {
+    repeatTypeLabel = 'KM';
+    repeatValue = taskTemplate.EveryKM;
+  } else if ((taskTemplate.EveryDay || 0) > 0) {
+    repeatTypeLabel = 'Daily';
+    repeatValue = taskTemplate.EveryDay;
+  } else if ((taskTemplate.EveryWeek || 0) > 0) {
+    repeatTypeLabel = 'Weekly';
+    repeatValue = taskTemplate.EveryWeek;
+  } else {
+    repeatTypeLabel = 'Monthly';
+    repeatValue = taskTemplate.EveryMonth || 1;
+  }
+
+  return {
+    Task: taskTemplate.Task || taskName || '',
+    RepeatOnce: false,
+    RepeatType: repeatTypeLabel,
+    RepeatValue: String(repeatValue),
+    NotifyDay: String(taskTemplate.NotifyDay ?? 1),
+    NotifyKM: String(taskTemplate.NotifyKM ?? 0),
+  };
+};
+
+const mergePreventiveTaskConfigs = (existingConfigs = [], selectedTaskNames = []) => {
+  return selectedTaskNames.map((taskName) => {
+    const existingTaskConfig = existingConfigs.find(
+      (taskConfig) => String(taskConfig?.Task || '').trim() === String(taskName || '').trim(),
+    );
+    return existingTaskConfig || getEditablePreventiveTaskConfigByTask(taskName);
+  });
+};
+
+const mapTaskConfigToSchedulerTask = (task) => {
+  const repeatTypeRaw = String(task?.RepeatType || 'Monthly').trim().toLowerCase();
+  const repeatValue = toInteger(task?.RepeatValue, 1);
+  const isRepeatOnce = task?.RepeatOnce === true || String(task?.RepeatOnce || '').toLowerCase() === 'true';
+  const defaultNotifyDay = repeatTypeRaw === 'km' ? 0 : 1;
+  const defaultNotifyKM = repeatTypeRaw === 'km' ? 200 : 0;
+  const notifyDay = toInteger(task?.NotifyDay, defaultNotifyDay);
+  const notifyKM = toInteger(task?.NotifyKM, defaultNotifyKM);
+
+  const isKm = repeatTypeRaw === 'km';
+  const isDaily = repeatTypeRaw === 'daily';
+  const isWeekly = repeatTypeRaw === 'weekly';
+  const isMonthly = repeatTypeRaw === 'monthly';
+  const repeatTypeCode = isRepeatOnce ? 'O' : 'R';
+
+  return {
+    Task: task.Task || '',
+    RepeatType: repeatTypeCode,
+    EveryKM: isKm ? repeatValue : 0,
+    EveryDay: isDaily ? repeatValue : 0,
+    EveryWeek: isWeekly ? repeatValue : 0,
+    EveryMonth: isMonthly ? repeatValue : 0,
+    NotifyKM: notifyKM,
+    NotifyDay: notifyDay,
+  };
+};
+
+const mapTaskConfigsToSchedulerTasks = (taskConfigs = []) => {
+  return taskConfigs.map((taskConfig) => ({
+    ...mapTaskConfigToSchedulerTask(taskConfig),
+    Task: String(taskConfig?.Task || '').trim() || 'General Checkup',
+  }));
+};
+
+const mapRepeatTypeToCode = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'o' || normalized === 'once') return 'O';
+  return 'R';
+};
+
+const normalizeSchedulerTasks = (tasks = []) => {
+  return tasks.map((task) => ({
+    ...(function buildNormalizedTask() {
+      const everyKM = toInteger(task?.EveryKM, 0);
+      const everyDay = toInteger(task?.EveryDay, 0);
+      const everyWeek = toInteger(task?.EveryWeek, 0);
+      const everyMonth = toInteger(task?.EveryMonth, 0);
+      const isKmBased = everyKM > 0;
+      const notifyKMRaw = toInteger(task?.NotifyKM, 0);
+      const notifyDayRaw = toInteger(task?.NotifyDay, 0);
+
+      return {
+        Task: String(task?.Task || '').trim() || 'General Checkup',
+        RepeatType: mapRepeatTypeToCode(task?.RepeatType),
+        EveryKM: everyKM,
+        EveryDay: everyDay,
+        EveryWeek: everyWeek,
+        EveryMonth: everyMonth,
+        NotifyKM: isKmBased && notifyKMRaw <= 0 ? 200 : notifyKMRaw,
+        NotifyDay: !isKmBased && notifyDayRaw <= 0 ? 1 : notifyDayRaw,
+      };
+    }()),
+  }));
+};
+
+const getRepeatValueLabel = (repeatType, repeatOnce = false) => {
+  const normalized = String(repeatType || '').trim().toLowerCase();
+  if (repeatOnce) {
+    if (normalized === 'km') return 'After KM';
+    if (normalized === 'daily') return 'After Day';
+    if (normalized === 'weekly') return 'After Week';
+    return 'After Month';
+  }
+
+  if (normalized === 'km') return 'Every KM';
+  if (normalized === 'daily') return 'Every Day';
+  if (normalized === 'weekly') return 'Every Week';
+  return 'Every Month';
+};
+
+const getPreventiveTaskOptionsByCategory = (preventiveCategory) => {
+  const category = String(preventiveCategory || '').trim();
+
+  const options = {
+    'Schedule Service': [
+      { Code: 'Oil Change', Name: 'Oil Change' },
+      { Code: 'General Checkup', Name: 'General Checkup' },
+    ],
+    'Daily/Weekly/Monthly Checks': [
+      { Code: 'Daily Safety Check', Name: 'Daily Safety Check' },
+      { Code: 'Weekly Condition Check', Name: 'Weekly Condition Check' },
+      { Code: 'Monthly Inspection Check', Name: 'Monthly Inspection Check' },
+    ],
+    'BEST SNAP Check': [
+      { Code: 'BEST SNAP Check', Name: 'BEST SNAP Check' },
+    ],
+    'Survey/Preventive checks/Campaigns Checks': [
+      { Code: 'Survey / Preventive / Campaign Checks', Name: 'Survey / Preventive / Campaign Checks' },
+      { Code: 'Campaign Follow-up Check', Name: 'Campaign Follow-up Check' },
+    ],
+    'Battery maintainance': [
+      { Code: 'Battery maintainance', Name: 'Battery maintainance' },
+      { Code: 'Battery Load Check', Name: 'Battery Load Check' },
+    ],
+  };
+
+  return options[category] || [];
+};
+
+const mapTaskConfigsToModalSelectedItems = (taskConfigs = []) => {
+  return (taskConfigs || [])
+    .map((taskConfig) => {
+      const taskName = String(taskConfig?.Task || '').trim();
+      return taskName ? { Code: taskName, Name: taskName } : null;
+    })
+    .filter(Boolean);
+};
 
 const CreateIncidentScreen = ({ route, navigation }) => {
   const incidentTypeParam = route.params?.type || 'complaint';
@@ -51,6 +413,10 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const dbName = useSelector(state => state.auth.dbName);
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const supervisorUser = isSupervisorUser(user);
+  const inputOutlineColor = colors.border || (isDarkMode ? colors.grayLight : '#D9DCDD');
+  const mutedSurfaceColor = isDarkMode ? colors.grayLight : colors.grayLight;
+  const accentColor = colors.primary;
 
   const [loading, setLoading] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
@@ -73,11 +439,30 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const [showPriorityModal, setShowPriorityModal] = useState(false);
   const [showRouteModal, setShowRouteModal] = useState(false);
   const [showFaultModal, setShowFaultModal] = useState(false);
+  const [showPreventiveTypeModal, setShowPreventiveTypeModal] = useState(false);
+  const [showPreventiveTaskModal, setShowPreventiveTaskModal] = useState(false);
+  const [showRepeatTypeModal, setShowRepeatTypeModal] = useState(false);
+  const [tempSelectedPreventiveTaskConfigs, setTempSelectedPreventiveTaskConfigs] = useState([]);
+  const [activePreventiveTaskIndex, setActivePreventiveTaskIndex] = useState(-1);
+
+  const preventiveMaintenanceTypes = [
+    { Code: 'Schedule Service', Name: 'Schedule Service' },
+    { Code: 'BEST SNAP Check', Name: 'BEST SNAP Check' },
+    { Code: 'Survey/Preventive checks/Campaigns Checks', Name: 'Survey/Preventive checks/Campaigns Checks' },
+    { Code: 'Battery maintainance', Name: 'Battery maintainance' },
+  ];
 
   const priorityLevels = [
     { Code: 'Low', Name: 'Low' },
     { Code: 'Medium', Name: 'Medium' },
     { Code: 'High', Name: 'High' },
+  ];
+
+  const repeatTypeOptions = [
+    { Code: 'Daily', Name: 'Daily' },
+    { Code: 'Weekly', Name: 'Weekly' },
+    { Code: 'Monthly', Name: 'Monthly' },
+    { Code: 'KM', Name: 'KM' },
   ];
 
   useEffect(() => {
@@ -142,13 +527,21 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const handleSubmit = async (values) => {
     try {
       setLoading(true);
+      const complaintTypeForApi = normalizeIncidentComplaintType(values.incidentType);
+      const isPreventiveMaintenance = isPreventiveMaintenanceType(values.incidentType);
 
       // Format date as YYYY-MM-DD (as per CreateIncidents payload contract)
-      const dateObj = new Date(values.incidentDate);
-      const formattedDate = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+      const formattedDate = formatDateYMD(values.incidentDate);
       
       // Get selected vehicle details for Depot
       const selectedBus = buses.find(b => b.BusCode === values.vehicleNumber);
+      const resolvedBusNo = String(
+        selectedBus?.BusNo
+        || selectedBus?.BusCode
+        || selectedBus?.BusRegistrationNo
+        || values.vehicleNumber
+        || ''
+      ).trim();
 
       // Prepare fault data from selected faults with their descriptions
       const faultsData = selectedFaults.length > 0 
@@ -162,7 +555,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
           }];
 
       // Check if it's a breakdown incident
-      const isBreakdown = values.incidentType?.toLowerCase().includes('breakdown');
+      const isBreakdown = complaintTypeForApi === 'Breakdown';
 
       // Parse odometer safely
       const odometerValue = parseInt(values.odometer, 10);
@@ -180,11 +573,11 @@ const CreateIncidentScreen = ({ route, navigation }) => {
       // Only RouteNo and BrkPlace are included for breakdown type.
       const incidentData = {
         CompanyDB: dbName || 'MUTSPL_TEST',
-        ComplaintType: values.incidentType,
+        ComplaintType: complaintTypeForApi,
         Supervisr: user?.UserCode || user?.Code || 'SUP001',
         SprvsrNm: user?.Name || user?.name || 'Supervisor',
         Depot: selectedBus?.AssignedDepot || selectedBus?.Depot || 'Central Depot',
-        BusNo: values.vehicleNumber,
+        BusNo: resolvedBusNo,
         DrvCode: values.driverCode || '',
         DrvName: values.driverName || '',
         Odometr: odometerFinal,
@@ -201,8 +594,51 @@ const CreateIncidentScreen = ({ route, navigation }) => {
         } : {}),
       };
 
+      if (supervisorUser && isPreventiveMaintenance) {
+        const editableTaskConfigs = Array.isArray(values.preventiveTaskConfigs)
+          ? values.preventiveTaskConfigs
+          : [];
+
+        const schedulerTasks = editableTaskConfigs.length > 0
+          ? mapTaskConfigsToSchedulerTasks(editableTaskConfigs)
+          : getPreventiveTaskTemplates(values.preventiveCategory, values.incidentType);
+
+        const normalizedSchedulerTasks = normalizeSchedulerTasks(schedulerTasks);
+        const schedulerDateTime = `${formattedDate}T00:00:00`;
+
+        const schedulerPayload = {
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          BusNo: resolvedBusNo,
+          LastSrvKM: odometerFinal,
+          LastSrvDt: schedulerDateTime,
+          Tasks: normalizedSchedulerTasks,
+        };
+
+        console.log('📤 Sending preventive scheduler payload:', JSON.stringify(schedulerPayload, null, 2));
+        const schedulerResponse = await maintenanceService.createServiceScheduler(schedulerPayload);
+
+        if (!schedulerResponse?.Success) {
+          throw new Error(schedulerResponse?.Message || 'Failed to create service scheduler');
+        }
+
+        const preventiveCategoryLabel = values.preventiveCategory || 'Preventive maintenance';
+        const schedulerSuccessMessage = String(schedulerResponse?.Message || '').trim();
+
+        Toast.show({
+          type: 'success',
+          text1: 'Success',
+          text2: schedulerSuccessMessage
+            ? `${schedulerSuccessMessage} (${preventiveCategoryLabel})`
+            : `${preventiveCategoryLabel} schedule created successfully`,
+        });
+
+        navigation.goBack();
+        return;
+      }
+
       console.log('📤 Sending incident data:', JSON.stringify(incidentData, null, 2));
       console.log('🔍 Incident Type:', isBreakdown ? 'Breakdown' : 'Driver Complaint');
+      console.log('🔍 ComplaintType (API):', complaintTypeForApi, '| Selected:', values.incidentType);
       console.log('🔍 Date format:', formattedDate);
       console.log('🔍 Time format:', formattedTime);
       console.log('🔍 Odometer values - Original:', values.odometer, 'Parsed:', odometerFinal);
@@ -244,6 +680,8 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     location: '',
     routeNo: '',
     routeName: '',
+    preventiveCategory: '',
+    preventiveTaskConfigs: [],
   };
 
   if (loadingData) {
@@ -280,7 +718,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                         style={styles.input}
                         placeholder="Select vehicle"
                         right={<TextInput.Icon icon="magnify" />}
-                        outlineColor="#D0D0D0"
+                        outlineColor={inputOutlineColor}
                       />
                     </View>
                   </TouchableOpacity>
@@ -303,7 +741,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                         style={styles.input}
                         placeholder="Select incident type"
                         right={<TextInput.Icon icon="chevron-down" />}
-                        outlineColor="#D0D0D0"
+                        outlineColor={inputOutlineColor}
                       />
                     </View>
                   </TouchableOpacity>
@@ -327,7 +765,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                           style={styles.input}
                           placeholder="Select route"
                           right={<TextInput.Icon icon="magnify" />}
-                          outlineColor="#D0D0D0"
+                          outlineColor={inputOutlineColor}
                         />
                       </View>
                     </TouchableOpacity>
@@ -351,7 +789,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                       error={errors.location && touched.location}
                       style={styles.input}
                       placeholder="Enter breakdown location"
-                      outlineColor="#D0D0D0"
+                      outlineColor={inputOutlineColor}
                     />
                     {errors.location && touched.location && (
                       <Text style={styles.errorText}>{errors.location}</Text>
@@ -359,27 +797,212 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                   </View>
                 )}
 
+                {/* Conditional: Preventive Maintenance Type */}
+                {isPreventiveMaintenanceType(values.incidentType) && (
+                  <View style={styles.formGroup}>
+                    <Text style={[styles.label, { color: colors.dark }]}>
+                      <Text style={styles.required}>* </Text>Preventive Maintenance Type:
+                    </Text>
+                    <TouchableOpacity onPress={() => setShowPreventiveTypeModal(true)}>
+                      <View pointerEvents="none">
+                        <TextInput
+                          mode="outlined"
+                          value={values.preventiveCategory}
+                          error={errors.preventiveCategory && touched.preventiveCategory}
+                          style={styles.input}
+                          placeholder="Select preventive maintenance type"
+                          right={<TextInput.Icon icon="chevron-down" />}
+                          outlineColor={inputOutlineColor}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                    {errors.preventiveCategory && touched.preventiveCategory && (
+                      <Text style={styles.errorText}>{errors.preventiveCategory}</Text>
+                    )}
+                  </View>
+                )}
+
+                {/* Conditional: Preventive Task Configuration (Supervisor only) */}
+                {supervisorUser && isPreventiveMaintenanceType(values.incidentType) && values.preventiveCategory ? (
+                  <View style={styles.formGroup}>
+                    <Text style={[styles.label, { color: colors.dark }]}>Preventive Task Parameters:</Text>
+                    <Text style={[styles.label, { color: colors.dark }]}>Tasks</Text>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setTempSelectedPreventiveTaskConfigs(values.preventiveTaskConfigs || []);
+                        setShowPreventiveTaskModal(true);
+                      }}
+                    >
+                      <View pointerEvents="none" style={{ marginBottom: 8 }}>
+                        <TextInput
+                          mode="outlined"
+                          value={
+                            values.preventiveTaskConfigs?.length > 0
+                              ? `${values.preventiveTaskConfigs.length} task(s) selected`
+                              : ''
+                          }
+                          style={styles.input}
+                          placeholder="Select one or more tasks"
+                          right={<TextInput.Icon icon="chevron-down" />}
+                          outlineColor={inputOutlineColor}
+                        />
+                      </View>
+                    </TouchableOpacity>
+
+                    {typeof errors.preventiveTaskConfigs === 'string' && touched.preventiveTaskConfigs && (
+                      <Text style={styles.errorText}>{errors.preventiveTaskConfigs}</Text>
+                    )}
+
+                    {(values.preventiveTaskConfigs || []).map((taskConfig, taskIndex) => (
+                      <View
+                        key={`${taskConfig.Task}-${taskIndex}`}
+                        style={{
+                          backgroundColor: mutedSurfaceColor,
+                          padding: 12,
+                          borderRadius: 8,
+                          borderLeftWidth: 3,
+                          borderLeftColor: accentColor,
+                          marginBottom: 10,
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Text style={[styles.label, { color: colors.dark, marginBottom: 0 }]}>
+                            {taskConfig.Task || `Task ${taskIndex + 1}`}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => {
+                              const updatedTaskConfigs = [...(values.preventiveTaskConfigs || [])];
+                              updatedTaskConfigs.splice(taskIndex, 1);
+                              setFieldValue('preventiveTaskConfigs', updatedTaskConfigs);
+                              setTempSelectedPreventiveTaskConfigs(updatedTaskConfigs);
+                            }}
+                          >
+                            <MaterialIcons name="close" size={20} color={accentColor} />
+                          </TouchableOpacity>
+                        </View>
+
+                        <Text style={[styles.label, { color: colors.dark }]}>Repeat Type</Text>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setActivePreventiveTaskIndex(taskIndex);
+                            setShowRepeatTypeModal(true);
+                          }}
+                        >
+                          <View pointerEvents="none">
+                            <TextInput
+                              mode="outlined"
+                              value={taskConfig.RepeatType || ''}
+                              style={styles.input}
+                              placeholder="Select Repeat Type"
+                              right={<TextInput.Icon icon="chevron-down" />}
+                              outlineColor={inputOutlineColor}
+                            />
+                          </View>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          onPress={() => {
+                            const updatedTaskConfigs = [...(values.preventiveTaskConfigs || [])];
+                            const currentRepeatOnce = updatedTaskConfigs[taskIndex]?.RepeatOnce === true;
+                            updatedTaskConfigs[taskIndex] = {
+                              ...updatedTaskConfigs[taskIndex],
+                              RepeatOnce: !currentRepeatOnce,
+                            };
+                            setFieldValue('preventiveTaskConfigs', updatedTaskConfigs);
+                          }}
+                          style={{ flexDirection: 'row', alignItems: 'center', marginVertical: 10, alignSelf: 'flex-start' }}
+                        >
+                          <MaterialIcons
+                            name={taskConfig?.RepeatOnce ? 'check-box' : 'check-box-outline-blank'}
+                            size={22}
+                            color={taskConfig?.RepeatOnce ? accentColor : colors.gray}
+                          />
+                          <Text style={[styles.label, { color: colors.dark, marginBottom: 0, marginLeft: 8 }]}>Repeat Once</Text>
+                        </TouchableOpacity>
+
+                        <Text style={[styles.label, { color: colors.dark }]}> 
+                          {getRepeatValueLabel(taskConfig.RepeatType, taskConfig?.RepeatOnce)}
+                        </Text>
+                        <TextInput
+                          mode="outlined"
+                          value={taskConfig.RepeatValue || ''}
+                          onChangeText={(text) => {
+                            const updatedTaskConfigs = [...(values.preventiveTaskConfigs || [])];
+                            updatedTaskConfigs[taskIndex] = {
+                              ...updatedTaskConfigs[taskIndex],
+                              RepeatValue: text,
+                            };
+                            setFieldValue('preventiveTaskConfigs', updatedTaskConfigs);
+                          }}
+                          style={styles.input}
+                          placeholder={getRepeatValueLabel(taskConfig.RepeatType, taskConfig?.RepeatOnce)}
+                          keyboardType="numeric"
+                          outlineColor={inputOutlineColor}
+                        />
+
+                        <Text style={[styles.label, { color: colors.dark }]}>Notify Day</Text>
+                        <TextInput
+                          mode="outlined"
+                          value={String(taskConfig.NotifyDay ?? '')}
+                          onChangeText={(text) => {
+                            const updatedTaskConfigs = [...(values.preventiveTaskConfigs || [])];
+                            updatedTaskConfigs[taskIndex] = {
+                              ...updatedTaskConfigs[taskIndex],
+                              NotifyDay: text,
+                            };
+                            setFieldValue('preventiveTaskConfigs', updatedTaskConfigs);
+                          }}
+                          style={styles.input}
+                          placeholder="Notify Day"
+                          keyboardType="numeric"
+                          outlineColor={inputOutlineColor}
+                        />
+
+                        <Text style={[styles.label, { color: colors.dark }]}>Notify KM</Text>
+                        <TextInput
+                          mode="outlined"
+                          value={String(taskConfig.NotifyKM ?? '')}
+                          onChangeText={(text) => {
+                            const updatedTaskConfigs = [...(values.preventiveTaskConfigs || [])];
+                            updatedTaskConfigs[taskIndex] = {
+                              ...updatedTaskConfigs[taskIndex],
+                              NotifyKM: text,
+                            };
+                            setFieldValue('preventiveTaskConfigs', updatedTaskConfigs);
+                          }}
+                          style={styles.input}
+                          placeholder="Notify KM"
+                          keyboardType="numeric"
+                          outlineColor={inputOutlineColor}
+                        />
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+
                 {/* Driver */}
-                <View style={styles.formGroup}>
-                  <Text style={[styles.label, { color: colors.dark }]}>Driver (Optional):</Text>
-                  <TouchableOpacity onPress={() => setShowDriverModal(true)}>
-                    <View pointerEvents="none">
-                      <TextInput
-                        mode="outlined"
-                        value={values.driverName}
-                        style={styles.input}
-                        placeholder="Select driver"
-                        right={<TextInput.Icon icon="magnify" />}
-                        outlineColor="#D0D0D0"
-                      />
-                    </View>
-                  </TouchableOpacity>
-                </View>
+                {!isPreventiveMaintenanceType(values.incidentType) && (
+                  <View style={styles.formGroup}>
+                    <Text style={[styles.label, { color: colors.dark }]}>Driver (Optional):</Text>
+                    <TouchableOpacity onPress={() => setShowDriverModal(true)}>
+                      <View pointerEvents="none">
+                        <TextInput
+                          mode="outlined"
+                          value={values.driverName}
+                          style={styles.input}
+                          placeholder="Select driver"
+                          right={<TextInput.Icon icon="magnify" />}
+                          outlineColor={inputOutlineColor}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                )}
 
                 {/* Odometer */}
                 <View style={styles.formGroup}>
                   <Text style={[styles.label, { color: colors.dark }]}>
-                    <Text style={styles.required}>* </Text>Odometer Reading:
+                    <Text style={styles.required}>* </Text>{isPreventiveMaintenanceType(values.incidentType) ? 'Last Service KM:' : 'Odometer Reading:'}
                   </Text>
                   <TextInput
                     mode="outlined"
@@ -388,9 +1011,9 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                     onBlur={handleBlur('odometer')}
                     error={errors.odometer && touched.odometer}
                     style={styles.input}
-                    placeholder="Enter odometer reading"
+                    placeholder={isPreventiveMaintenanceType(values.incidentType) ? 'Enter last service km' : 'Enter odometer reading'}
                     keyboardType="numeric"
-                    outlineColor="#D0D0D0"
+                    outlineColor={inputOutlineColor}
                   />
                   {errors.odometer && touched.odometer && (
                     <Text style={styles.errorText}>{errors.odometer}</Text>
@@ -400,7 +1023,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                 {/* Date */}
                 <View style={styles.formGroup}>
                   <Text style={[styles.label, { color: colors.dark }]}>
-                    <Text style={styles.required}>* </Text>Incident Date:
+                    <Text style={styles.required}>* </Text>{isPreventiveMaintenanceType(values.incidentType) ? 'Last Service Date:' : 'Incident Date:'}
                   </Text>
                   <TouchableOpacity onPress={() => setShowDatePicker(true)}>
                     <View pointerEvents="none">
@@ -410,7 +1033,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                         error={errors.incidentDate && touched.incidentDate}
                         style={styles.input}
                         right={<TextInput.Icon icon="calendar" />}
-                        outlineColor="#D0D0D0"
+                        outlineColor={inputOutlineColor}
                       />
                     </View>
                   </TouchableOpacity>
@@ -420,117 +1043,123 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                 </View>
 
                 {/* Time */}
-                <View style={styles.formGroup}>
-                  <Text style={[styles.label, { color: colors.dark }]}>
-                    <Text style={styles.required}>* </Text>Incident Time:
-                  </Text>
-                  <TouchableOpacity onPress={() => setShowTimePicker(true)}>
-                    <View pointerEvents="none">
-                      <TextInput
-                        mode="outlined"
-                        value={values.incidentTime}
-                        error={errors.incidentTime && touched.incidentTime}
-                        style={styles.input}
-                        right={<TextInput.Icon icon="clock" />}
-                        outlineColor="#D0D0D0"
-                      />
-                    </View>
-                  </TouchableOpacity>
-                  {errors.incidentTime && touched.incidentTime && (
-                    <Text style={styles.errorText}>{errors.incidentTime}</Text>
-                  )}
-                </View>
+                {!isPreventiveMaintenanceType(values.incidentType) && (
+                  <View style={styles.formGroup}>
+                    <Text style={[styles.label, { color: colors.dark }]}>
+                      <Text style={styles.required}>* </Text>Incident Time:
+                    </Text>
+                    <TouchableOpacity onPress={() => setShowTimePicker(true)}>
+                      <View pointerEvents="none">
+                        <TextInput
+                          mode="outlined"
+                          value={values.incidentTime}
+                          error={errors.incidentTime && touched.incidentTime}
+                          style={styles.input}
+                          right={<TextInput.Icon icon="clock" />}
+                          outlineColor={inputOutlineColor}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                    {errors.incidentTime && touched.incidentTime && (
+                      <Text style={styles.errorText}>{errors.incidentTime}</Text>
+                    )}
+                  </View>
+                )}
 
                 {/* Priority */}
-                <View style={styles.formGroup}>
-                  <Text style={[styles.label, { color: colors.dark }]}>
-                    <Text style={styles.required}>* </Text>Priority:
-                  </Text>
-                  <TouchableOpacity onPress={() => setShowPriorityModal(true)}>
-                    <View pointerEvents="none">
-                      <TextInput
-                        mode="outlined"
-                        value={values.priority}
-                        error={errors.priority && touched.priority}
-                        style={styles.input}
-                        placeholder="Select priority"
-                        right={<TextInput.Icon icon="chevron-down" />}
-                        outlineColor="#D0D0D0"
-                      />
-                    </View>
-                  </TouchableOpacity>
-                  {errors.priority && touched.priority && (
-                    <Text style={styles.errorText}>{errors.priority}</Text>
-                  )}
-                </View>
+                {!isPreventiveMaintenanceType(values.incidentType) && (
+                  <View style={styles.formGroup}>
+                    <Text style={[styles.label, { color: colors.dark }]}>
+                      <Text style={styles.required}>* </Text>Priority:
+                    </Text>
+                    <TouchableOpacity onPress={() => setShowPriorityModal(true)}>
+                      <View pointerEvents="none">
+                        <TextInput
+                          mode="outlined"
+                          value={values.priority}
+                          error={errors.priority && touched.priority}
+                          style={styles.input}
+                          placeholder="Select priority"
+                          right={<TextInput.Icon icon="chevron-down" />}
+                          outlineColor={inputOutlineColor}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                    {errors.priority && touched.priority && (
+                      <Text style={styles.errorText}>{errors.priority}</Text>
+                    )}
+                  </View>
+                )}
 
                 {/* Faults (Multi-select) */}
-                <View style={styles.formGroup}>
-                  <Text style={[styles.label, { color: colors.dark }]}>Faults (Optional):</Text>
-                  <TouchableOpacity onPress={() => {
-                    // Initialize temp selected faults from current selection
-                    setTempSelectedFaults(selectedFaults);
-                    setShowFaultModal(true);
-                  }}>
-                    <View pointerEvents="none">
-                      <TextInput
-                        mode="outlined"
-                        value={selectedFaults.length > 0 ? `${selectedFaults.length} fault(s) selected` : ''}
-                        style={styles.input}
-                        placeholder="Select faults"
-                        right={<TextInput.Icon icon="plus" />}
-                        outlineColor="#D0D0D0"
-                      />
-                    </View>
-                  </TouchableOpacity>
-                  {selectedFaults.length > 0 && (
-                    <View style={{ marginTop: 8, gap: 12 }}>
-                      {selectedFaults.map((fault, index) => (
-                        <View key={index} style={{ 
-                          backgroundColor: '#F5F5F5',
-                          padding: 12,
-                          borderRadius: 8,
-                          borderLeftWidth: 3,
-                          borderLeftColor: '#1976D2'
-                        }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                            <Text style={{ fontSize: 14, color: '#1976D2', fontWeight: '600', flex: 1 }}>
-                              {fault.Fault}
-                            </Text>
-                            <TouchableOpacity onPress={() => {
-                              setSelectedFaults(selectedFaults.filter((_, i) => i !== index));
-                            }}>
-                              <MaterialIcons name="close" size={20} color="#1976D2" />
-                            </TouchableOpacity>
+                {!isPreventiveMaintenanceType(values.incidentType) && (
+                  <View style={styles.formGroup}>
+                    <Text style={[styles.label, { color: colors.dark }]}>Faults (Optional):</Text>
+                    <TouchableOpacity onPress={() => {
+                      // Initialize temp selected faults from current selection
+                      setTempSelectedFaults(selectedFaults);
+                      setShowFaultModal(true);
+                    }}>
+                      <View pointerEvents="none">
+                        <TextInput
+                          mode="outlined"
+                          value={selectedFaults.length > 0 ? `${selectedFaults.length} fault(s) selected` : ''}
+                          style={styles.input}
+                          placeholder="Select faults"
+                          right={<TextInput.Icon icon="plus" />}
+                          outlineColor={inputOutlineColor}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                    {selectedFaults.length > 0 && (
+                      <View style={{ marginTop: 8, gap: 12 }}>
+                        {selectedFaults.map((fault, index) => (
+                          <View key={index} style={{ 
+                            backgroundColor: mutedSurfaceColor,
+                            padding: 12,
+                            borderRadius: 8,
+                            borderLeftWidth: 3,
+                            borderLeftColor: accentColor
+                          }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                              <Text style={{ fontSize: 14, color: accentColor, fontWeight: '600', flex: 1 }}>
+                                {fault.Fault}
+                              </Text>
+                              <TouchableOpacity onPress={() => {
+                                setSelectedFaults(selectedFaults.filter((_, i) => i !== index));
+                              }}>
+                                <MaterialIcons name="close" size={20} color={accentColor} />
+                              </TouchableOpacity>
+                            </View>
+                            <TextInput
+                              mode="outlined"
+                              value={fault.Description || ''}
+                              onChangeText={(text) => {
+                                const updated = [...selectedFaults];
+                                updated[index] = { ...updated[index], Description: text };
+                                setSelectedFaults(updated);
+                              }}
+                              placeholder={
+                                fault.Fault?.toLowerCase().includes('other') 
+                                  ? "Enter description for this fault..." 
+                                  : "Description is auto-filled"
+                              }
+                              multiline
+                              numberOfLines={3}
+                              style={{ 
+                                backgroundColor: fault.Fault?.toLowerCase().includes('other') ? colors.card : mutedSurfaceColor,
+                                fontSize: 13 
+                              }}
+                              outlineColor={inputOutlineColor}
+                              disabled={!fault.Fault?.toLowerCase().includes('other')}
+                              editable={fault.Fault?.toLowerCase().includes('other')}
+                            />
                           </View>
-                          <TextInput
-                            mode="outlined"
-                            value={fault.Description || ''}
-                            onChangeText={(text) => {
-                              const updated = [...selectedFaults];
-                              updated[index] = { ...updated[index], Description: text };
-                              setSelectedFaults(updated);
-                            }}
-                            placeholder={
-                              fault.Fault?.toLowerCase().includes('other') 
-                                ? "Enter description for this fault..." 
-                                : "Description is auto-filled"
-                            }
-                            multiline
-                            numberOfLines={3}
-                            style={{ 
-                              backgroundColor: fault.Fault?.toLowerCase().includes('other') ? '#FFFFFF' : '#F0F0F0',
-                              fontSize: 13 
-                            }}
-                            outlineColor="#D0D0D0"
-                            disabled={!fault.Fault?.toLowerCase().includes('other')}
-                            editable={fault.Fault?.toLowerCase().includes('other')}
-                          />
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                )}
 
                 {/* Submit Button */}
                 <View style={styles.submitSection}>
@@ -539,7 +1168,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                     onPress={handleSubmit}
                     loading={loading}
                     disabled={loading}
-                    style={[styles.submitButton, { backgroundColor: '#8BC34A' }]}
+                    style={[styles.submitButton, { backgroundColor: colors.success }]}
                     contentStyle={styles.submitButtonContent}
                     labelStyle={styles.submitButtonLabel}
                     icon={() => <MaterialIcons name="assignment-turned-in" size={20} color="#fff" />}
@@ -597,15 +1226,15 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               }}
               renderItem={(item) => (
                 <View>
-                  <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
+                  <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
                     {item.BusRegistrationNo || item.BusCode}
                   </Text>
                   {item.AssignedDepot && (
-                    <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+                    <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
                       Depot: {item.AssignedDepot}
                     </Text>                  )}
                   {item.BusCode && (
-                    <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+                    <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
                       Code: {item.BusCode}
                     </Text>
                   )}
@@ -621,8 +1250,13 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               displayKey="CodeName"
               searchKeys={['CodeName', 'JobType', 'Description']}
               onSelect={(item) => {
-                console.log('✅ Complaint type selected:', item.CodeName || item.JobType);
-                setFieldValue('incidentType', item.CodeName || item.JobType);
+                const selectedIncidentType = item.CodeName || item.JobType || '';
+                console.log('✅ Complaint type selected:', selectedIncidentType);
+                setFieldValue('incidentType', selectedIncidentType);
+                if (!isPreventiveMaintenanceType(selectedIncidentType)) {
+                  setFieldValue('preventiveCategory', '');
+                  setFieldValue('preventiveTaskConfigs', []);
+                }
                 setShowIncidentTypeModal(false);
               }}
             />
@@ -642,11 +1276,11 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               }}
               renderItem={(item) => (
                 <View>
-                  <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
+                  <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
                     {item.DrvName || item.FirstName || 'Unknown'}
                   </Text>
                   {(item.DrvCode || item.Code) && (
-                    <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+                    <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
                       Code: {item.DrvCode || item.Code}
                     </Text>
                   )}
@@ -683,16 +1317,105 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               }}
               renderItem={(item) => (
                 <View>
-                  <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
+                  <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
                     Route No: {item.RouteNo || 'Unknown Route'}
                   </Text>
                   {item.RouteName && (
-                    <Text style={{ fontSize: 14, color: '#666', marginTop: 2 }}>
+                    <Text style={{ fontSize: 14, color: colors.textSecondary, marginTop: 2 }}>
                       {item.RouteName}
                     </Text>
                   )}
                 </View>
               )}
+            />
+
+            <ModalSelector
+              visible={showPreventiveTypeModal}
+              onClose={() => setShowPreventiveTypeModal(false)}
+              title="Select Preventive Type"
+              data={preventiveMaintenanceTypes}
+              displayKey="Name"
+              searchKeys={['Name', 'Code']}
+              onSelect={(item) => {
+                const selectedPreventiveCategory = item.Name || item.Code || '';
+                setFieldValue('preventiveCategory', selectedPreventiveCategory);
+                setShowPreventiveTypeModal(false);
+              }}
+            />
+
+            <ModalSelector
+              visible={showPreventiveTaskModal}
+              onClose={() => {
+                setFieldValue('preventiveTaskConfigs', tempSelectedPreventiveTaskConfigs);
+                setShowPreventiveTaskModal(false);
+              }}
+              title="Select Preventive Task"
+              data={getPreventiveTaskOptionsByCategory(values.preventiveCategory)}
+              displayKey="Name"
+              valueKey="Code"
+              searchKeys={['Name', 'Code']}
+              multiSelect={true}
+              selectedItems={mapTaskConfigsToModalSelectedItems(tempSelectedPreventiveTaskConfigs)}
+              onSelect={(value, item) => {
+                const selectedTaskName = item.Name || item.Code || '';
+                const isSelected = tempSelectedPreventiveTaskConfigs.some(
+                  (taskConfig) => String(taskConfig?.Task || '').trim() === selectedTaskName,
+                );
+
+                let nextSelectedTaskNames;
+                if (isSelected) {
+                  nextSelectedTaskNames = tempSelectedPreventiveTaskConfigs
+                    .filter((taskConfig) => String(taskConfig?.Task || '').trim() !== selectedTaskName)
+                    .map((taskConfig) => taskConfig.Task);
+                } else {
+                  nextSelectedTaskNames = [
+                    ...tempSelectedPreventiveTaskConfigs.map((taskConfig) => taskConfig.Task),
+                    selectedTaskName,
+                  ];
+                }
+
+                const mergedConfigs = mergePreventiveTaskConfigs(
+                  tempSelectedPreventiveTaskConfigs,
+                  nextSelectedTaskNames,
+                );
+                setTempSelectedPreventiveTaskConfigs(mergedConfigs);
+              }}
+            />
+
+            <ModalSelector
+              visible={showRepeatTypeModal}
+              onClose={() => {
+                setShowRepeatTypeModal(false);
+                setActivePreventiveTaskIndex(-1);
+              }}
+              title="Select Repeat Type"
+              data={repeatTypeOptions}
+              displayKey="Name"
+              searchKeys={['Name', 'Code']}
+              onSelect={(item) => {
+                const selectedRepeatType = item.Name || item.Code || 'Monthly';
+                if (activePreventiveTaskIndex >= 0) {
+                  const updatedTaskConfigs = [...(values.preventiveTaskConfigs || [])];
+                  if (updatedTaskConfigs[activePreventiveTaskIndex]) {
+                    const repeatTypeLower = String(selectedRepeatType || '').toLowerCase();
+                    const isKmType = repeatTypeLower === 'km';
+                    updatedTaskConfigs[activePreventiveTaskIndex] = {
+                      ...updatedTaskConfigs[activePreventiveTaskIndex],
+                      RepeatType: selectedRepeatType,
+                      RepeatValue: '1',
+                      NotifyDay: isKmType
+                        ? '0'
+                        : String(updatedTaskConfigs[activePreventiveTaskIndex]?.NotifyDay ?? '1'),
+                      NotifyKM: isKmType
+                        ? String(updatedTaskConfigs[activePreventiveTaskIndex]?.NotifyKM ?? '200')
+                        : '0',
+                    };
+                    setFieldValue('preventiveTaskConfigs', updatedTaskConfigs);
+                  }
+                }
+                setShowRepeatTypeModal(false);
+                setActivePreventiveTaskIndex(-1);
+              }}
             />
 
             <ModalSelector
@@ -733,11 +1456,11 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               }}
               renderItem={(item) => (
                 <View>
-                  <Text style={{ fontSize: 16, fontWeight: '600', color: '#000' }}>
+                  <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
                     {item.Fault || 'Unknown Fault'}
                   </Text>
                   {item.Description && (
-                    <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+                    <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
                       {item.Description}
                     </Text>
                   )}
@@ -777,20 +1500,20 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   required: {
-    color: '#FF0000',
+    color: COLORS.danger,
     marginRight: 2,
   },
   input: {
     fontSize: 14,
-    backgroundColor: '#fff',
+    backgroundColor: COLORS.white,
   },
   textArea: {
     fontSize: 14,
-    backgroundColor: '#fff',
+    backgroundColor: COLORS.white,
     textAlignVertical: 'top',
   },
   errorText: {
-    color: '#FF0000',
+    color: COLORS.danger,
     fontSize: 11,
     marginTop: 4,
   },
@@ -808,12 +1531,13 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.md,
   },
   submitButtonContent: {
-    paddingVertical: 8,
+    minHeight: 44,
   },
   submitButtonLabel: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
   },
 });
 
 export default CreateIncidentScreen;
+

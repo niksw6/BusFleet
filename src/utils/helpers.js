@@ -8,9 +8,30 @@ export const validatePhone = (phone) => {
   return re.test(phone);
 };
 
+// Parses date strings including the API format "M/D/YYYY H:MM:SS AM/PM"
+// which doesn't parse reliably with new Date() on Android/Hermes.
+const parseDate = (date) => {
+  if (!date) return null;
+  if (date instanceof Date) return date;
+  const str = String(date).trim();
+  // Match "M/D/YYYY H:MM:SS AM/PM" or "M/D/YYYY H:MM AM/PM"
+  const mdy12 = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (mdy12) {
+    let [, month, day, year, hours, minutes, seconds = '0', ampm] = mdy12;
+    hours = parseInt(hours, 10);
+    if (ampm.toUpperCase() === 'PM' && hours !== 12) hours += 12;
+    if (ampm.toUpperCase() === 'AM' && hours === 12) hours = 0;
+    return new Date(parseInt(year), parseInt(month) - 1, parseInt(day), hours, parseInt(minutes), parseInt(seconds));
+  }
+  // Fallback to native parse
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 export const formatDate = (date) => {
   if (!date) return '';
-  const d = new Date(date);
+  const d = parseDate(date);
+  if (!d) return '';
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const year = d.getFullYear();
@@ -19,7 +40,8 @@ export const formatDate = (date) => {
 
 export const formatTime = (date) => {
   if (!date) return '';
-  const d = new Date(date);
+  const d = parseDate(date);
+  if (!d) return '';
   const hours = String(d.getHours()).padStart(2, '0');
   const minutes = String(d.getMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;

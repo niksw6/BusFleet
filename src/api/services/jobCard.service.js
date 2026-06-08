@@ -6,6 +6,30 @@ import { get, post, handleApiError } from '../client';
  */
 export const jobCardService = {
   /**
+   * Close incident/job card via new API
+   * @param {string} companyDB - Company database name
+   * @param {string|number} docEntry - Document entry
+    * @param {'B'|'D'|'J'|'W'} formType - B for breakdown, D for complaint, J for job card, W for work order
+   * @returns {Promise} Close response
+   */
+  closeIncident: async (companyDB, docEntry, formType = 'J') => {
+    try {
+      const payload = {
+        CompanyDB: companyDB,
+        DocEntry: Number(docEntry) || docEntry,
+        FormType: formType,
+      };
+      console.log('📤 Closing via CloseIncident:', JSON.stringify(payload, null, 2));
+      const response = await post('CloseIncident', payload);
+      console.log('📥 CloseIncident response:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('❌ CloseIncident error:', error);
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
    * Create a new job card from complaint/breakdown
    * @param {Object} jobCardData - Job card details
    * @returns {Promise} Created job card response
@@ -143,6 +167,15 @@ export const jobCardService = {
         DocEntry: docEntry,
         Status: status,
       });
+
+      if (response?.data?.Success && (status === 'CM' || status === 'C')) {
+        try {
+          await jobCardService.closeIncident(companyDB, docEntry, 'J');
+        } catch (closeError) {
+          console.warn('CloseIncident failed after UpdateJobCardStatus:', closeError?.message || closeError);
+        }
+      }
+
       return response.data;
     } catch (error) {
       console.warn('UpdateJobCardStatus API not available');
@@ -186,6 +219,15 @@ export const jobCardService = {
         DocEntry: docEntry,
         ...completionData,
       });
+
+      if (response?.data?.Success) {
+        try {
+          await jobCardService.closeIncident(companyDB, docEntry, 'J');
+        } catch (closeError) {
+          console.warn('CloseIncident failed after CompleteJobCard:', closeError?.message || closeError);
+        }
+      }
+
       return response.data;
     } catch (error) {
       console.warn('CompleteJobCard API not available');

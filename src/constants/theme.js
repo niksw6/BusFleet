@@ -1,13 +1,13 @@
 export const COLORS = {
   // SAP Fiori inspired colors
-  primary: '#0070F2',      // SAP Blue
-  primaryDark: '#0854A0',
-  primaryLight: '#D1EFFF',
+  primary: '#1E5AA8',
+  primaryDark: '#174A8A',
+  primaryLight: '#DCE8F8',
   secondary: '#FF9500',    // SAP Orange
   success: '#2B7D2B',      // SAP Green
   danger: '#BB0000',       // SAP Red
   warning: '#FF9500',      // SAP Orange
-  info: '#0070F2',
+  info: '#1E5AA8',
   light: '#F5F6F7',
   dark: '#32363A',
   white: '#FFFFFF',
@@ -22,7 +22,7 @@ export const COLORS = {
   border: '#D9DCDD',
   
   // Status colors with better visibility
-  statusOpen: '#0070F2',        // Blue - Open
+  statusOpen: '#1E5AA8',
   statusInProgress: '#FF9500',  // Orange - In Progress
   statusCompleted: '#2B7D2B',   // Green - Completed
   statusDeclined: '#BB0000',    // Red - Declined
@@ -35,15 +35,15 @@ export const COLORS = {
   priorityCritical: '#8B0000',
   
   // Complaint Type colors
-  typeComplaint: '#0070F2',     // Blue - General complaint/Mechanical
+  typeComplaint: '#1E5AA8',
   typeBreakdown: '#BB0000',     // Red - breakdown (critical)
   typePreventive: '#2B7D2B',    // Green - preventive maintenance
   typeMechanical: '#00689E',    // Teal - mechanical
 };
 
 export const DARK_COLORS = {
-  primary: '#4A9EFF',
-  primaryDark: '#0066CC',
+  primary: '#5F8FD6',
+  primaryDark: '#3F73C1',
   secondary: '#FF8C5A',
   success: '#4CAF50',
   danger: '#F44336',

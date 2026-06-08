@@ -1,21 +1,25 @@
 import React, { useEffect, useState } from 'react';
-import { StatusBar } from 'expo-status-bar';
+import { StatusBar, View, Text } from 'react-native';
 import { Provider as PaperProvider, MD3LightTheme, MD3DarkTheme } from 'react-native-paper';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { Provider as ReduxProvider, useSelector } from 'react-redux';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Toast from 'react-native-toast-message';
-import * as Font from 'expo-font';
-import * as SplashScreen from 'expo-splash-screen';
-import { MaterialIcons } from '@expo/vector-icons';
+import AppIcon from './src/components/AppIcon';
+// Removed expo Font and SplashScreen dependencies (use native defaults)
 
 import store from './src/store';
 import AppNavigator from './src/navigation/AppNavigator';
 import OfflineBanner from './src/components/OfflineBanner';
 import { COLORS, DARK_COLORS } from './src/constants/theme';
+import { installDiagnosticHandlers, appendDiagnostic } from './src/utils/diagnosticLogger';
+import { initLogger } from './src/utils/logger';
 
-// Keep the splash screen visible while we fetch resources
-SplashScreen.preventAutoHideAsync();
+// Capture all console output for in-app debug log viewer
+initLogger();
+
+// Removed expo splash handling
 
 // Custom light theme
 const lightTheme = {
@@ -57,13 +61,42 @@ const darkTheme = {
   },
 };
 
+const renderPaperIcon = ({ name, source, color, size, ...rest }) => {
+  const resolvedSource = name ?? source;
+
+  if (typeof resolvedSource === 'function') {
+    return resolvedSource({ color, size, ...rest });
+  }
+
+  const iconName =
+    typeof resolvedSource === 'string'
+      ? resolvedSource
+      : (resolvedSource && typeof resolvedSource === 'object' && typeof resolvedSource.name === 'string'
+        ? resolvedSource.name
+        : 'help-circle-outline');
+
+  return (
+    <MaterialCommunityIcons
+      {...rest}
+      name={iconName}
+      color={color}
+      size={size}
+    />
+  );
+};
+
 function AppContent() {
-  const isDarkMode = useSelector(state => state.theme.isDarkMode);
+  const isDarkMode = useSelector(state => state?.theme?.isDarkMode ?? false);
   const theme = isDarkMode ? darkTheme : lightTheme;
 
   return (
-    <PaperProvider theme={theme}>
-      <StatusBar style={isDarkMode ? 'light' : 'dark'} />
+    <PaperProvider
+      theme={theme}
+      settings={{
+        icon: renderPaperIcon,
+      }}
+    >
+      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
       <OfflineBanner />
       <AppNavigator />
       <Toast />
@@ -71,20 +104,53 @@ function AppContent() {
   );
 }
 
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error) {
+    appendDiagnostic('RENDER_FATAL', error?.stack || error?.message || String(error));
+    console.error('App crash captured:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+          <Text style={{ fontSize: 16, textAlign: 'center' }}>Something went wrong. Please restart the app.</Text>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [appIsReady, setAppIsReady] = useState(false);
 
   useEffect(() => {
+    installDiagnosticHandlers();
+    appendDiagnostic('INFO', 'App launched');
+  }, []);
+
+  useEffect(() => {
     async function prepare() {
       try {
-        // Pre-load fonts
-        await Font.loadAsync({
-          ...MaterialIcons.font,
-        });
+        await Promise.all([
+          AppIcon.loadFont?.(),
+          MaterialCommunityIcons.loadFont?.(),
+        ]);
       } catch (e) {
-        console.warn('Error loading fonts:', e);
+        appendDiagnostic('STARTUP_ERROR', e?.stack || e?.message || String(e));
+        console.warn('Error during app prepare:', e);
       } finally {
-        // Tell the application to render
         setAppIsReady(true);
       }
     }
@@ -93,9 +159,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (appIsReady) {
-      SplashScreen.hideAsync();
-    }
+    // no explicit splash handling after removing Expo
   }, [appIsReady]);
 
   if (!appIsReady) {
@@ -106,7 +170,9 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <ReduxProvider store={store}>
-          <AppContent />
+          <AppErrorBoundary>
+            <AppContent />
+          </AppErrorBoundary>
         </ReduxProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
