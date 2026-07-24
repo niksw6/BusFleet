@@ -219,36 +219,7 @@ export const complaintService = {
         Synced: true,
       };
     } catch (error) {
-      const normalizedStatus = String(status || '').toUpperCase();
-
-      if (normalizedStatus === 'CM' || normalizedStatus === 'C') {
-        try {
-          const closeResponse = await complaintService.closeIncident(
-            companyDB,
-            docEntry,
-            formType === 'B' ? 'B' : 'D',
-          );
-
-          return {
-            ...closeResponse,
-            Synced: false,
-            ClosedByFallback: true,
-          };
-        } catch (closeError) {
-          console.warn('UpdateComplaintStatus and CloseIncident both failed:', closeError?.message || closeError);
-          return {
-            Success: false,
-            Synced: false,
-            Message: 'Unable to update incident status',
-          };
-        }
-      }
-
-      return {
-        Success: false,
-        Synced: false,
-        Message: 'UpdateComplaintStatus API not available',
-      };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -260,5 +231,71 @@ export const complaintService = {
   getSupervisors: (companyDB) => masterService.getSupervisors(companyDB),
   getRoutes: (companyDB) => masterService.getRoutes(companyDB),
   getFaultDetails: (companyDB) => masterService.getFaultDetails(companyDB),
+  getFaultMaster: (companyDB) => masterService.getFaultMaster(companyDB),
   getStopsByRoute: (companyDB, routeNo) => masterService.getStopsByRoute(companyDB, routeNo),
+  getMaintenanceTeams: (companyDB) => masterService.getMaintenanceTeams(companyDB),
+  getTeamMembers: (companyDB, teamCode) => masterService.getTeamMembers(companyDB, teamCode),
+
+  /**
+   * Get maintenance teams available for breakdown dispatch, with live Available/Assigned status.
+   * API 23 (New): GET GetAvailableTeams?CompanyDB=...&Depot=...
+   * SOP §3: Supervisor picks a responder based on location + live team status.
+   * Response: { Success, Data: [{ TeamCode, TeamName, Status ('Available'|'Assigned'), Depot }] }
+   */
+  getAvailableTeams: async (companyDB, depot) => {
+    try {
+      const url = depot
+        ? `GetAvailableTeams?CompanyDB=${companyDB}&Depot=${encodeURIComponent(depot)}`
+        : `GetAvailableTeams?CompanyDB=${companyDB}`;
+      const response = await get(url);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Assign a Maintenance Team (or individual mechanic) to a Line Breakdown.
+   * API 24 (New): POST AssignBreakdownTeam — notifies Team Leader.
+   * @param {string} companyDB
+   * @param {string|number} breakdownNo
+   * @param {string} supervisorCode
+   * @param {string} teamCode
+   */
+  assignBreakdownTeam: async (companyDB, breakdownNo, supervisorCode, teamCode) => {
+    try {
+      const payload = {
+        CompanyDB: companyDB,
+        BreakdownNo: Number(breakdownNo) || breakdownNo,
+        Supervisor: supervisorCode,
+        TeamCode: teamCode,
+      };
+      console.log('📤 Assigning breakdown team:', JSON.stringify(payload, null, 2));
+      const response = await post('AssignBreakdownTeam', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Close a completed Line Breakdown.
+   * API 25 (New): POST CloseBreakdown
+   * @param {string} companyDB
+   * @param {string|number} breakdownNo
+   * @param {string} remarks
+   */
+  closeBreakdown: async (companyDB, breakdownNo, remarks = '') => {
+    try {
+      const payload = {
+        CompanyDB: companyDB,
+        BreakdownNo: Number(breakdownNo) || breakdownNo,
+        Remarks: remarks,
+      };
+      const response = await post('CloseBreakdown', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
 };

@@ -20,7 +20,8 @@ import Loader from '../../../shared/components/Loader';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDate, formatTime } from '../../../utils/helpers';
-import { isSupervisorUser } from '../../../utils/roleAccess';
+import { getData, storeData } from '../../../utils/storage';
+import { isSupervisorUser, isFieldStaffUser, isDriverUser } from '../../../utils/roleAccess';
 
 /**
  * Simplified Incident Creation Screen - Matches API Fields Exactly
@@ -407,6 +408,8 @@ const mapTaskConfigsToModalSelectedItems = (taskConfigs = []) => {
     .filter(Boolean);
 };
 
+const INCIDENT_FAULT_CACHE_KEY = '@fleet_incident_fault_cache';
+
 const CreateIncidentScreen = ({ route, navigation }) => {
   const incidentTypeParam = route.params?.type || 'complaint';
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
@@ -414,6 +417,10 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const supervisorUser = isSupervisorUser(user);
+  const mechanicUser = isFieldStaffUser(user);
+  const driverUser = isDriverUser(user);
+  const resolvedDriverCode = user?.Code || user?.code || user?.User || user?.user || '';
+  const resolvedDriverName = user?.Name || user?.name || user?.FirstName || resolvedDriverCode || 'Driver';
   const inputOutlineColor = colors.border || (isDarkMode ? colors.grayLight : '#D9DCDD');
   const mutedSurfaceColor = isDarkMode ? colors.grayLight : colors.grayLight;
   const accentColor = colors.primary;
@@ -478,7 +485,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
         complaintService.getJobTypes(dbName || 'MUTSPL_TEST'),
         complaintService.getDrivers(dbName || 'MUTSPL_TEST'),
         complaintService.getRoutes(dbName || 'MUTSPL_TEST'),
-        complaintService.getFaultDetails(dbName || 'MUTSPL_TEST'),
+        complaintService.getFaultMaster(dbName || 'MUTSPL_TEST'),
       ]);
 
       console.log('📊 Buses response:', busesResponse);
@@ -498,7 +505,22 @@ const CreateIncidentScreen = ({ route, navigation }) => {
       }
       if (jobTypesResponse.Success) {
         console.log('✅ Setting incident types:', jobTypesResponse.Data?.length || 0, 'items');
-        setIncidentTypes(jobTypesResponse.Data || []);
+        const allTypes = jobTypesResponse.Data || [];
+        // Mechanic can only report Line Breakdown — filter to breakdown types only
+        const filteredTypes = mechanicUser
+          ? allTypes.filter(t =>
+              normalizeIncidentComplaintType(t.Code) === 'Breakdown' ||
+              normalizeIncidentComplaintType(t.Name) === 'Breakdown'
+            )
+          : allTypes;
+        // Fallback: if no breakdown type found from API, add one
+        setIncidentTypes(
+          filteredTypes.length > 0
+            ? filteredTypes
+            : mechanicUser
+            ? [{ Code: 'B', Name: 'Line Breakdown' }]
+            : allTypes
+        );
       }
       if (driversResponse.Success) {
         console.log('✅ Setting drivers:', driversResponse.Data?.length || 0, 'items');
@@ -510,7 +532,17 @@ const CreateIncidentScreen = ({ route, navigation }) => {
       }
       if (faultsResponse.Success) {
         console.log('✅ Setting faults:', faultsResponse.Data?.length || 0, 'items');
-        setFaults(faultsResponse.Data || []);
+        // Normalize GetFaultMaster shape → internal shape ({ Fault, Code, Description, FaultCategory, Severity, Solutions, Time })
+        const normalized = (faultsResponse.Data || []).map(item => ({
+          Fault: item.Name || item.Fault || '',
+          Code: item.Code || '',
+          Description: item.Descriptions || item.Description || '',
+          FaultCategory: item.FaultCategory || '',
+          Severity: item.Severity || '',
+          Solutions: Array.isArray(item.Solutions) ? item.Solutions.filter(s => s.Name) : [],
+          Time: item.Time || '',
+        }));
+        setFaults(normalized);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -548,6 +580,11 @@ const CreateIncidentScreen = ({ route, navigation }) => {
         ? selectedFaults.map(fault => ({
             Fault: fault.Fault || 'General Issue',
             Dscption: fault.Description || '',
+            // Enrich with master data for downstream screens (CreateJobCard → FaultMechanicPartsSection)
+            Severity: fault.Severity || '',
+            FaultCategory: fault.FaultCategory || '',
+            Solutions: fault.Solutions || [],
+            Time: fault.Time || '',
           }))
         : [{
             Fault: values.incidentType || 'General Issue',
@@ -646,6 +683,25 @@ const CreateIncidentScreen = ({ route, navigation }) => {
       const response = await complaintService.createIncident(incidentData);
 
       if (response.Success) {
+        const createdDocEntry = Number(response?.Data || 0);
+        if (createdDocEntry > 0 && faultsData.length > 0) {
+          try {
+            const cacheKey = `${dbName || 'MUTSPL_TEST'}:${createdDocEntry}`;
+            const existingCache = await getData(INCIDENT_FAULT_CACHE_KEY) || {};
+            existingCache[cacheKey] = faultsData.map((fault) => ({
+              Fault: String(fault?.Fault || '').trim(),
+              Description: String(fault?.Dscption || fault?.Description || '').trim(),
+              Severity: fault?.Severity || '',
+              FaultCategory: fault?.FaultCategory || '',
+              Solutions: Array.isArray(fault?.Solutions) ? fault.Solutions : [],
+              Time: fault?.Time || '',
+            }));
+            await storeData(INCIDENT_FAULT_CACHE_KEY, existingCache);
+          } catch (faultCacheError) {
+            console.warn('Unable to cache incident faults locally:', faultCacheError?.message || faultCacheError);
+          }
+        }
+
         Toast.show({
           type: 'success',
           text1: 'Success',
@@ -667,11 +723,21 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     }
   };
 
+  // For mechanics: auto-select the first (and only) breakdown type
+  const defaultBreakdownType =
+    mechanicUser
+      ? incidentTypes.find(
+          t =>
+            normalizeIncidentComplaintType(t.Code) === 'Breakdown' ||
+            normalizeIncidentComplaintType(t.Name) === 'Breakdown'
+        ) || { Code: 'B', Name: 'Line Breakdown' }
+      : null;
+
   const initialValues = {
     vehicleNumber: '',
-    incidentType: '',
-    driverCode: '',
-    driverName: '',
+    incidentType: mechanicUser ? (defaultBreakdownType?.Code || 'B') : '',
+    driverCode: driverUser ? String(resolvedDriverCode) : '',
+    driverName: driverUser ? String(resolvedDriverName) : '',
     odometer: '',
     incidentDate: new Date(),
     incidentTime: formatTime(new Date()),
@@ -682,6 +748,14 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     routeName: '',
     preventiveCategory: '',
     preventiveTaskConfigs: [],
+  };
+
+  const handleUseCurrentLocation = () => {
+    Toast.show({
+      type: 'info',
+      text1: 'Location picker disabled',
+      text2: 'Please enter location manually for now.',
+    });
   };
 
   if (loadingData) {
@@ -732,15 +806,28 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                   <Text style={[styles.label, { color: colors.dark }]}>
                     <Text style={styles.required}>* </Text>Incident Type:
                   </Text>
-                  <TouchableOpacity onPress={() => setShowIncidentTypeModal(true)}>
+                  {/* Mechanics are locked to Line Breakdown only */}
+                  <TouchableOpacity
+                    onPress={() => !mechanicUser && setShowIncidentTypeModal(true)}
+                    disabled={mechanicUser}
+                    activeOpacity={mechanicUser ? 1 : 0.7}
+                  >
                     <View pointerEvents="none">
                       <TextInput
                         mode="outlined"
-                        value={values.incidentType}
+                        value={
+                          mechanicUser
+                            ? (defaultBreakdownType?.Name || 'Line Breakdown')
+                            : values.incidentType
+                        }
                         error={errors.incidentType && touched.incidentType}
-                        style={styles.input}
+                        style={[styles.input, mechanicUser && { opacity: 0.7 }]}
                         placeholder="Select incident type"
-                        right={<TextInput.Icon icon="chevron-down" />}
+                        right={
+                          mechanicUser
+                            ? <TextInput.Icon icon="lock" />
+                            : <TextInput.Icon icon="chevron-down" />
+                        }
                         outlineColor={inputOutlineColor}
                       />
                     </View>
@@ -791,6 +878,16 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                       placeholder="Enter breakdown location"
                       outlineColor={inputOutlineColor}
                     />
+                    <TouchableOpacity
+                      style={[styles.locationButton, { borderColor: colors.primary, backgroundColor: `${colors.primary}12` }]}
+                      onPress={handleUseCurrentLocation}
+                      activeOpacity={0.8}
+                    >
+                      <MaterialIcons name="my-location" size={16} color={colors.primary} />
+                      <Text style={[styles.locationButtonText, { color: colors.primary }]}>
+                        Use Current Location
+                      </Text>
+                    </TouchableOpacity>
                     {errors.location && touched.location && (
                       <Text style={styles.errorText}>{errors.location}</Text>
                     )}
@@ -983,19 +1080,29 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                 {/* Driver */}
                 {!isPreventiveMaintenanceType(values.incidentType) && (
                   <View style={styles.formGroup}>
-                    <Text style={[styles.label, { color: colors.dark }]}>Driver (Optional):</Text>
-                    <TouchableOpacity onPress={() => setShowDriverModal(true)}>
-                      <View pointerEvents="none">
-                        <TextInput
-                          mode="outlined"
-                          value={values.driverName}
-                          style={styles.input}
-                          placeholder="Select driver"
-                          right={<TextInput.Icon icon="magnify" />}
-                          outlineColor={inputOutlineColor}
-                        />
-                      </View>
-                    </TouchableOpacity>
+                    <Text style={[styles.label, { color: colors.dark }]}>Driver{driverUser ? ':' : ' (Optional):'}</Text>
+                    {driverUser ? (
+                      <TextInput
+                        mode="outlined"
+                        value={values.driverName || resolvedDriverName}
+                        style={styles.input}
+                        editable={false}
+                        outlineColor={inputOutlineColor}
+                      />
+                    ) : (
+                      <TouchableOpacity onPress={() => setShowDriverModal(true)}>
+                        <View pointerEvents="none">
+                          <TextInput
+                            mode="outlined"
+                            value={values.driverName}
+                            style={styles.input}
+                            placeholder="Select driver"
+                            right={<TextInput.Icon icon="magnify" />}
+                            outlineColor={inputOutlineColor}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 )}
 
@@ -1113,16 +1220,22 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                     </TouchableOpacity>
                     {selectedFaults.length > 0 && (
                       <View style={{ marginTop: 8, gap: 12 }}>
-                        {selectedFaults.map((fault, index) => (
+                        {selectedFaults.map((fault, index) => {
+                          const sevColor =
+                            fault.Severity === 'High' ? '#BB0000'
+                            : fault.Severity === 'Medium' ? '#E65100'
+                            : fault.Severity === 'Low' ? '#2B7D2B'
+                            : accentColor;
+                          return (
                           <View key={index} style={{ 
                             backgroundColor: mutedSurfaceColor,
                             padding: 12,
                             borderRadius: 8,
                             borderLeftWidth: 3,
-                            borderLeftColor: accentColor
+                            borderLeftColor: sevColor || accentColor,
                           }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                              <Text style={{ fontSize: 14, color: accentColor, fontWeight: '600', flex: 1 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <Text style={{ fontSize: 14, color: colors.dark, fontWeight: '700', flex: 1 }}>
                                 {fault.Fault}
                               </Text>
                               <TouchableOpacity onPress={() => {
@@ -1131,6 +1244,33 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                                 <MaterialIcons name="close" size={20} color={accentColor} />
                               </TouchableOpacity>
                             </View>
+
+                            {/* Severity + Category badges */}
+                            <View style={{ flexDirection: 'row', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                              {fault.Severity ? (
+                                <View style={{ backgroundColor: sevColor, borderRadius: 4, paddingHorizontal: 7, paddingVertical: 2 }}>
+                                  <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '700' }}>{fault.Severity}</Text>
+                                </View>
+                              ) : null}
+                              {fault.FaultCategory ? (
+                                <View style={{ backgroundColor: '#0070F215', borderRadius: 4, paddingHorizontal: 7, paddingVertical: 2 }}>
+                                  <Text style={{ color: '#0070F2', fontSize: 11, fontWeight: '600' }}>{fault.FaultCategory}</Text>
+                                </View>
+                              ) : null}
+                              {fault.Time ? (
+                                <View style={{ backgroundColor: '#FF980015', borderRadius: 4, paddingHorizontal: 7, paddingVertical: 2 }}>
+                                  <Text style={{ color: '#FF9800', fontSize: 11 }}>⏱ {fault.Time}h</Text>
+                                </View>
+                              ) : null}
+                            </View>
+
+                            {/* Suggested solution (first non-empty) */}
+                            {fault.Solutions?.length > 0 && fault.Solutions[0]?.Name ? (
+                              <Text style={{ fontSize: 12, color: '#2B7D2B', marginBottom: 6 }}>
+                                💡 {fault.Solutions[0].Name}
+                              </Text>
+                            ) : null}
+
                             <TextInput
                               mode="outlined"
                               value={fault.Description || ''}
@@ -1139,23 +1279,18 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                                 updated[index] = { ...updated[index], Description: text };
                                 setSelectedFaults(updated);
                               }}
-                              placeholder={
-                                fault.Fault?.toLowerCase().includes('other') 
-                                  ? "Enter description for this fault..." 
-                                  : "Description is auto-filled"
-                              }
+                              placeholder="Additional notes..."
                               multiline
-                              numberOfLines={3}
+                              numberOfLines={2}
                               style={{ 
-                                backgroundColor: fault.Fault?.toLowerCase().includes('other') ? colors.card : mutedSurfaceColor,
+                                backgroundColor: mutedSurfaceColor,
                                 fontSize: 13 
                               }}
                               outlineColor={inputOutlineColor}
-                              disabled={!fault.Fault?.toLowerCase().includes('other')}
-                              editable={fault.Fault?.toLowerCase().includes('other')}
                             />
                           </View>
-                        ))}
+                          );
+                        })}
                       </View>
                     )}
                   </View>
@@ -1428,7 +1563,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               title="Select Faults"
               data={faults}
               displayKey="Fault"
-              searchKeys={['Fault', 'Description']}
+              searchKeys={['Fault', 'Description', 'FaultCategory']}
               multiSelect={true}
               selectedItems={tempSelectedFaults}
               onSelect={(value, item) => {
@@ -1454,18 +1589,41 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                 console.log('📋 Updated faults count:', updated.length);
                 setTempSelectedFaults(updated);
               }}
-              renderItem={(item) => (
-                <View>
-                  <Text style={{ fontSize: 16, fontWeight: '600', color: colors.dark }}>
-                    {item.Fault || 'Unknown Fault'}
-                  </Text>
-                  {item.Description && (
-                    <Text style={{ fontSize: 13, color: colors.textSecondary, marginTop: 2 }}>
-                      {item.Description}
-                    </Text>
-                  )}
-                </View>
-              )}
+              renderItem={(item) => {
+                const sevColor =
+                  item.Severity === 'High' ? '#BB0000'
+                  : item.Severity === 'Medium' ? '#E65100'
+                  : item.Severity === 'Low' ? '#2B7D2B'
+                  : '#888';
+                return (
+                  <View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={{ fontSize: 15, fontWeight: '700', color: '#000', flex: 1 }}>
+                        {item.Fault || 'Unknown Fault'}
+                      </Text>
+                      {item.Severity ? (
+                        <View style={{ backgroundColor: sevColor, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}>
+                          <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '700' }}>{item.Severity}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    {item.FaultCategory ? (
+                      <Text style={{ fontSize: 11, color: '#0070F2', marginTop: 2, fontWeight: '600' }}>{item.FaultCategory}</Text>
+                    ) : null}
+                    {item.Description ? (
+                      <Text style={{ fontSize: 12, color: '#666', marginTop: 3 }} numberOfLines={2}>
+                        {item.Description}
+                      </Text>
+                    ) : null}
+                    {item.Solutions?.length > 0 && item.Solutions[0]?.Name ? (
+                      <Text style={{ fontSize: 11, color: '#2B7D2B', marginTop: 3 }}>
+                        💡 {item.Solutions[0].Name}
+                        {item.Time ? ` · ${item.Time}h` : ''}
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              }}
             />
 
             {loading && <Loader />}
@@ -1506,6 +1664,20 @@ const styles = StyleSheet.create({
   input: {
     fontSize: 14,
     backgroundColor: COLORS.white,
+  },
+  locationButton: {
+    marginTop: SPACING.xs,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.sm,
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  locationButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   textArea: {
     fontSize: 14,

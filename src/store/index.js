@@ -6,20 +6,17 @@ import notificationReducer from './slices/notificationSlice';
 import complaintsReducer from './slices/complaintsSlice';
 import jobCardsReducer from './slices/jobCardsSlice';
 import masterDataReducer from './slices/masterDataSlice';
+import workEntryReducer from './slices/workEntrySlice';
 
 export const store = configureStore({
   reducer: {
-    // Core slices
     auth: authReducer,
     theme: themeReducer,
     notification: notificationReducer,
-    
-    // Feature slices
     complaints: complaintsReducer,
     jobCards: jobCardsReducer,
     masterData: masterDataReducer,
-    
-    // Legacy data slice (to be migrated)
+    workEntry: workEntryReducer,
     data: dataReducer,
   },
   middleware: (getDefaultMiddleware) =>

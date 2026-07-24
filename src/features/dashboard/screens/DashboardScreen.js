@@ -17,9 +17,62 @@ import { StatusBadge } from '../../../shared/components/Badge';
 import FAB from '../../../shared/components/FAB';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { complaintService, jobCardService, maintenanceService } from '../../../api/services';
+import { complaintService, jobCardService, maintenanceService, teamService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
-import { isMechanicUser, isSupervisorUser } from '../../../utils/roleAccess';
+import { isMechanicUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
+
+const extractTeamLeaderJobCards = (data) => {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+  const candidateKeys = ['JobCards', 'Jobs', 'List', 'Items', 'Data'];
+  for (const key of candidateKeys) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  for (const value of Object.values(data)) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+};
+
+const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
+
+const matchesDriverIncident = (incident, driverCode, driverName) => {
+  const codeCandidates = [
+    incident?.DrvCode,
+    incident?.DriverCode,
+    incident?.Driver,
+    incident?.DriverId,
+    incident?.CreatedByCode,
+    incident?.CreatedBy,
+    incident?.UserCode,
+    incident?.User,
+    incident?.ReportedByCode,
+    incident?.RegBy,
+  ].map(normalizeIdentity).filter(Boolean);
+
+  const nameCandidates = [
+    incident?.DrvName,
+    incident?.DriverName,
+    incident?.Driver,
+    incident?.CreatedByName,
+    incident?.ReportedBy,
+    incident?.UserName,
+    incident?.CreatedBy,
+  ].map(normalizeIdentity).filter(Boolean);
+
+  if (codeCandidates.length === 0 && nameCandidates.length === 0) {
+    return true;
+  }
+
+  return (driverCode && codeCandidates.includes(driverCode)) || (driverName && nameCandidates.includes(driverName));
+};
+
+const deriveTeamLeaderStatus = (job) => {
+  const raw = String(job?.TeamStatus ?? job?.Status ?? job?.AcceptStatus ?? job?.ApprovalStatus ?? '').trim().toUpperCase();
+  if (['A', 'ACCEPTED', 'ACCEPT'].includes(raw)) return 'ACCEPTED';
+  if (['R', 'REJECTED', 'REJECT'].includes(raw)) return 'REJECTED';
+  return 'PENDING';
+};
 
 /**
  * Work Dashboard Screen - Professional Incident Management
@@ -33,16 +86,38 @@ const DashboardScreen = ({ navigation }) => {
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const mechanicUser = isMechanicUser(user);
   const supervisorUser = isSupervisorUser(user);
-  const showMechanicDashboard = mechanicUser && !supervisorUser;
+  const technicalHeadUser = isTechnicalHeadUser(user);
+  const depotHeadUser = isDepotHeadUser(user);
+  const teamLeaderUser = isTeamLeaderUser(user);
+  const fieldStaffUser = isFieldStaffUser(user);
+  const driverUser = isDriverUser(user);
+  const userTeamCode = getUserTeamCode(user);
+  // BUG FIX: this used to check only isMechanicUser, so Electricians fell through
+  // to the generic Supervisor-style dashboard instead of the Job Cards overview.
+  const showMechanicDashboard = fieldStaffUser && !supervisorUser && !technicalHeadUser && !depotHeadUser;
+  const driverName = user?.name || user?.Name || user?.FirstName || user?.User || user?.user || 'Driver';
   const alpha = (hexColor, alphaHex = '1A') => (
     typeof hexColor === 'string' && hexColor.startsWith('#') && (hexColor.length === 7 || hexColor.length === 4)
       ? `${hexColor}${alphaHex}`
       : hexColor
   );
 
+  const getBusLabel = (item) => (
+    String(
+      item?.BusNo
+      || item?.Vehicle
+      || item?.BusCode
+      || item?.BusRegistrationNo
+      || item?.RegNo
+      || ''
+    ).trim() || 'N/A'
+  );
+
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [recentIncidents, setRecentIncidents] = useState([]);
+  const [overdueIncidents, setOverdueIncidents] = useState([]);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
   
   const [stats, setStats] = useState({
     total: 0,
@@ -58,6 +133,73 @@ const DashboardScreen = ({ navigation }) => {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
+
+      if (teamLeaderUser) {
+        try {
+          const teamResponse = await teamService.getMechanicalDashboard(dbName || 'MUTSPL_TEST', user?.User || user?.user || user?.Code || user?.code || user?.name || '');
+          const jobCards = extractTeamLeaderJobCards(teamResponse?.Data ?? teamResponse);
+          const scoped = userTeamCode
+            ? jobCards.filter((c) => !c?.TeamCode || String(c?.TeamCode || '').trim() === userTeamCode)
+            : jobCards;
+
+          const pendingCount = scoped.filter(c => deriveTeamLeaderStatus(c) === 'PENDING').length;
+          setPendingApprovals(pendingCount);
+          setStats({
+            total: scoped.length,
+            open: pendingCount,
+            inProgress: scoped.filter(c => deriveTeamLeaderStatus(c) === 'ACCEPTED').length,
+            completed: scoped.filter(c => deriveTeamLeaderStatus(c) === 'REJECTED').length,
+          });
+        } catch (e) {
+          console.warn('Team Leader dashboard fetch failed:', e?.message);
+        }
+        setRecentIncidents([]);
+        return;
+      }
+
+      // Driver: scope everything to incidents THEY reported — never show the fleet-wide list.
+      if (driverUser) {
+        try {
+          const companyDb = dbName || 'MUTSPL_TEST';
+          const driverCode = String(user?.Code || user?.code || user?.User || user?.user || '').trim().toLowerCase();
+          const incidentsResponse = await complaintService.getIncidents(companyDb, null, null);
+          const allIncidents = Array.isArray(incidentsResponse?.Data) ? incidentsResponse.Data : [];
+          const ownIncidents = allIncidents.filter((item) => {
+            return matchesDriverIncident(item, driverCode, driverName.trim().toLowerCase());
+          });
+
+          const openCount = ownIncidents.filter(i => String(i?.Status || '').trim().toUpperCase() === 'O').length;
+          const inProgressCount = ownIncidents.filter(i => String(i?.Status || '').trim().toUpperCase() === 'I').length;
+          const completedCount = ownIncidents.filter((i) => {
+            const status = String(i?.Status || '').trim().toUpperCase();
+            return status === 'C' || status === 'CM' || status === 'COMPLETED';
+          }).length;
+
+          setStats({
+            total: ownIncidents.length,
+            open: openCount,
+            inProgress: inProgressCount,
+            completed: completedCount,
+          });
+
+          const sortedOwn = ownIncidents
+            .map(item => ({
+              ...item,
+              type: item.ComplaintType,
+              typeColor: item.ComplaintType === 'Breakdown' ? colors.danger : colors.primary,
+              RegDate: item.IncidentDate,
+              RegTime: item.IncidentTime,
+            }))
+            .sort((a, b) => new Date(b.IncidentDate || 0) - new Date(a.IncidentDate || 0))
+            .slice(0, 10);
+          setRecentIncidents(sortedOwn);
+        } catch (e) {
+          console.warn('Driver dashboard fetch failed:', e?.message);
+          setStats({ total: 0, open: 0, inProgress: 0, completed: 0 });
+          setRecentIncidents([]);
+        }
+        return;
+      }
 
       if (showMechanicDashboard) {
         const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
@@ -119,6 +261,16 @@ const DashboardScreen = ({ navigation }) => {
       
       // Fetch recent incidents (complaints + breakdowns)
       await fetchRecentIncidents();
+
+      // Technical Head / Depot Head: fetch overdue incidents
+      if (technicalHeadUser || depotHeadUser) {
+        try {
+          const overdueRes = await jobCardService.getOverdueIncidents(dbName || 'MUTSPL_TEST');
+          setOverdueIncidents(Array.isArray(overdueRes?.Data) ? overdueRes.Data : []);
+        } catch (e) {
+          console.warn('Overdue incidents fetch failed:', e?.message);
+        }
+      }
       
     } catch (error) {
       console.error('❌ Error fetching dashboard:', error);
@@ -182,7 +334,7 @@ const DashboardScreen = ({ navigation }) => {
   const renderIncidentItem = ({ item }) => {
     const date = item.RegDate || item.BrkDate;
     const time = item.RegTime || item.BrkTime;
-    const busNo = item.BusNo || 'N/A';
+    const busNo = getBusLabel(item);
     
     return (
       <TouchableOpacity
@@ -228,8 +380,8 @@ const DashboardScreen = ({ navigation }) => {
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
       <ScreenHeader
-        title="Fleet Dashboard"
-        subtitle=""
+        title={driverUser ? 'My Dashboard' : 'Fleet Dashboard'}
+        subtitle={driverUser ? `Welcome, ${driverName}` : ''}
         onMenuPress={() => navigation.openDrawer()}
         onNotificationPress={() => navigation.navigate('Notifications')}
         showNotifications={true}
@@ -353,6 +505,145 @@ const DashboardScreen = ({ navigation }) => {
               </View>
             </View>
 
+            {/* ── Team Approvals (Team Leader) ── */}
+            {teamLeaderUser && (
+              <View style={styles.actionsSection}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: colors.dark }]}>Team Approvals</Text>
+                  <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
+                    Job cards awaiting your accept/reject decision
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.overdueCard,
+                    { backgroundColor: colors.white, borderColor: pendingApprovals > 0 ? '#0EA5E940' : colors.border },
+                  ]}
+                  onPress={() => navigation.navigate('TeamApprovals')}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.overdueLeft}>
+                    <View style={[styles.overdueDot, { backgroundColor: pendingApprovals > 0 ? '#0EA5E9' : colors.gray }]} />
+                    <View>
+                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>
+                        {pendingApprovals > 0 ? `${pendingApprovals} job card(s) pending` : 'No pending job cards'}
+                      </Text>
+                      <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                        Tap to accept, reject, or assign your team
+                      </Text>
+                    </View>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ── My Work (Mechanic / Electrician self-accept queue) ── */}
+            {fieldStaffUser && (
+              <View style={styles.actionsSection}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: colors.dark }]}>My Work</Text>
+                  <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
+                    Accept faults, log work entries, request parts
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#0EA5E940' }]}
+                  onPress={() => navigation.navigate('MechanicDashboard')}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.overdueLeft}>
+                    <View style={[styles.overdueDot, { backgroundColor: '#0EA5E9' }]} />
+                    <View>
+                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Go to My Work Queue</Text>
+                      <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                        New, In Progress, and Completed faults
+                      </Text>
+                    </View>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ── Parts Requests (Supervisor) ── */}
+            {supervisorUser && (
+              <View style={styles.actionsSection}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts Requests</Text>
+                  <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
+                    Approve mechanics' mid-work parts requests
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#EA580C40' }]}
+                  onPress={() => navigation.navigate('PartsApproval')}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.overdueLeft}>
+                    <View style={[styles.overdueDot, { backgroundColor: '#EA580C' }]} />
+                    <View>
+                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Parts Requests</Text>
+                      <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                        Approve or reject requested quantities
+                      </Text>
+                    </View>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ── Overdue Incidents (Technical Head / Depot Head) ── */}
+            {(technicalHeadUser || depotHeadUser) && (
+              <View style={styles.actionsSection}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: '#BB0000' }]}>Overdue Incidents</Text>
+                  <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
+                    {overdueIncidents.length > 0
+                      ? `${overdueIncidents.length} overdue`
+                      : 'No overdue incidents'}
+                  </Text>
+                </View>
+                {overdueIncidents.length === 0 ? (
+                  <View style={[styles.actionCard, { backgroundColor: colors.white, borderColor: colors.border, width: '100%', minHeight: 60, alignItems: 'flex-start', padding: SPACING.md }]}>
+                    <Text style={[styles.actionSubtext, { color: colors.gray }]}>All incidents are within SLA. API pending — will populate once GetOverdueIncidents is live.</Text>
+                  </View>
+                ) : (
+                  overdueIncidents.map((incident, i) => (
+                    <TouchableOpacity
+                      key={i}
+                      style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#BB000040' }]}
+                      onPress={() => navigation.navigate('ComplaintDetail', {
+                        complaintNo: incident.DocEntry || incident.ComplaintNo,
+                        dbName: dbName || 'MUTSPL_TEST',
+                        complaintType: incident.ComplaintType,
+                      })}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.overdueLeft}>
+                        <View style={[styles.overdueDot, { backgroundColor: '#BB0000' }]} />
+                        <View>
+                          <Text style={[styles.overdueTitle, { color: colors.dark }]}>
+                            #{incident.DocEntry || incident.ComplaintNo} — {getBusLabel(incident)}
+                          </Text>
+                          <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                            {incident.ComplaintType} · {incident.Priority || 'Medium'}
+                          </Text>
+                          {incident.OverdueDays && (
+                            <Text style={[styles.overdueDay, { color: '#BB0000' }]}>
+                              Overdue by {incident.OverdueDays} day{incident.OverdueDays !== 1 ? 's' : ''}
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                      <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                    </TouchableOpacity>
+                  ))
+                )}
+              </View>
+            )}
+
             {/* Quick Actions */}
             <View style={styles.actionsSection}>
               <View style={styles.sectionHeader}>
@@ -361,7 +652,7 @@ const DashboardScreen = ({ navigation }) => {
               </View>
               
               <View style={styles.actionsGrid}>
-                {!showMechanicDashboard && (
+                {!showMechanicDashboard && !teamLeaderUser && (
                   <TouchableOpacity
                     style={styles.actionCardWrapper}
                     onPress={() => navigation.navigate('Complaints')}
@@ -371,12 +662,13 @@ const DashboardScreen = ({ navigation }) => {
                       <View style={[styles.actionIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
                         <MaterialIcons name="assignment" size={30} color={colors.primary} />
                       </View>
-                      <Text style={[styles.actionLabel, { color: colors.dark }]}>Incidents</Text>
-                      <Text style={[styles.actionSubtext, { color: colors.gray }]}>View & manage</Text>
+                      <Text style={[styles.actionLabel, { color: colors.dark }]}>{driverUser ? 'My Incidents' : 'Incidents'}</Text>
+                      <Text style={[styles.actionSubtext, { color: colors.gray }]}>{driverUser ? 'View what you reported' : 'View & manage'}</Text>
                     </View>
                   </TouchableOpacity>
                 )}
 
+                {!driverUser && (
                 <TouchableOpacity
                   style={styles.actionCardWrapper}
                   onPress={() => navigation.navigate('JobCards')}
@@ -390,7 +682,9 @@ const DashboardScreen = ({ navigation }) => {
                     <Text style={[styles.actionSubtext, { color: colors.gray }]}>Track job cards</Text>
                   </View>
                 </TouchableOpacity>
+                )}
 
+                {!driverUser && (
                 <TouchableOpacity
                   style={[
                     styles.actionCardWrapper,
@@ -407,6 +701,7 @@ const DashboardScreen = ({ navigation }) => {
                     <Text style={[styles.actionSubtext, { color: colors.gray }]}>View open work list</Text>
                   </View>
                 </TouchableOpacity>
+                )}
               </View>
             </View>
           </View>
@@ -414,6 +709,18 @@ const DashboardScreen = ({ navigation }) => {
       </ScrollView>
 
       {supervisorUser && (
+        <FAB
+          icon="add"
+          onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
+        />
+      )}
+      {showMechanicDashboard && (
+        <FAB
+          icon="add"
+          onPress={() => navigation.navigate('CreateIncident', { type: 'breakdown' })}
+        />
+      )}
+      {driverUser && (
         <FAB
           icon="add"
           onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
@@ -551,6 +858,42 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     marginTop: 4,
     textAlign: 'center',
+  },
+  // Overdue Incidents (TechnicalHead / DepotHead)
+  overdueCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    marginBottom: SPACING.sm,
+    elevation: 1,
+  },
+  overdueLeft: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    flex: 1,
+  },
+  overdueDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginTop: 5,
+    marginRight: SPACING.sm,
+  },
+  overdueTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  overdueSub: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  overdueDay: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
   },
 });
 

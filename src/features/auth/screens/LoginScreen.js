@@ -84,7 +84,8 @@ const LoginScreen = ({ navigation }) => {
       // Handle different response formats - API returns Status: true/false
       if (response && (response.Status === true || response.success === true || response.Success === true)) {
         console.log('Login successful!');
-        const userFromApi = response.user || response.User || response.data || { name: values.username };
+        // MCheckLogin response shape: { Success:true, Data:{ Role, Depot, TeamCode, ... } }
+        const userFromApi = response.Data || response.data || response.user || response.User || { name: values.username };
         const detectedRole =
           userFromApi?.role ||
           userFromApi?.Role ||
@@ -94,6 +95,9 @@ const LoginScreen = ({ navigation }) => {
           User: userFromApi?.User || values.username,
           Usertype: response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype || null,
           role: detectedRole || userFromApi?.role || userFromApi?.Role || 'Supervisor',
+          // Maintenance team mapping — foundation of Team Leader accept/reject routing (SOP §1.3)
+          TeamCode: userFromApi?.TeamCode || userFromApi?.teamCode || userFromApi?.Team || null,
+          Depot: userFromApi?.Depot || userFromApi?.depot || null,
         };
         const token = response.token || response.Token || response.accessToken || 'mock-token';
         

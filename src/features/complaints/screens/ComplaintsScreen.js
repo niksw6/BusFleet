@@ -18,7 +18,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDate, truncateText, getStatusName, getComplaintTypeBadge } from '../../../utils/helpers';
 import { complaintService, maintenanceService } from '../../../api/services';
-import { isSupervisorUser } from '../../../utils/roleAccess';
+import { isSupervisorUser, isDriverUser } from '../../../utils/roleAccess';
 
 const normalizeStatusFilter = (filter) => {
   if (filter === 'C') return 'CM';
@@ -33,6 +33,44 @@ const normalizeDataType = (type) => {
   if (normalized.includes('complaint')) return 'complaints';
   if (normalized === 'all') return 'all';
   return 'all';
+};
+
+const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
+
+const matchesDriverIncident = (incident, driverIdentity, driverDisplayName) => {
+  const codeCandidates = [
+    incident?.DrvCode,
+    incident?.DriverCode,
+    incident?.Driver,
+    incident?.DriverId,
+    incident?.CreatedByCode,
+    incident?.CreatedBy,
+    incident?.UserCode,
+    incident?.User,
+    incident?.ReportedByCode,
+    incident?.RegBy,
+  ].map(normalizeIdentity).filter(Boolean);
+
+  const nameCandidates = [
+    incident?.DrvName,
+    incident?.DriverName,
+    incident?.Driver,
+    incident?.CreatedByName,
+    incident?.ReportedBy,
+    incident?.UserName,
+    incident?.CreatedBy,
+  ].map(normalizeIdentity).filter(Boolean);
+
+  // Backend sometimes returns user-scoped incident rows without explicit driver fields.
+  // In that case, keep the record rather than dropping valid "My Incidents" rows.
+  const hasIdentityFields = codeCandidates.length > 0 || nameCandidates.length > 0;
+  if (!hasIdentityFields) {
+    return true;
+  }
+
+  const codeMatch = driverIdentity && codeCandidates.includes(driverIdentity);
+  const nameMatch = driverDisplayName && nameCandidates.includes(driverDisplayName);
+  return Boolean(codeMatch || nameMatch);
 };
 
 const mapSchedulerDateTime = (lastServiceDate) => {
@@ -67,6 +105,9 @@ const ComplaintsScreen = ({ navigation, route }) => {
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const supervisorUser = isSupervisorUser(user);
+  const driverUser = isDriverUser(user);
+  const driverIdentity = String(user?.Code || user?.code || user?.User || user?.user || '').trim().toLowerCase();
+  const driverDisplayName = String(user?.name || user?.Name || user?.FirstName || '').trim().toLowerCase();
   const selectedChipTextColor = colors.white || COLORS.white;
 
   const [complaints, setComplaints] = useState([]);
@@ -180,9 +221,21 @@ const ComplaintsScreen = ({ navigation, route }) => {
   };
 
   const filterComplaints = () => {
-    let filtered = dataType === 'preventive'
-      ? [...preventiveMaintenances]
-      : [...complaints, ...preventiveMaintenances];
+    let filtered = [];
+
+    if (driverUser) {
+      // Driver scope is incident-only; preventive scheduler rows are team/supervisor context.
+      filtered = [...complaints];
+    } else {
+      filtered = dataType === 'preventive'
+        ? [...preventiveMaintenances]
+        : [...complaints, ...preventiveMaintenances];
+    }
+
+    // Driver: never show the fleet-wide list — only incidents they personally reported.
+    if (driverUser) {
+      filtered = filtered.filter((c) => matchesDriverIncident(c, driverIdentity, driverDisplayName));
+    }
 
     // Filter by type (breakdowns or complaints)
     if (dataType === 'breakdowns') {
@@ -301,7 +354,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
       <ScreenHeader
-        title="Incidents"
+        title={driverUser ? 'My Incidents' : 'Incidents'}
         subtitle={`${filteredComplaints.length} ${
           dataType === 'breakdowns' ? 'Breakdown' : 
           dataType === 'preventive' ? 'Preventive Maintenance' :
@@ -424,6 +477,12 @@ const ComplaintsScreen = ({ navigation, route }) => {
                 ? 'preventive'
                 : 'complaint',
           })}
+        />
+      )}
+      {driverUser && (
+        <FAB
+          icon="add"
+          onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
         />
       )}
     </View>

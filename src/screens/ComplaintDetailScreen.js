@@ -41,6 +41,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const [loading, setLoading] = useState(true);
   const [closingIncident, setClosingIncident] = useState(false);
+  const [updatingIncidentStatus, setUpdatingIncidentStatus] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [complaint, setComplaint] = useState(null);
   const [schedulerLines, setSchedulerLines] = useState([]);
@@ -79,6 +80,15 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
   const isClosedStatus = (statusValue) => {
     const status = normalizeStatus(statusValue);
     return status === 'C' || status === 'CM' || status === 'COMPLETED' || status === 'CLOSED';
+  };
+
+  const hasMeaningfulFaultRows = (faultRows) => {
+    if (!Array.isArray(faultRows) || faultRows.length === 0) return false;
+    return faultRows.some((faultRow) => {
+      const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || '').trim();
+      const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || '').trim();
+      return Boolean(faultName || faultDesc);
+    });
   };
 
   const resolveWorkOrderCount = async (incidentData) => {
@@ -163,8 +173,10 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           card?.BrkdnNo,
           card?.BrkDocEnt,
           card?.BrkDocEntry,
-          card?.DocEntry,
         ];
+        const hasIncidentReference = cardComplaintValues.some((value) => String(value || '').trim());
+        if (!hasIncidentReference) return false;
+
         const cardComplaintStrings = cardComplaintValues
           .map(value => String(value || '').trim())
           .filter(Boolean);
@@ -309,14 +321,53 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     }
   };
 
+  const handleRejectIncident = async () => {
+    if (!complaint) return;
+
+    try {
+      setUpdatingIncidentStatus(true);
+      const formType = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
+      const docEntry = complaint?.ComplaintNo || complaintNo;
+
+      const response = await complaintService.updateComplaintStatus(
+        dbName || 'MUTSPL_TEST',
+        Number(docEntry) || docEntry,
+        'D',
+        formType,
+      );
+
+      if (!response?.Success) {
+        throw new Error(response?.Message || 'Unable to reject incident');
+      }
+
+      Toast.show({
+        type: 'success',
+        text1: 'Incident Rejected',
+        text2: response?.Message || 'Incident marked as declined',
+      });
+
+      await fetchComplaintDetail();
+    } catch (error) {
+      console.error('Error rejecting incident:', error);
+      Toast.show({
+        type: 'error',
+        text1: 'Reject Failed',
+        text2: error?.message || 'Unable to reject incident',
+      });
+    } finally {
+      setUpdatingIncidentStatus(false);
+    }
+  };
+
   const fetchComplaintDetail = async () => {
     try {
       setLoading(true);
       console.log('📄 Fetching incident detail:', complaintNo, 'Type:', complaintType);
+      const companyDb = dbName || 'MUTSPL_TEST';
 
       if (isPreventive) {
         const schedulerBusNo = String(routeBusNo || complaintNo || '').trim();
-        const schedulerResponse = await maintenanceService.getSchedulerByBus(dbName, schedulerBusNo);
+        const schedulerResponse = await maintenanceService.getSchedulerByBus(companyDb, schedulerBusNo);
 
         if (schedulerResponse?.Success) {
           const lines = Array.isArray(schedulerResponse.Data) ? schedulerResponse.Data : [];
@@ -375,47 +426,238 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       }
       
       // Use appropriate API based on complaint type
-      const response = isBreakdown
-        ? await complaintService.getBreakdownDetail(dbName, complaintNo)
-        : await complaintService.getComplaintDetail(dbName, complaintNo);
+      let response = null;
+      try {
+        response = isBreakdown
+          ? await complaintService.getBreakdownDetail(companyDb, complaintNo)
+          : await complaintService.getComplaintDetail(companyDb, complaintNo);
+      } catch (detailError) {
+        console.warn('Primary incident detail endpoint failed:', detailError?.message || detailError);
+      }
       
       console.log('📄 Incident detail response:', response);
       
-      if (response.Success && response.Data) {
-        console.log('📄 All available fields in response.Data:', Object.keys(response.Data));
+      const normalizeIncidentRow = (row) => ({
+        ...row,
+        ComplaintNo: row?.ComplaintNo || row?.DocEntry || row?.BreakdownNo || complaintNo,
+        BusNo: row?.BusNo || row?.RegNo || routeBusNo || '-',
+        ComplaintType: row?.ComplaintType || row?.FormType || complaintType || 'Driver Complaint',
+        ComplaintDate: row?.ComplaintDate || row?.RegDate || row?.IncidentDate || row?.BreakdownDate || row?.ReportDate || '-',
+        ComplaintTime: row?.ComplaintTime || row?.RegTime || row?.IncidentTime || row?.BreakdownTime || row?.ReportTime || '',
+        Description: row?.Description || row?.Dscrpton || row?.FaultDescription || '',
+        DriverName: row?.DriverName || row?.DrvName || row?.Driver || '-',
+        DriverCode: row?.DriverCode || row?.DrvCode || '-',
+        Odometer: row?.Odometer || row?.Odometr || 0,
+        SupervisorName: row?.SupervisorName || row?.SprvsrNm || '-',
+        SupervisorCode: row?.SupervisorCode || row?.Supervisr || '-',
+        RouteNo: row?.RouteNo || row?.Route || row?.RoutNo || '',
+        BreakdownPlace: row?.BrkPlace || row?.BreakdownPlace || row?.Location || '',
+        JobCardNo: row?.JobCardNo || row?.JobcardNo || row?.JobCard || routeJobCardNo || '',
+        JobCardDocEntry: row?.JobCardDocEntry || row?.JobCardEntry || routeJobCardDocEntry,
+        JobCardStatus: row?.JobCardStatus,
+        JobCardDate: row?.JobCardDate || row?.JobCardRegDate,
+        Faults: Array.isArray(row?.Faults) ? row.Faults : [],
+      });
+
+      const buildFaultMasterLookup = (rows) => {
+        const lookup = new Map();
+        (rows || []).forEach((entry) => {
+          const keys = [
+            entry?.Code,
+            entry?.FaultCode,
+            entry?.Name,
+            entry?.Fault,
+            entry?.FaultName,
+          ]
+            .map((value) => String(value || '').trim().toLowerCase())
+            .filter(Boolean);
+
+          const description = String(
+            entry?.Descriptions
+            || entry?.Description
+            || entry?.Dscription
+            || entry?.FaultDescription
+            || '',
+          ).trim();
+
+          if (!description || keys.length === 0) return;
+          keys.forEach((key) => {
+            if (!lookup.has(key)) {
+              lookup.set(key, description);
+            }
+          });
+        });
+        return lookup;
+      };
+
+      const enrichIncidentFaults = (row, faultMasterLookup) => {
+        const inlineFaultRows = Array.isArray(row?.Faults) ? row.Faults : [];
+        const seededFaultRows = inlineFaultRows.length > 0
+          ? inlineFaultRows
+          : (function() {
+              const fallbackFault = String(row?.FaultName || row?.Fault || row?.FaultCode || '').trim();
+              if (!fallbackFault) return [];
+              return [{
+                Fault: fallbackFault,
+                FaultCode: row?.FaultCode || '',
+                Description: row?.FaultDescription || row?.Description || row?.Dscrption || '',
+              }];
+            }());
+
+        const meaningfulFaultRows = seededFaultRows.filter((faultRow) => {
+          const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || '').trim();
+          const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || '').trim();
+          return Boolean(faultName || faultDesc);
+        });
+
+        const enrichedFaultRows = meaningfulFaultRows.map((faultRow) => {
+          const faultName = String(faultRow?.Fault || faultRow?.FaultName || '').trim();
+          const faultCode = String(faultRow?.FaultCode || '').trim();
+          const existingDescription = String(
+            faultRow?.Description
+            || faultRow?.Dscption
+            || faultRow?.FaultDescription
+            || faultRow?.FaultDesc
+            || '',
+          ).trim();
+
+          if (existingDescription) {
+            return {
+              ...faultRow,
+              Fault: faultName || faultCode || '',
+              Description: existingDescription,
+            };
+          }
+
+          const lookupKeys = [faultCode, faultName]
+            .map((value) => String(value || '').trim().toLowerCase())
+            .filter(Boolean);
+          const masterDescription = lookupKeys
+            .map((key) => faultMasterLookup.get(key))
+            .find(Boolean) || '';
+
+          return {
+            ...faultRow,
+            Fault: faultName || faultCode || '',
+            Description: String(masterDescription || '').trim(),
+          };
+        });
+
+        return {
+          ...row,
+          Faults: enrichedFaultRows,
+        };
+      };
+
+      const extractFaultRowsFromRecord = (record) => {
+        if (!record || typeof record !== 'object') return [];
+
+        const inlineRows = Array.isArray(record?.Faults) ? record.Faults : [];
+        const meaningfulInline = inlineRows.filter((faultRow) => {
+          const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || '').trim();
+          const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || '').trim();
+          return Boolean(faultName || faultDesc);
+        });
+
+        if (meaningfulInline.length > 0) {
+          return meaningfulInline;
+        }
+
+        const topFaultName = String(record?.FaultName || record?.Fault || record?.FaultCode || '').trim();
+        const topFaultDesc = String(record?.FaultDescription || record?.Description || record?.Dscption || '').trim();
+        if (!topFaultName && !topFaultDesc) return [];
+
+        return [{
+          Fault: topFaultName,
+          FaultCode: String(record?.FaultCode || '').trim(),
+          Description: topFaultDesc,
+        }];
+      };
+
+      const mergeUniqueFaultRows = (records, faultMasterLookup) => {
+        const merged = [];
+        const seen = new Set();
+
+        records.forEach((record) => {
+          const rows = extractFaultRowsFromRecord(record);
+          const enrichedRows = enrichIncidentFaults({ Faults: rows }, faultMasterLookup).Faults;
+          enrichedRows.forEach((faultRow) => {
+            const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || '').trim();
+            const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || '').trim();
+            if (!faultName && !faultDesc) return;
+
+            const dedupeKey = `${faultName.toLowerCase()}|${faultDesc.toLowerCase()}`;
+            if (seen.has(dedupeKey)) return;
+            seen.add(dedupeKey);
+            merged.push(faultRow);
+          });
+        });
+
+        return merged;
+      };
+
+      let detailPayload = null;
+      if (response?.Success && response?.Data) {
+        detailPayload = Array.isArray(response.Data) ? response.Data[0] : response.Data;
+      }
+
+      let matchedIncident = null;
+      try {
+        const incidentsRes = await complaintService.getIncidents(companyDb, null, null);
+        const incidentRows = Array.isArray(incidentsRes?.Data) ? incidentsRes.Data : [];
+        matchedIncident = incidentRows.find((item) => {
+          const docEntryValue = String(item?.DocEntry || item?.ComplaintNo || '').trim();
+          return docEntryValue && docEntryValue === String(complaintNo || '').trim();
+        }) || null;
+      } catch (incidentsError) {
+        console.warn('GetIncidents lookup failed:', incidentsError?.message || incidentsError);
+      }
+
+      if (!detailPayload) {
+        if (matchedIncident) {
+          detailPayload = matchedIncident;
+        }
+      }
+
+      if (detailPayload) {
+        console.log('📄 All available fields in detail payload:', Object.keys(detailPayload));
         console.log('📄 Checking for job card fields:');
-        console.log('   - JobCardNo:', response.Data.JobCardNo);
-        console.log('   - JobCard:', response.Data.JobCard);
-        console.log('   - JobCardDocEntry:', response.Data.JobCardDocEntry);
-        console.log('   - JobCardEntry:', response.Data.JobCardEntry);
-        console.log('   - JobCardStatus:', response.Data.JobCardStatus);
+        console.log('   - JobCardNo:', detailPayload.JobCardNo);
+        console.log('   - JobCard:', detailPayload.JobCard);
+        console.log('   - JobCardDocEntry:', detailPayload.JobCardDocEntry);
+        console.log('   - JobCardEntry:', detailPayload.JobCardEntry);
+        console.log('   - JobCardStatus:', detailPayload.JobCardStatus);
         
         // Normalize complaint/breakdown fields into one incident shape
-        let normalizedData = {
-          ...response.Data,
-          ComplaintNo: response.Data.ComplaintNo || response.Data.DocEntry || response.Data.BreakdownNo,
-          BusNo: response.Data.BusNo || response.Data.RegNo,
-          ComplaintType: response.Data.ComplaintType || response.Data.JobType || complaintType,
-          ComplaintDate: response.Data.ComplaintDate || response.Data.RegDate || response.Data.BreakdownDate || response.Data.ReportDate,
-          ComplaintTime: response.Data.ComplaintTime || response.Data.RegTime || response.Data.BreakdownTime || response.Data.ReportTime,
-          Description: response.Data.Description || response.Data.Dscrpton || response.Data.BreakdownPlace,
-          DriverName: response.Data.DriverName || response.Data.DrvName,
-          DriverCode: response.Data.DriverCode || response.Data.DrvCode,
-          Odometer: response.Data.Odometer || response.Data.Odometr,
-          SupervisorName: response.Data.SupervisorName || response.Data.SprvsrNm,
-          SupervisorCode: response.Data.SupervisorCode || response.Data.Supervisr,
-          RouteNo: response.Data.RouteNo || response.Data.Route || response.Data.RoutNo,
-          BreakdownPlace: response.Data.BrkPlace || response.Data.BreakdownPlace || response.Data.Location,
-          JobCardNo: response.Data.JobCardNo || response.Data.JobcardNo || response.Data.JobCard || routeJobCardNo || '',
-          JobCardDocEntry: response.Data.JobCardDocEntry || response.Data.JobCardEntry || routeJobCardDocEntry,
-          JobCardStatus: response.Data.JobCardStatus,
-          JobCardDate: response.Data.JobCardDate || response.Data.JobCardRegDate,
+        let normalizedData = normalizeIncidentRow(detailPayload);
+        let faultMasterLookup = new Map();
+
+        try {
+          const faultMasterResponse = await complaintService.getFaultMaster(companyDb);
+          const faultMasterRows = Array.isArray(faultMasterResponse?.Data) ? faultMasterResponse.Data : [];
+          faultMasterLookup = buildFaultMasterLookup(faultMasterRows);
+        } catch (faultMasterError) {
+          console.warn('Unable to fetch fault master for description enrichment:', faultMasterError?.message || faultMasterError);
+        }
+
+        const mergedFaults = mergeUniqueFaultRows([
+          detailPayload,
+          matchedIncident,
+          source,
+          normalizedData,
+        ], faultMasterLookup);
+
+        normalizedData = {
+          ...normalizedData,
+          Faults: mergedFaults,
         };
 
         normalizedData = await resolveLinkedJobCardInfo(normalizedData);
 
         setComplaint(normalizedData);
         await deriveProgressMap(normalizedData);
+      } else {
+        setComplaint(null);
       }
     } catch (error) {
       console.error('Error fetching complaint detail:', error);
@@ -460,6 +702,16 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
   const linkedJobCardDocEntry = Number(
     complaint?.JobCardDocEntry || complaint?.JobCardEntry || routeJobCardDocEntry || 0,
   );
+  const resolvedFaultsForJobCard = (() => {
+    const rawFaults = Array.isArray(complaint?.Faults) ? complaint.Faults : [];
+    const meaningfulFaults = rawFaults.filter((faultRow) => {
+      const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || '').trim();
+      const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || '').trim();
+      return Boolean(faultName || faultDesc);
+    });
+
+    return meaningfulFaults;
+  })();
   const hasLinkedJobCard = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
   const linkedJobCardDisplay = linkedJobCardNo || (linkedJobCardDocEntry > 0 ? String(linkedJobCardDocEntry) : '');
   const jobTypeCode = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
@@ -564,31 +816,53 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
         </View>
       ) : null}
 
-      {/* Create Job Card Button - show only when not created yet */}
-      {!isPreventive && supervisorUser && !hasLinkedJobCard && !progressMap.jobCardCreated && (complaint.Status === 'O' || complaint.Status === 'I') ? (
+      {!isPreventive && supervisorUser && !hasLinkedJobCard && (complaint.Status === 'O' || complaint.Status === 'I') ? (
         <View style={[styles.card, { backgroundColor: colors.white, marginTop: 0 }]}>
-          <Button
-            mode="contained"
-            icon="clipboard-text"
-            onPress={() => navigation.navigate('CreateJobCard', { 
-              complaintNo: complaint.ComplaintNo,
-              busNo: complaint.BusNo,
-              depot: complaint.Depot,
-              faults: complaint.Faults,
-              priority: complaint.Priority,
-              complaintType: complaint.ComplaintType,
-              driverName: complaint.DriverName,
-              driverCode: complaint.DriverCode,
-              odometer: complaint.Odometer,
-              routeNo: complaint.RouteNo,
-              breakdownPlace: complaint.BreakdownPlace,
-              dbName: dbName
-            })}
-            style={styles.createJobCardButton}
-            contentStyle={{ paddingVertical: 8 }}
-          >
-            Create Job Card
-          </Button>
+          <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: SPACING.sm }]}>
+            <MaterialIcons name="pending-actions" size={20} /> Supervisor Action
+          </Text>
+          <Text style={[styles.progressHint, { color: colors.gray, marginTop: 0, marginBottom: SPACING.sm }]}>
+            Accept to create a Job Card and push to Team Leader. Reject to decline this incident.
+          </Text>
+          <View style={styles.supervisorActionRow}>
+            <Button
+              mode="contained"
+              icon="check-circle"
+              uppercase={false}
+              onPress={() => navigation.navigate('CreateJobCard', {
+                complaintNo: complaint.ComplaintNo,
+                busNo: complaint.BusNo,
+                depot: complaint.Depot,
+                faults: resolvedFaultsForJobCard,
+                priority: complaint.Priority,
+                complaintType: complaint.ComplaintType,
+                driverName: complaint.DriverName,
+                driverCode: complaint.DriverCode,
+                odometer: complaint.Odometer,
+                routeNo: complaint.RouteNo,
+                breakdownPlace: complaint.BreakdownPlace,
+                dbName: dbName,
+              })}
+              style={[styles.createJobCardButton, styles.supervisorActionButton, { marginHorizontal: 0, marginTop: 0, marginBottom: 0 }]}
+              contentStyle={{ paddingVertical: 8 }}
+              labelStyle={{ color: '#FFFFFF', fontWeight: '700' }}
+            >
+              Accept
+            </Button>
+            <Button
+              mode="outlined"
+              icon="close-circle"
+              uppercase={false}
+              onPress={handleRejectIncident}
+              loading={updatingIncidentStatus}
+              disabled={updatingIncidentStatus}
+              style={[styles.supervisorActionButton, { borderColor: '#BB0000' }]}
+              labelStyle={{ color: '#BB0000', fontWeight: '700' }}
+              contentStyle={{ paddingVertical: 8 }}
+            >
+              Reject
+            </Button>
+          </View>
         </View>
       ) : null}
 
@@ -772,16 +1046,16 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       )}
 
       {/* Faults */}
-      {!isPreventive && complaint.Faults && complaint.Faults.length > 0 && (
+      {!isPreventive && resolvedFaultsForJobCard.length > 0 && (
         <View style={[styles.card, { backgroundColor: colors.white }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>
             <MaterialIcons name="build" size={20} /> Faults
           </Text>
-          {complaint.Faults.filter(f => f.Fault && f.Fault.trim() !== '').map((fault, index) => (
+          {resolvedFaultsForJobCard.map((fault, index) => (
             <View key={index} style={[styles.faultItem, { backgroundColor: colors.light }]}>
               <View style={styles.faultHeader}>
                 <MaterialIcons name="warning" size={20} color="#FF9800" />
-                <Text style={[styles.faultTitle, { color: colors.dark }]}>{fault.Fault}</Text>
+                <Text style={[styles.faultTitle, { color: colors.dark }]}>{fault.Fault || 'Reported Issue'}</Text>
               </View>
               {(fault.Description || fault.Dscption || fault.FaultDescription) && (
                 <Text style={[styles.faultDescription, { color: colors.gray }]}>
@@ -887,6 +1161,14 @@ const styles = StyleSheet.create({
   progressHint: {
     fontSize: 12,
     marginTop: SPACING.xs,
+  },
+  supervisorActionRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  supervisorActionButton: {
+    flex: 1,
+    borderRadius: BORDER_RADIUS.md,
   },
   progressLinkButton: {
     marginLeft: 'auto',

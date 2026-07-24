@@ -10,10 +10,10 @@ import { Badge } from 'react-native-paper';
 import { DashboardScreen, NotificationsScreen } from '../features/dashboard';
 import { ComplaintsScreen } from '../features/complaints';
 import { ProfileScreen } from '../features/auth';
-import { JobCardsScreen, WorkOrdersDashboardScreen } from '../features/jobCards';
+import { JobCardsScreen, WorkOrdersDashboardScreen, TeamApprovalsScreen, MechanicDashboardScreen, PartsApprovalScreen } from '../features/jobCards';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { logout } from '../store/slices/authSlice';
-import { isMechanicUser, getUserRole } from '../utils/roleAccess';
+import { isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isSupervisorUser, isDriverUser, getUserRole } from '../utils/roleAccess';
 
 const Drawer = createDrawerNavigator();
 
@@ -26,6 +26,11 @@ const CustomDrawerContent = (props) => {
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const mechanicUser = isMechanicUser(user);
+  const electricianUser = isElectricianUser(user);
+  const teamLeaderUser = isTeamLeaderUser(user);
+  const fieldStaffUser = isFieldStaffUser(user);
+  const supervisorUser = isSupervisorUser(user);
+  const driverUser = isDriverUser(user);
   const userRole = getUserRole(user);
 
   const baseMenuItems = [
@@ -36,9 +41,33 @@ const CustomDrawerContent = (props) => {
       color: colors.primary,
       gradient: [colors.primary, colors.primaryDark || colors.primary]
     },
+    {
+      name: 'TeamApprovals',
+      label: 'Team Dashboard',
+      icon: 'fact-check',
+      color: '#0EA5E9',
+      gradient: ['#0EA5E9', '#0284C7'],
+      teamLeaderOnly: true,
+    },
+    {
+      name: 'MechanicDashboard',
+      label: 'My Work',
+      icon: 'engineering',
+      color: '#0EA5E9',
+      gradient: ['#0EA5E9', '#0284C7'],
+      fieldStaffOnly: true,
+    },
+    {
+      name: 'PartsApproval',
+      label: 'Parts Requests',
+      icon: 'inventory',
+      color: '#EA580C',
+      gradient: ['#EA580C', '#C2410C'],
+      supervisorOnly: true,
+    },
     { 
       name: 'Complaints', 
-      label: 'Incidents', 
+      label: driverUser ? 'My Incidents' : 'Incidents', 
       icon: 'assignment', 
       color: '#F59E0B',
       gradient: ['#F59E0B', '#D97706']
@@ -48,14 +77,16 @@ const CustomDrawerContent = (props) => {
       label: 'Job Cards', 
       icon: 'build-circle', 
       color: '#8B5CF6',
-      gradient: ['#8B5CF6', '#7C3AED']
+      gradient: ['#8B5CF6', '#7C3AED'],
+      hideForDriver: true,
     },
     {
       name: 'WorkOrders',
       label: 'Work Orders',
       icon: 'receipt-long',
       color: '#06B6D4',
-      gradient: ['#06B6D4', '#0891B2']
+      gradient: ['#06B6D4', '#0891B2'],
+      hideForDriver: true,
     },
     { 
       name: 'Notifications', 
@@ -73,9 +104,15 @@ const CustomDrawerContent = (props) => {
       gradient: ['#6366F1', '#4F46E5']
     },
   ];
-  const menuItems = mechanicUser
-    ? baseMenuItems.filter(item => item.name !== 'Complaints')
-    : baseMenuItems;
+  const menuItems = baseMenuItems.filter(item => {
+    if (item.teamLeaderOnly) return teamLeaderUser;
+    if (item.fieldStaffOnly) return fieldStaffUser;
+    if (item.supervisorOnly) return supervisorUser;
+    if (item.hideForDriver && driverUser) return false;
+    // Field staff (mechanic/electrician) and Team Leader don't raise incidents
+    if (item.name === 'Complaints' && (mechanicUser || electricianUser || teamLeaderUser)) return false;
+    return true;
+  });
 
   const handleLogout = () => {
     dispatch(logout());
@@ -211,6 +248,11 @@ const DrawerNavigator = () => {
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const mechanicUser = isMechanicUser(user);
+  const electricianUser = isElectricianUser(user);
+  const teamLeaderUser = isTeamLeaderUser(user);
+  const fieldStaffUser = isFieldStaffUser(user);
+  const supervisorUser = isSupervisorUser(user);
+  const driverUser = isDriverUser(user);
 
   return (
     <Drawer.Navigator
@@ -241,7 +283,7 @@ const DrawerNavigator = () => {
           headerShown: false,
         }}
       />
-      {!mechanicUser && (
+      {!mechanicUser && !electricianUser && !teamLeaderUser && (
         <Drawer.Screen
           name="Complaints"
           component={ComplaintsScreen}
@@ -250,20 +292,51 @@ const DrawerNavigator = () => {
           }}
         />
       )}
-      <Drawer.Screen
-        name="JobCards"
-        component={JobCardsScreen}
-        options={{
-          headerShown: false,
-        }}
-      />
-      <Drawer.Screen
-        name="WorkOrders"
-        component={WorkOrdersDashboardScreen}
-        options={{
-          headerShown: false,
-        }}
-      />
+      {teamLeaderUser && (
+        <Drawer.Screen
+          name="TeamApprovals"
+          component={TeamApprovalsScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+      )}
+      {fieldStaffUser && (
+        <Drawer.Screen
+          name="MechanicDashboard"
+          component={MechanicDashboardScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+      )}
+      {supervisorUser && (
+        <Drawer.Screen
+          name="PartsApproval"
+          component={PartsApprovalScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+      )}
+      {!driverUser && (
+        <Drawer.Screen
+          name="JobCards"
+          component={JobCardsScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+      )}
+      {!driverUser && (
+        <Drawer.Screen
+          name="WorkOrders"
+          component={WorkOrdersDashboardScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+      )}
       <Drawer.Screen
         name="Notifications"
         component={NotificationsScreen}

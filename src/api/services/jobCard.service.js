@@ -7,10 +7,6 @@ import { get, post, handleApiError } from '../client';
 export const jobCardService = {
   /**
    * Close incident/job card via new API
-   * @param {string} companyDB - Company database name
-   * @param {string|number} docEntry - Document entry
-    * @param {'B'|'D'|'J'|'W'} formType - B for breakdown, D for complaint, J for job card, W for work order
-   * @returns {Promise} Close response
    */
   closeIncident: async (companyDB, docEntry, formType = 'J') => {
     try {
@@ -30,9 +26,9 @@ export const jobCardService = {
   },
 
   /**
-   * Create a new job card from complaint/breakdown
-   * @param {Object} jobCardData - Job card details
-   * @returns {Promise} Created job card response
+   * Create a new job card.
+   * Payload supports per-fault Mechanics and Parts:
+   * Faults: [{ Fault, Dscption, Mechanics: [{MechanicCode, MechanicName}], Parts: [{ItemCode, ItemName, Qty, UoM}] }]
    */
   createJobCard: async (jobCardData) => {
     try {
@@ -47,9 +43,23 @@ export const jobCardService = {
   },
 
   /**
+   * Update an existing job card (same payload shape as CreateJobCard).
+   * Supports updating per-fault Mechanics and Parts.
+   * Notifies assigned mechanics + technical head after update.
+   */
+  updateJobCard: async (jobCardData) => {
+    try {
+      console.log('📝 Updating job card:', JSON.stringify(jobCardData, null, 2));
+      const response = await post('UpdateJobCard', jobCardData);
+      console.log('📝 Job card updated:', response.data);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
    * Create work order from job card detail workflow
-   * @param {Object} workOrderData - Work order payload
-   * @returns {Promise} Created work order response
    */
   createWorkOrder: async (workOrderData) => {
     try {
@@ -64,17 +74,73 @@ export const jobCardService = {
   },
 
   /**
+   * Mechanic accepts an assigned job.
+   * Once accepted, notifies Supervisor, Technical Head, Depot Head.
+   * @param {string} companyDB
+   * @param {string|number} docEntry  - Work order DocEntry
+   * @param {string} mechanicCode
+   * @param {string} mechanicName
+   */
+  acceptJob: async (companyDB, docEntry, mechanicCode, mechanicName) => {
+    try {
+      const payload = {
+        CompanyDB: companyDB,
+        DocEntry: Number(docEntry) || docEntry,
+        MechanicCode: mechanicCode,
+        MechanicName: mechanicName,
+        AcceptDate: new Date().toISOString().slice(0, 10),
+        AcceptTime: new Date().toTimeString().slice(0, 5).replace(':', ''),
+      };
+      console.log('✅ Accepting job:', JSON.stringify(payload, null, 2));
+      const response = await post('AcceptJob', payload);
+      console.log('✅ AcceptJob response:', response.data);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Mechanic marks work as complete.
+   * Supervisor receives notification to inspect and close the incident.
+   */
+  completeWork: async (companyDB, docEntry, mechanicCode, remarks = '') => {
+    try {
+      const payload = {
+        CompanyDB: companyDB,
+        DocEntry: Number(docEntry) || docEntry,
+        MechanicCode: mechanicCode,
+        Remarks: remarks,
+        CompletedAt: new Date().toISOString(),
+      };
+      console.log('🏁 CompleteWork:', JSON.stringify(payload, null, 2));
+      const response = await post('CompleteWork', payload);
+      console.log('🏁 CompleteWork response:', response.data);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get overdue incidents — used on Technical Head dashboard.
+   */
+  getOverdueIncidents: async (companyDB) => {
+    try {
+      const response = await get(`GetOverdueIncidents?CompanyDB=${companyDB}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
    * Get list of all job cards
-   * @param {string} companyDB - Company database name
-   * @param {string} status - Optional status filter (O, I, CM)
-   * @returns {Promise} List of job cards
    */
   getJobCards: async (companyDB, status = null) => {
     try {
       let url = `GetJobCards?CompanyDB=${companyDB}`;
-      if (status) {
-        url += `&Status=${status}`;
-      }
+      if (status) url += `&Status=${status}`;
       const response = await get(url);
       return response.data;
     } catch (error) {
@@ -84,16 +150,11 @@ export const jobCardService = {
 
   /**
    * Get list of all work orders
-   * @param {string} companyDB - Company database name
-   * @param {string|null} status - Optional status filter
-   * @returns {Promise} List of work orders
    */
   getWorkOrders: async (companyDB, status = null) => {
     try {
       let url = `GetWorkOrders?CompanyDB=${companyDB}`;
-      if (status) {
-        url += `&Status=${status}`;
-      }
+      if (status) url += `&Status=${status}`;
       const response = await get(url);
       return response.data;
     } catch (error) {
@@ -103,9 +164,6 @@ export const jobCardService = {
 
   /**
    * Get detailed information for a specific job card
-   * @param {string} companyDB - Company database name
-   * @param {string} docEntry - Document entry number
-   * @returns {Promise} Job card details
    */
   getJobCardDetail: async (companyDB, docEntry) => {
     try {
@@ -118,9 +176,6 @@ export const jobCardService = {
 
   /**
    * Get detailed information for a specific work order
-   * @param {string} companyDB - Company database name
-   * @param {string|number} docEntry - Work order document entry
-   * @returns {Promise} Work order details
    */
   getWorkOrderById: async (companyDB, docEntry) => {
     try {
@@ -133,32 +188,13 @@ export const jobCardService = {
 
   /**
    * Assign mechanic to job card
-   * @param {string} companyDB - Company database name
-   * @param {string} docEntry - Job card document entry
-   * @param {string} mechanicCode - Mechanic code
-   * @returns {Promise} Assignment response
    */
   assignMechanic: async (companyDB, docEntry, mechanicCode) => {
-    try {
-      const response = await post('AssignMechanic', {
-        CompanyDB: companyDB,
-        DocEntry: docEntry,
-        MechanicCode: mechanicCode,
-      });
-      return response.data;
-    } catch (error) {
-      // If API doesn't exist, return success (fallback)
-      console.warn('AssignMechanic API not available');
-      return { Success: true, Message: 'Mechanic assigned (local only)' };
-    }
+    throw new Error('AssignMechanic endpoint is not available in current backend contract. Team members should self-accept faults via GetMechanicDashboard -> AcceptFault.');
   },
 
   /**
    * Update job card status
-   * @param {string} companyDB - Company database name
-   * @param {string} docEntry - Job card document entry
-   * @param {string} status - New status (O, I, CM)
-   * @returns {Promise} Update response
    */
   updateJobCardStatus: async (companyDB, docEntry, status) => {
     try {
@@ -178,17 +214,12 @@ export const jobCardService = {
 
       return response.data;
     } catch (error) {
-      console.warn('UpdateJobCardStatus API not available');
-      return { Success: true, Message: 'Status updated (local only)' };
+      throw new Error(handleApiError(error));
     }
   },
 
   /**
    * Add work progress notes to job card
-   * @param {string} companyDB - Company database name
-   * @param {string} docEntry - Job card document entry
-   * @param {string} notes - Progress notes
-   * @returns {Promise} Update response
    */
   addWorkProgress: async (companyDB, docEntry, notes) => {
     try {
@@ -200,17 +231,12 @@ export const jobCardService = {
       });
       return response.data;
     } catch (error) {
-      console.warn('AddJobCardProgress API not available');
-      return { Success: true, Message: 'Progress added (local only)' };
+      throw new Error(handleApiError(error));
     }
   },
 
   /**
    * Complete job card with final details
-   * @param {string} companyDB - Company database name
-   * @param {string} docEntry - Job card document entry
-   * @param {Object} completionData - Completion details (parts used, labor hours, etc.)
-   * @returns {Promise} Completion response
    */
   completeJobCard: async (companyDB, docEntry, completionData) => {
     try {
@@ -230,8 +256,91 @@ export const jobCardService = {
 
       return response.data;
     } catch (error) {
-      console.warn('CompleteJobCard API not available');
-      return { Success: true, Message: 'Job card completed (local only)' };
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Team Leader accepts or rejects a Job Card for their mapped Maintenance Team.
+   * SOP §2 Step 3 / 3R — reuses UpdateJobCard (documented, generic update endpoint)
+   * since a dedicated Accept/Reject endpoint is not yet published.
+   * @param {string} companyDB
+   * @param {string|number} jobCardNo
+   * @param {'Accepted'|'Rejected'} decision
+   * @param {string} teamLeaderCode
+   * @param {string} teamLeaderName
+   * @param {string} reason - Required for rejection (SOP: "proper reason")
+   */
+  respondToJobCard: async (companyDB, jobCardNo, decision, teamLeaderCode, teamLeaderName, reason = '') => {
+    const payload = {
+      CompanyDB: companyDB,
+      JobCardNo: jobCardNo,
+      TeamStatus: decision,
+      TeamLeader: teamLeaderCode,
+      TeamLeaderName: teamLeaderName,
+      RejectReason: reason,
+      RespondedAt: new Date().toISOString(),
+    };
+    try {
+      console.log(`📤 Team Leader ${decision} job card:`, JSON.stringify(payload, null, 2));
+      const response = await post('UpdateJobCard', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Supervisor reassigns a rejected Job Card to a different Maintenance Team
+   * or an individual mechanic (SOP §2 Step 4R).
+   * @param {string} companyDB
+   * @param {string|number} jobCardNo
+   * @param {string} newTeamCode
+   * @param {string} individualMechanicCode - optional, when reassigning to a single mechanic
+   * @param {string} reason
+   */
+  reassignJobCard: async (companyDB, jobCardNo, newTeamCode, individualMechanicCode = '', reason = '') => {
+    const payload = {
+      CompanyDB: companyDB,
+      JobCardNo: jobCardNo,
+      TeamCode: newTeamCode || '',
+      IndividualMechanicCode: individualMechanicCode || '',
+      TeamStatus: 'Pending',
+      ReassignReason: reason,
+    };
+    try {
+      console.log('📤 Reassigning job card:', JSON.stringify(payload, null, 2));
+      const response = await post('UpdateJobCard', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Cancel a Job Card.
+   * API 30 (New): POST CancelJobCard
+   */
+  cancelJobCard: async (companyDB, jobCardNo, reason = '') => {
+    try {
+      const payload = { CompanyDB: companyDB, JobCardNo: jobCardNo, Reason: reason };
+      const response = await post('CancelJobCard', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get Job Card activity history (audit trail).
+   * API 31 (New): GET GetJobCardHistory?CompanyDB=...&JobCardNo=...
+   */
+  getJobCardHistory: async (companyDB, jobCardNo) => {
+    try {
+      const response = await get(`GetJobCardHistory?CompanyDB=${companyDB}&JobCardNo=${jobCardNo}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
     }
   },
 };

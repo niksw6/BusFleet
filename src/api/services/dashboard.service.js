@@ -32,8 +32,7 @@ export const dashboardService = {
       const response = await get(`GetDashboardStats?CompanyDB=${companyDB}`);
       return response.data;
     } catch (error) {
-      console.warn('GetDashboardStats API not available');
-      return { Success: true, Data: {} };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -47,8 +46,7 @@ export const dashboardService = {
       const response = await get(`GetInspections?CompanyDB=${companyDB}`);
       return response.data;
     } catch (error) {
-      console.warn('GetInspections API not available');
-      return { Success: true, Data: [] };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -62,8 +60,7 @@ export const dashboardService = {
       const response = await get(`GetWorkOrders?CompanyDB=${companyDB}`);
       return response.data;
     } catch (error) {
-      console.warn('GetWorkOrders API not available');
-      return { Success: true, Data: [] };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -99,7 +96,7 @@ export const dashboardService = {
       return response.data;
     } catch (error) {
       console.error(`[Notifications] getNotificationCount FAILED - CompanyDB: "${companyDB}" User: "${userId}" Error: ${error.message}`);
-      return { Success: true, Data: 0 };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -113,8 +110,7 @@ export const dashboardService = {
       const response = await post('MarkNotificationRead', notificationId);
       return response.data;
     } catch (error) {
-      console.warn('MarkNotificationRead API not available');
-      return { Success: true };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -131,16 +127,7 @@ export const dashboardService = {
       const response = await get(url);
       return response.data;
     } catch (error) {
-      console.warn('GetFleetPerformance API not available');
-      return { 
-        Success: true, 
-        Data: {
-          totalVehicles: 0,
-          activeVehicles: 0,
-          underMaintenance: 0,
-          avgUptime: 0,
-        } 
-      };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -155,16 +142,7 @@ export const dashboardService = {
       const response = await get(`GetCostAnalysis?CompanyDB=${companyDB}&Period=${period}`);
       return response.data;
     } catch (error) {
-      console.warn('GetCostAnalysis API not available');
-      return { 
-        Success: true, 
-        Data: {
-          fuelCost: 0,
-          maintenanceCost: 0,
-          sparepartsCost: 0,
-          totalCost: 0,
-        } 
-      };
+      throw new Error(handleApiError(error));
     }
   },
 };

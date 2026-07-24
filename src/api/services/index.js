@@ -12,3 +12,7 @@ export { complaintService } from './complaint.service';
 export { jobCardService } from './jobCard.service';
 export { maintenanceService } from './maintenance.service';
 export { dashboardService } from './dashboard.service';
+export { workEntryService } from './workEntry.service';
+export { teamService } from './team.service';
+export { mechanicService } from './mechanic.service';
+export { storeService } from './store.service';

@@ -17,7 +17,7 @@ import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/
 import { complaintService, jobCardService, masterService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
-import { isMechanicUser } from '../../../utils/roleAccess';
+import { isFieldStaffUser } from '../../../utils/roleAccess';
 
 /**
  * Work Order Detail Screen
@@ -40,7 +40,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const mechanicUser = isMechanicUser(user);
+  const mechanicUser = isFieldStaffUser(user);
   const inputBorderColor = colors.border || COLORS.border;
 
   const [loading, setLoading] = useState(true);
@@ -73,8 +73,33 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     'Details',
   ];
 
+  const getBusLabel = (entity) => (
+    String(
+      entity?.BusNo
+      || entity?.Vehicle
+      || entity?.BusCode
+      || entity?.BusRegistrationNo
+      || entity?.RegNo
+      || ''
+    ).trim() || '-'
+  );
+
+  const normalizePartRow = (part, fallbackFaultCode = 'FLT001') => ({
+    ...part,
+    Fault: String(part?.Fault || part?.FaultCode || part?.FaultRef || fallbackFaultCode || '').trim(),
+    ItemCode: String(part?.ItemCode || part?.Code || '').trim(),
+    ItemName: String(part?.ItemName || part?.Name || '').trim(),
+    ReqQty: Number(part?.ReqQty ?? part?.RequiredQty ?? part?.Qty ?? 0) || 0,
+    AddQty: Number(part?.AddQty ?? 0) || 0,
+    IssQty: Number(part?.IssQty ?? part?.IssuedQty ?? 0) || 0,
+    Whs: String(part?.Whs || part?.WhsCode || part?.Warehouse || part?.StoreWarehouse || '').trim(),
+    WhsName: String(part?.WhsName || part?.WarehouseName || '').trim(),
+    Status: String(part?.Status || 'R').trim(),
+  });
+
   const hasSubmittedWorkOrder = !loadingWorkOrderEntries && workOrderEntries.length > 0;
-  const isWorkOrderLocked = hasSubmittedWorkOrder;
+  // Multiple work orders per job card are allowed
+  const isWorkOrderLocked = false;
   const mechanicCount = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics.length : 0;
   const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
 
@@ -396,7 +421,18 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       const response = await jobCardService.getJobCardDetail(dbName || 'MUTSPL_TEST', lookupDocEntry);
       
       if (response.Success && response.Data) {
-        setWorkOrder(response.Data);
+        const sourceData = response.Data;
+        const normalizedFaults = Array.isArray(sourceData?.Faults) ? sourceData.Faults : [];
+        const fallbackFaultCode = String(normalizedFaults?.[0]?.FaultCode || normalizedFaults?.[0]?.Fault || 'FLT001');
+        const normalizedParts = Array.isArray(sourceData?.Parts)
+          ? sourceData.Parts.map((part) => normalizePartRow(part, fallbackFaultCode))
+          : [];
+
+        setWorkOrder({
+          ...sourceData,
+          Parts: normalizedParts,
+          Faults: normalizedFaults,
+        });
         
         // Use API data for tasks/operations and parts if available
         if (response.Data.Operations && Array.isArray(response.Data.Operations)) {
@@ -405,8 +441,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           setTasks([]);
         }
         
-        if (response.Data.Parts && Array.isArray(response.Data.Parts)) {
-          setParts(response.Data.Parts);
+        if (normalizedParts.length > 0) {
+          setParts(normalizedParts);
         } else {
           setParts([]);
         }
@@ -577,17 +613,21 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       }
 
       const selectedParts = getSelectedParts();
-      const partRows = selectedParts.map((part, index) => ({
-        Fault: part.Fault || normalizedFaults[index % normalizedFaults.length]?.FaultCode || fallbackFaultCode,
-        ItemCode: part.ItemCode || '',
-        ItemName: part.ItemName || '',
-        ReqQty: Number(part.ReqQty) || 0,
-        AddQty: Number(part.AddQty) || 0,
-        IssQty: Number(part.IssQty) || 0,
-        Whs: part.Whs || '',
-        DraftEnt: null,
-        Status: part.Status || 'R',
-      }));
+      const partRows = selectedParts.map((part, index) => {
+        const fallbackFault = normalizedFaults[index % normalizedFaults.length]?.FaultCode || fallbackFaultCode;
+        const normalizedPart = normalizePartRow(part, fallbackFault);
+        return {
+          Fault: normalizedPart.Fault,
+          ItemCode: normalizedPart.ItemCode,
+          ItemName: normalizedPart.ItemName,
+          ReqQty: normalizedPart.ReqQty,
+          AddQty: normalizedPart.AddQty,
+          IssQty: normalizedPart.IssQty,
+          Whs: normalizedPart.Whs,
+          DraftEnt: null,
+          Status: normalizedPart.Status,
+        };
+      });
 
       const partsWithoutWarehouse = partRows.filter(part => !String(part.Whs || '').trim());
       if (partsWithoutWarehouse.length > 0) {
@@ -703,7 +743,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         
         <View style={styles.detailRow}>
           <Text style={[styles.detailLabel, { color: colors.gray }]}>Vehicle Number:</Text>
-          <Text style={[styles.detailValue, { color: colors.dark }]}>{workOrder?.BusNo || '-'}</Text>
+          <Text style={[styles.detailValue, { color: colors.dark }]}>{getBusLabel(workOrder)}</Text>
         </View>
 
         <View style={styles.detailRow}>
@@ -1201,7 +1241,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           <View>
             <Text style={[styles.jobCardNo, { color: colors.dark }]}>Job Card #{formatJobCardDisplayNo({ ...workOrder, JobCardNo: workOrder?.JobCardNo || jobCardNo, DocEntry: workOrder?.DocEntry || docEntry, JobType: workOrder?.JobType || jobType || getJobTypeCode(workOrder || {}) })}</Text>
             <Text style={[styles.busNoHeader, { color: colors.primary }]}>
-              <MaterialIcons name="directions-bus" size={16} /> Bus {workOrder?.BusNo || '-'}
+              <MaterialIcons name="directions-bus" size={16} /> Bus {getBusLabel(workOrder)}
             </Text>
           </View>
           <View style={styles.headerRightSection}>

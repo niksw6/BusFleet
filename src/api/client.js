@@ -8,6 +8,23 @@ export const setNavigationRef = (ref) => {
   navigationRef = ref;
 };
 
+const normalizeApiResult = (payload) => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return payload;
+  }
+
+  const hasSuccess = typeof payload.Success === 'boolean';
+  const hasStatus = typeof payload.Status === 'boolean';
+
+  if (!hasSuccess && hasStatus) {
+    return { ...payload, Success: payload.Status };
+  }
+  if (hasSuccess && !hasStatus) {
+    return { ...payload, Status: payload.Success };
+  }
+  return payload;
+};
+
 // Fetch-based API client (native to React Native)
 const request = async (url, options = {}) => {
   try {
@@ -67,7 +84,7 @@ const request = async (url, options = {}) => {
     let data;
     const contentType = response.headers.get('content-type');
     if (contentType && contentType.includes('application/json')) {
-      data = await response.json();
+      data = normalizeApiResult(await response.json());
     } else {
       data = await response.text();
     }

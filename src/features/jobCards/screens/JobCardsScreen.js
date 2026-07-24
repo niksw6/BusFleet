@@ -34,6 +34,17 @@ const JobCardsScreen = ({ navigation, route }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState(normalizeJobCardFilter(route?.params?.initialFilter));
 
+  const getBusLabel = (item) => (
+    String(
+      item?.BusNo
+      || item?.Vehicle
+      || item?.BusCode
+      || item?.BusRegistrationNo
+      || item?.RegNo
+      || ''
+    ).trim() || '-'
+  );
+
   useEffect(() => {
     fetchJobCards();
   }, []);
@@ -109,10 +120,19 @@ const JobCardsScreen = ({ navigation, route }) => {
   ];
 
   const getPriorityColor = (priority) => {
+    const p = String(priority || '').toLowerCase();
+    if (p === 'high' || p === 'critical') return COLORS.danger;
+    if (p === 'medium') return COLORS.warning;
+    if (p === 'low') return COLORS.success;
     return colors.primary;
   };
 
   const getStatusColor = (status) => {
+    const s = String(status || '').trim().toUpperCase();
+    if (s === 'O') return COLORS.statusOpen;
+    if (s === 'I') return COLORS.statusInProgress;
+    if (s === 'CM' || s === 'C') return COLORS.statusCompleted;
+    if (s === 'D') return COLORS.statusDeclined;
     return colors.primary;
   };
 
@@ -173,7 +193,7 @@ const JobCardsScreen = ({ navigation, route }) => {
           jobCardNo: item.JobCardNo,
           jobType: item.JobType || item.FormType || getJobTypeCode(item),
           complaintNo: item.ComplaintNo,
-          busNo: item.BusNo,
+          busNo: getBusLabel(item),
           depot: item.Depot,
           description: item.Description,
           complaintType: item.ComplaintType,
@@ -193,7 +213,7 @@ const JobCardsScreen = ({ navigation, route }) => {
                 JC #{formatJobCardDisplayNo(item)}
               </Text>
               <Text style={[styles.busNo, { color: colors.gray, fontSize: 12 }]}>
-                Bus #{item.BusNo}
+                Bus #{getBusLabel(item)}
               </Text>
             </View>
           </View>
@@ -287,18 +307,46 @@ const JobCardsScreen = ({ navigation, route }) => {
           ) : null}
         </View>
         <View style={styles.footerBadgesRow}>
+          {item.TeamStatus && (
+            <View
+              style={[
+                styles.priorityBadge,
+                {
+                  backgroundColor: `${
+                    item.TeamStatus === 'Accepted' ? colors.statusCompleted
+                    : item.TeamStatus === 'Rejected' ? colors.statusDeclined
+                    : colors.statusInProgress
+                  }18`,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.priorityText,
+                  {
+                    color:
+                      item.TeamStatus === 'Accepted' ? colors.statusCompleted
+                      : item.TeamStatus === 'Rejected' ? colors.statusDeclined
+                      : colors.statusInProgress,
+                  },
+                ]}
+              >
+                Team: {item.TeamStatus}
+              </Text>
+            </View>
+          )}
           {item.Status && (
             <View
-              style={[styles.priorityBadge, { backgroundColor: `${getStatusColor(item.Status)}15` }]}
+              style={[styles.priorityBadge, { backgroundColor: `${getStatusColor(item.Status)}18` }]}
             >
-              <Text style={[styles.priorityText, { color: colors.primary }]}>{getStatusName(item.Status)}</Text>
+              <Text style={[styles.priorityText, { color: getStatusColor(item.Status) }]}>{getStatusName(item.Status)}</Text>
             </View>
           )}
           {item.Priority && (
             <View
-              style={[styles.priorityBadge, styles.priorityFooterBadge, { backgroundColor: `${getPriorityColor(item.Priority)}15` }]}
+              style={[styles.priorityBadge, styles.priorityFooterBadge, { backgroundColor: `${getPriorityColor(item.Priority)}18` }]}
             >
-              <Text style={[styles.priorityText, { color: colors.primary }]}>{item.Priority}</Text>
+              <Text style={[styles.priorityText, { color: getPriorityColor(item.Priority) }]}>{item.Priority}</Text>
             </View>
           )}
         </View>

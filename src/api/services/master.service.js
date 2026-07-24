@@ -72,29 +72,48 @@ export const masterService = {
       console.log('🔧 GetMechanics API response:', response.data);
       return response.data;
     } catch (error) {
-      console.warn('GetMechanics API not available, using fallback:', error.message);
-      // Return fallback data if API fails
-      return {
-        Success: true,
-        Data: [
-          { Code: null, FirstName: 'Rajesh Kumar' },
-          { Code: null, FirstName: 'Suresh Patil' },
-          { Code: null, FirstName: 'Vijay Singh' },
-          { Code: null, FirstName: 'Amit Shah' },
-        ],
-      };
+      throw new Error(handleApiError(error));
     }
   },
 
   /**
-   * Get fault details master
-   * @param {string} companyDB - Company database name
-   * @returns {Promise} List of faults with descriptions
+   * Get fault details master — includes DueHours per fault code
+   * Expected response: { Success, Data: [{ FaultCode, FaultName, DueHours, ... }] }
+   * @param {string} companyDB
    */
   getFaultDetails: async (companyDB) => {
     try {
       const response = await get(`GetFaultDetails?CompanyDB=${companyDB}`);
       console.log('🔧 Fault details response:', JSON.stringify(response.data?.Data?.[0], null, 2));
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get fault master — rich fault data with category, severity, and solutions.
+   * API: GET GetFaultMaster?CompanyDB=...
+   * Response: { Success, Data: [{ Code, Name, Descriptions, FaultCategory, Severity, Solutions[], Time }] }
+   * @param {string} companyDB
+   */
+  getFaultMaster: async (companyDB) => {
+    try {
+      const response = await get(`GetFaultMaster?CompanyDB=${companyDB}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get Work List — dropdown options for mechanic work entry description.
+   * Expected: { Success, Data: [{ Code, Name/Description }] }
+   * @param {string} companyDB
+   */
+  getWorkList: async (companyDB) => {
+    try {
+      const response = await get(`GetWorkList?CompanyDB=${companyDB}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -152,6 +171,39 @@ export const masterService = {
   getWarehouses: async (companyDB) => {
     try {
       const response = await get(`GetWarehouses?CompanyDB=${companyDB}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get Maintenance Teams — depot-wise teams (Team Leader + Mechanic + Electrician + Helper).
+   * API 14 (New): GET GetMaintenanceTeams?CompanyDB=...
+   * This is the foundation of the Team Leader accept/reject workflow (SOP §1.3).
+   * Response: { Success, Data: [{ TeamCode, TeamName, Depot, TeamLeaderCode, TeamLeaderName }] }
+   * @param {string} companyDB
+   */
+  getMaintenanceTeams: async (companyDB) => {
+    try {
+      const response = await get(`GetMaintenanceTeams?CompanyDB=${companyDB}`, { suppressErrorLog: true });
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get members of a Maintenance Team (Mechanics/Electricians/Helper mapped to a Team Leader).
+   * API 15 (New): GET GetTeamMembers?CompanyDB=...&TeamCode=...
+   * Used to scope the mechanic/electrician picker to the accepting Team Leader's own team.
+   * Response: { Success, Data: [{ Code, FirstName, Role/Designation }] }
+   * @param {string} companyDB
+   * @param {string} teamCode
+   */
+  getTeamMembers: async (companyDB, teamCode) => {
+    try {
+      const response = await get(`GetTeamMembers?CompanyDB=${companyDB}&TeamCode=${teamCode}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));

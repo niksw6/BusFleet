@@ -47,6 +47,17 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
     overdue: 0,
   });
 
+  const getBusLabel = (item) => (
+    String(
+      item?.Vehicle
+      || item?.BusNo
+      || item?.BusCode
+      || item?.BusRegistrationNo
+      || item?.RegNo
+      || ''
+    ).trim() || 'Bus -'
+  );
+
   useEffect(() => {
     fetchDashboardData(activeTab);
   }, [activeTab]);
@@ -322,7 +333,7 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
         <View style={styles.infoItemCompact}>
           <MaterialIcons name="directions-bus" size={14} color={colors.gray} />
           <Text style={[styles.infoTextCompact, { color: colors.dark }]}>
-            {item.Vehicle || item.BusNo || 'N/A'}
+            {getBusLabel(item)}
           </Text>
         </View>
         

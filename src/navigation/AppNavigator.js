@@ -7,7 +7,7 @@ import { useSelector, useDispatch } from 'react-redux';
 // Feature-based imports
 import { LoginScreen } from '../features/auth';
 import { CreateFuelLogScreen, CreateScheduleScreen } from '../features/maintenance';
-import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, WorkOrderApiDetailScreen } from '../features/jobCards';
+import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, WorkOrderApiDetailScreen, WorkEntryScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen } from '../features/jobCards';
 import { CreateIncidentScreen } from '../features/complaints';
 import DrawerNavigator from './DrawerNavigator';
 
@@ -22,7 +22,7 @@ import { getUserData, getDBName } from '../utils/storage';
 import { setNavigationRef } from '../api/client';
 import { dashboardService } from '../api/services';
 import { COLORS, DARK_COLORS } from '../constants/theme';
-import { isSupervisorUser } from '../utils/roleAccess';
+import { isSupervisorUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser } from '../utils/roleAccess';
 
 const Stack = createNativeStackNavigator();
 
@@ -35,6 +35,10 @@ const AppNavigator = () => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const supervisorUser = isSupervisorUser(user);
+  const mechanicUser = isMechanicUser(user);
+  const fieldStaffUser = isFieldStaffUser(user);
+  const teamLeaderUser = isTeamLeaderUser(user);
+  const driverUser = isDriverUser(user);
 
   const [appIsReady, setAppIsReady] = useState(false);
 
@@ -118,7 +122,7 @@ const AppNavigator = () => {
                 headerShown: false,
               }}
             />
-            {supervisorUser && (
+            {(supervisorUser || fieldStaffUser || driverUser) && (
               <Stack.Screen
                 name="CreateIncident"
                 component={CreateIncidentScreen}
@@ -164,6 +168,43 @@ const AppNavigator = () => {
                 }}
               />
             )}
+            {teamLeaderUser && (
+              <Stack.Screen
+                name="TeamApprovals"
+                component={TeamApprovalsScreen}
+                options={{
+                  headerShown: false,
+                }}
+              />
+            )}
+            {fieldStaffUser && (
+              <Stack.Screen
+                name="MechanicDashboard"
+                component={MechanicDashboardScreen}
+                options={{
+                  headerShown: false,
+                }}
+              />
+            )}
+            {fieldStaffUser && (
+              <Stack.Screen
+                name="FaultWork"
+                component={FaultWorkScreen}
+                options={{
+                  headerShown: true,
+                  title: 'Fault Work',
+                }}
+              />
+            )}
+            {supervisorUser && (
+              <Stack.Screen
+                name="PartsApproval"
+                component={PartsApprovalScreen}
+                options={{
+                  headerShown: false,
+                }}
+              />
+            )}
             <Stack.Screen
               name="WorkOrder"
               component={WorkOrderScreen}
@@ -193,6 +234,14 @@ const AppNavigator = () => {
               options={{
                 headerShown: true,
                 title: 'Work Order Details',
+              }}
+            />
+            <Stack.Screen
+              name="WorkEntry"
+              component={WorkEntryScreen}
+              options={{
+                headerShown: true,
+                title: 'Work Entry',
               }}
             />
             <Stack.Screen

@@ -181,8 +181,7 @@ export const maintenanceService = {
       const response = await get(`GetUpcomingMaintenance?CompanyDB=${companyDB}`);
       return response.data;
     } catch (error) {
-      console.warn('GetUpcomingMaintenance API not available');
-      return { Success: true, Data: [] };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -202,8 +201,7 @@ export const maintenanceService = {
       });
       return response.data;
     } catch (error) {
-      console.warn('CompleteScheduledService API not available');
-      return { Success: true, Message: 'Service completed (local only)' };
+      throw new Error(handleApiError(error));
     }
   },
 
@@ -221,8 +219,7 @@ export const maintenanceService = {
       const response = await get(url);
       return response.data;
     } catch (error) {
-      console.warn('GetFuelAnalytics API not available');
-      return { Success: true, Data: { averageConsumption: 0, totalCost: 0 } };
+      throw new Error(handleApiError(error));
     }
   },
 };

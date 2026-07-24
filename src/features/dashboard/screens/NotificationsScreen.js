@@ -16,9 +16,10 @@ import Toast from 'react-native-toast-message';
 import { getLogs, clearLogs } from '../../../utils/logger';
 
 import { setNotifications, setUnreadCount, markAsRead, markAllAsRead } from '../../../store/slices/notificationSlice';
-import { dashboardService } from '../../../api/services';
+import { dashboardService, complaintService, teamService, mechanicService } from '../../../api/services';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDateTime } from '../../../utils/helpers';
+import { isTeamLeaderUser, isSupervisorUser, isFieldStaffUser } from '../../../utils/roleAccess';
 
 const NotificationsScreen = ({ navigation }) => {
   const dispatch = useDispatch();
@@ -31,6 +32,7 @@ const NotificationsScreen = ({ navigation }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [logEntries, setLogEntries] = useState([]);
+  const [hasBackendCountMismatch, setHasBackendCountMismatch] = useState(false);
 
   const openLogs = () => {
     setLogEntries(getLogs());
@@ -46,44 +48,307 @@ const NotificationsScreen = ({ navigation }) => {
     fetchNotifications();
   }, []);
 
-  const resolveUserId = () => (
-    user?.User || user?.user || user?.username || user?.Code || user?.code || user?.Name || user?.name || ''
-  );
+  const resolveUserIdCandidates = () => {
+    const candidates = [
+      user?.User,
+      user?.user,
+      user?.username,
+      user?.Code,
+      user?.code,
+      user?.Name,
+      user?.name,
+    ]
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+
+    return [...new Set(candidates)];
+  };
+
+  const getIncidentTypeCode = (item) => {
+    const explicitType = String(item?.ComplaintType || item?.complaintType || '').trim().toLowerCase();
+    if (explicitType.includes('breakdown')) return 'B';
+    if (explicitType.includes('preventive')) return 'M';
+
+    const typeCode = String(item?.type || item?.Type || '').trim().toUpperCase();
+    if (typeCode === 'B') return 'B';
+    if (typeCode === 'M') return 'M';
+    if (typeCode === 'D') return 'D';
+
+    const text = `${item?.title || item?.Title || ''} ${item?.message || item?.Message || ''}`.toLowerCase();
+    if (text.includes('breakdown')) return 'B';
+    if (text.includes('preventive')) return 'M';
+    return 'D';
+  };
+
+  const resolveIncidentDocEntryFromNotification = (item) => {
+    const directCandidates = [
+      item?.ComplaintNo,
+      item?.complaintNo,
+      item?.IncidentNo,
+      item?.incidentNo,
+      item?.IncidentDocEntry,
+      item?.incidentDocEntry,
+      item?.ReferenceDocEntry,
+      item?.RefDocEntry,
+      item?.detailDocEntry,
+      item?.docEntry,
+      item?.DocEntry,
+    ];
+
+    const direct = directCandidates
+      .map((value) => String(value || '').trim())
+      .find(Boolean);
+    if (direct) return direct;
+
+    const text = `${item?.title || ''} ${item?.message || ''}`;
+    const match = text.match(/incident\s*#\s*(\d+)/i);
+    return match?.[1] || null;
+  };
+
+  const formatIncidentTitle = (item) => {
+    const incidentDocEntry = resolveIncidentDocEntryFromNotification(item);
+    if (!incidentDocEntry) return item?.Message || item?.Title || item?.title || 'Notification';
+
+    const typeCode = getIncidentTypeCode(item);
+    const baseTitle = String(item?.Message || item?.Title || item?.title || '').trim();
+
+    if (!baseTitle.toLowerCase().includes('incident')) {
+      return `Incident #${typeCode}-${incidentDocEntry}`;
+    }
+
+    return baseTitle.replace(/incident\s*#\s*\d+/i, `Incident #${typeCode}-${incidentDocEntry}`);
+  };
 
   const mapNotificationItem = (item) => ({
+    creatorName: item?.CreatedBy || item?.CreatorName || item?.UserName || item?.AssignBy || item?.SprvsrNm || item?.DriverName || '',
+    priority: item?.Priority || item?.Severity || item?.Significance || '',
+    busNo: item?.BusNo || item?.Vehicle || item?.BusCode || item?.BusRegistrationNo || item?.RegNo || '',
+    detailDocEntry: item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || item?.JobCardDocEntry || item?.ComplaintNo || null,
+    significance: item?.Significance || item?.Severity || item?.Priority || item?.Type || '',
     ...item,
-    id: item?.id || item?.Code,
-    code: item?.Code || item?.id,
-    title: item?.Message || item?.Title || 'Notification',
+    id: item?.id || item?.Code || item?.DocEntry,
+    code: item?.Code || item?.id || item?.DocEntry,
+    title: formatIncidentTitle(item),
     message: item?.Message || item?.message || '',
     read: String(item?.Read || '').trim().toUpperCase() === 'Y',
     type: String(item?.Type || '').trim().toUpperCase(),
     timestamp: item?.Date || item?.timestamp || null,
-    docEntry: item?.DocEntry,
+    docEntry: item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || item?.JobCardDocEntry || item?.ComplaintNo,
   });
+
+  const getSignificanceLabel = (item) => {
+    const raw = String(item?.significance || item?.priority || '').trim();
+    if (!raw) return 'Normal';
+    return raw;
+  };
+
+  const inferComplaintTypeFromNotification = (item) => {
+    const explicit = String(item?.ComplaintType || item?.complaintType || '').trim();
+    if (explicit) return explicit;
+
+    const typeCode = String(item?.type || item?.Type || '').trim().toUpperCase();
+    if (typeCode === 'B') return 'Breakdown';
+    if (typeCode === 'D') return 'Driver Complaint';
+
+    const text = `${item?.title || ''} ${item?.message || ''}`.toLowerCase();
+    if (text.includes('breakdown')) return 'Breakdown';
+    return 'Driver Complaint';
+  };
+
+  const extractTeamLeaderJobCards = (dashboardData) => {
+    const source = dashboardData?.Data ?? dashboardData;
+    return Array.isArray(source)
+      ? source
+      : (Array.isArray(source?.JobCards)
+        ? source.JobCards
+        : Array.isArray(source?.Jobs)
+          ? source.Jobs
+          : []);
+  };
+
+  const deriveTeamLeaderStatus = (job) => {
+    const teamStatus = String(job?.TeamStatus ?? job?.Status ?? job?.AcceptStatus ?? job?.ApprovalStatus ?? '').trim().toUpperCase();
+    if (['A', 'ACCEPTED', 'ACCEPT'].includes(teamStatus)) return 'ACCEPTED';
+    if (['R', 'REJECTED', 'REJECT'].includes(teamStatus)) return 'REJECTED';
+    return 'PENDING';
+  };
+
+  const buildWorkflowNotifications = async (companyDb, identityCandidates) => {
+    const primaryIdentity = identityCandidates[0] || '';
+    const nowIso = new Date().toISOString();
+
+    if (isSupervisorUser(user)) {
+      const incidentsRes = await complaintService.getIncidents(companyDb, null, null);
+      const incidents = Array.isArray(incidentsRes?.Data) ? incidentsRes.Data : [];
+      const pendingReview = incidents
+        .filter((item) => {
+          const status = String(item?.Status || '').trim().toUpperCase();
+          const jobCardNo = String(item?.JobcardNo || item?.JobCardNo || '').trim();
+          return status === 'O' && !jobCardNo;
+        })
+        .sort((a, b) => Number(b?.DocEntry || 0) - Number(a?.DocEntry || 0));
+
+      if (pendingReview.length > 0) {
+        return pendingReview.map((item) => ({
+          id: `workflow-supervisor-${item?.DocEntry}`,
+          code: `workflow-supervisor-${item?.DocEntry}`,
+          title: `Incident #${String(item?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D'}-${item?.DocEntry || '-'} requires supervisor action`,
+          message: `Create job card and route this ${String(item?.ComplaintType || 'incident').toLowerCase()} to a team.`,
+          creatorName: String(item?.DrvName || item?.DriverName || item?.CreatedBy || 'Driver'),
+          significance: String(item?.Priority || 'Medium'),
+          priority: String(item?.Priority || 'Medium'),
+          busNo: String(item?.BusNo || item?.Vehicle || item?.RegNo || '').trim(),
+          detailDocEntry: item?.DocEntry,
+          docEntry: item?.DocEntry,
+          read: false,
+          type: String(item?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D',
+          complaintType: item?.ComplaintType,
+          timestamp: item?.IncidentDate || item?.RegDate || nowIso,
+          workflowDerived: true,
+        }));
+      }
+    }
+
+    if (isTeamLeaderUser(user) && primaryIdentity) {
+      const teamRes = await teamService.getMechanicalDashboard(companyDb, primaryIdentity);
+      const teamCards = extractTeamLeaderJobCards(teamRes);
+      const pendingCards = teamCards
+        .filter(card => deriveTeamLeaderStatus(card) === 'PENDING')
+        .sort((a, b) => Number(b?.DocEntry || b?.JobCardDocEntry || b?.JobCardNo || 0) - Number(a?.DocEntry || a?.JobCardDocEntry || a?.JobCardNo || 0));
+
+      if (pendingCards.length > 0) {
+        return pendingCards.map((card, index) => {
+          const docEntry = card?.DocEntry ?? card?.JobCardDocEntry ?? card?.JobCardNo ?? `${index + 1}`;
+          const busNo = String(card?.BusNo || card?.Vehicle || card?.BusCode || card?.BusRegistrationNo || card?.RegNo || '').trim();
+          const priority = String(card?.Priority || 'Medium').trim();
+          const createdAt = card?.RegDate || card?.CreatedDate || card?.JobCardDate || nowIso;
+          return {
+            id: `workflow-team-${primaryIdentity}-${docEntry}`,
+            code: `workflow-team-${primaryIdentity}-${docEntry}`,
+            title: `Team approval needed for Job Card #${card?.JobCardNo || docEntry}`,
+            message: `${busNo || 'Bus -'} · ${priority} priority · accept or reject this job card.`,
+            creatorName: String(card?.SprvsrNm || card?.SupervisorName || card?.AssignBy || 'Supervisor'),
+            significance: priority,
+            priority,
+            busNo,
+            detailDocEntry: docEntry,
+            docEntry,
+            read: false,
+            type: 'T',
+            timestamp: createdAt,
+            workflowDerived: true,
+          };
+        });
+      }
+    }
+
+    if (isFieldStaffUser(user) && primaryIdentity) {
+      const mechanicRes = await mechanicService.getMechanicDashboard(companyDb, primaryIdentity);
+      const source = mechanicRes?.Data ?? mechanicRes;
+      const list = Array.isArray(source)
+        ? source
+        : (Array.isArray(source?.Faults)
+          ? source.Faults
+          : Array.isArray(source?.Items)
+            ? source.Items
+            : []);
+
+      const pendingItems = list.filter((item) => {
+        const status = String(item?.Status ?? item?.FaultStatus ?? '').trim().toUpperCase();
+        return !['A', 'ACCEPTED', 'STARTED', 'IN PROGRESS', 'INPROGRESS', 'C', 'CM', 'COMPLETED'].includes(status);
+      });
+
+      if (pendingItems.length > 0) {
+        return pendingItems.map((item, idx) => ({
+          id: `workflow-mechanic-${primaryIdentity}-${item?.DocEntry || idx}`,
+          code: `workflow-mechanic-${primaryIdentity}-${item?.DocEntry || idx}`,
+          title: `Fault pending acceptance on Job Card #${item?.DocNum || item?.DocEntry || '-'}`,
+          message: `${String(item?.FaultName || item?.FaultCode || 'Fault').trim()} is waiting for you to accept/start work.`,
+          creatorName: String(item?.AssignBy || item?.SprvsrNm || 'Supervisor'),
+          significance: String(item?.Priority || 'High'),
+          priority: String(item?.Priority || 'High'),
+          busNo: String(item?.Vehicle || item?.BusNo || item?.RegNo || '').trim(),
+          detailDocEntry: item?.DocEntry,
+          docEntry: item?.DocEntry,
+          read: false,
+          type: 'W',
+          timestamp: item?.AcceptDate || item?.AssignDt || nowIso,
+          workflowDerived: true,
+        }));
+      }
+    }
+
+    return [];
+  };
 
   const fetchNotifications = async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const userId = resolveUserId();
+      const identityCandidates = resolveUserIdCandidates();
 
-      const [notificationsResponse, countResponse] = await Promise.all([
-        dashboardService.getNotifications(companyDb, userId),
-        dashboardService.getNotificationCount(companyDb, userId),
-      ]);
+      const probeResults = await Promise.all(
+        identityCandidates.map(async (identity) => {
+          try {
+            const [notificationsResponse, countResponse] = await Promise.all([
+              dashboardService.getNotifications(companyDb, identity),
+              dashboardService.getNotificationCount(companyDb, identity),
+            ]);
 
-      if (notificationsResponse?.Success && Array.isArray(notificationsResponse?.Data)) {
-        dispatch(setNotifications(notificationsResponse.Data.map(mapNotificationItem)));
-      } else if (notificationsResponse?.success && Array.isArray(notificationsResponse?.data)) {
-        dispatch(setNotifications(notificationsResponse.data.map(mapNotificationItem)));
-      } else {
-        dispatch(setNotifications([]));
+            const notificationData = Array.isArray(notificationsResponse?.Data)
+              ? notificationsResponse.Data
+              : (Array.isArray(notificationsResponse?.data) ? notificationsResponse.data : []);
+
+            return {
+              identity,
+              notifications: notificationData,
+              unreadCount: Number(countResponse?.Data) || 0,
+              success: true,
+            };
+          } catch (probeError) {
+            return {
+              identity,
+              notifications: [],
+              unreadCount: 0,
+              success: false,
+              error: probeError,
+            };
+          }
+        })
+      );
+
+      if (probeResults.length > 0 && probeResults.every(result => !result.success)) {
+        throw probeResults[0].error || new Error('Unable to fetch notifications from backend');
       }
 
-      if (countResponse?.Success) {
-        dispatch(setUnreadCount(Number(countResponse?.Data) || 0));
+      const bestProbe = probeResults.sort((a, b) => {
+        if (b.notifications.length !== a.notifications.length) {
+          return b.notifications.length - a.notifications.length;
+        }
+        return b.unreadCount - a.unreadCount;
+      })[0] || { notifications: [], unreadCount: 0 };
+
+      let mappedNotifications = bestProbe.notifications.map(mapNotificationItem);
+      let effectiveUnreadCount = Number(bestProbe.unreadCount) || 0;
+      if (mappedNotifications.length === 0) {
+        try {
+          const workflowNotifications = await buildWorkflowNotifications(companyDb, identityCandidates);
+          if (workflowNotifications.length > 0) {
+            mappedNotifications = workflowNotifications;
+            effectiveUnreadCount = workflowNotifications.length;
+          }
+        } catch (workflowError) {
+          console.warn('Workflow notification derivation failed:', workflowError?.message || workflowError);
+        }
       }
+
+      const mismatch = mappedNotifications.length === 0 && effectiveUnreadCount > 0;
+      setHasBackendCountMismatch(mismatch);
+
+      dispatch(setNotifications(mappedNotifications));
+      const unreadFromList = mappedNotifications.filter(item => !item.read).length;
+      dispatch(setUnreadCount(unreadFromList || effectiveUnreadCount));
     } catch (error) {
+      setHasBackendCountMismatch(false);
       console.error('Error fetching notifications:', error.message || error);
       Toast.show({
         type: 'error',
@@ -100,7 +365,47 @@ const NotificationsScreen = ({ navigation }) => {
     setRefreshing(false);
   };
 
-  const handleMarkAsRead = async (notificationCode) => {
+  const navigateToIncidentDetail = async (item, fallbackDocEntry = null) => {
+    const companyDb = dbName || 'MUTSPL_TEST';
+    const incidentDocEntry = String(
+      fallbackDocEntry
+      || resolveIncidentDocEntryFromNotification(item)
+      || '',
+    ).trim();
+
+    if (!incidentDocEntry) {
+      return false;
+    }
+
+    let matchedIncident = null;
+    try {
+      const incidentsResponse = await complaintService.getIncidents(companyDb, null, null);
+      const incidents = Array.isArray(incidentsResponse?.Data) ? incidentsResponse.Data : [];
+      matchedIncident = incidents.find((row) => {
+        const rowDocEntry = String(row?.DocEntry || row?.ComplaintNo || '').trim();
+        return rowDocEntry && rowDocEntry === incidentDocEntry;
+      }) || null;
+    } catch (lookupError) {
+      console.warn('Notification incident lookup failed:', lookupError?.message || lookupError);
+    }
+
+    const payload = {
+      complaintNo: matchedIncident?.DocEntry || incidentDocEntry,
+      dbName: companyDb,
+      complaintType: matchedIncident?.ComplaintType || item?.ComplaintType || inferComplaintTypeFromNotification(item),
+      jobCardNo: matchedIncident?.JobCardNo || matchedIncident?.JobcardNo || item?.JobCardNo || item?.jobCardNo || item?.JobcardNo || '',
+      source: matchedIncident?._source || 'incident',
+      busNo: matchedIncident?.BusNo || item?.busNo || item?.BusNo || item?.Vehicle || '',
+      lastSrvDt: matchedIncident?.LastSrvDt || item?.LastSrvDt || '',
+      lastSrvKM: matchedIncident?.LastSrvKM || item?.LastSrvKM || 0,
+      active: matchedIncident?.Active || item?.Active || 'Y',
+    };
+
+    navigation.navigate('ComplaintDetail', payload);
+    return true;
+  };
+
+  const handleMarkAsRead = async (notificationCode, item = null) => {
     try {
       await dashboardService.markNotificationAsRead({
         CompanyDB: dbName || 'MUTSPL_TEST',
@@ -116,12 +421,13 @@ const NotificationsScreen = ({ navigation }) => {
     const unreadNotifications = notifications.filter(item => !item.read);
     try {
       await Promise.all(
-        unreadNotifications.map((item) =>
+        unreadNotifications
+          .map((item) =>
           dashboardService.markNotificationAsRead({
             CompanyDB: dbName || 'MUTSPL_TEST',
             Code: String(item.code || item.id || item.Code),
           })
-        )
+          )
       );
     } catch (error) {
       console.error('Error marking all as read:', error);
@@ -137,11 +443,46 @@ const NotificationsScreen = ({ navigation }) => {
   const handleNotificationPress = async (item) => {
     const notificationCode = item.code || item.id || item.Code;
     if (!item.read && notificationCode) {
-      await handleMarkAsRead(notificationCode);
+      await handleMarkAsRead(notificationCode, item);
     }
 
     const type = String(item.type || item.Type || '').trim().toUpperCase();
-    const docEntry = item.docEntry || item.DocEntry;
+    const docEntry = item.detailDocEntry || item.docEntry || item.DocEntry;
+    const incidentDocEntry = resolveIncidentDocEntryFromNotification(item);
+
+    if (incidentDocEntry) {
+      const navigatedToIncident = await navigateToIncidentDetail(item, incidentDocEntry);
+      if (navigatedToIncident) {
+        return;
+      }
+    }
+
+    if (type === 'D' || type === 'B') {
+      const navigatedToIncident = await navigateToIncidentDetail(item, docEntry);
+      if (navigatedToIncident) {
+        return;
+      }
+
+      navigation.navigate('ComplaintDetail', {
+        complaintNo: docEntry,
+        dbName: dbName || 'MUTSPL_TEST',
+        complaintType: type === 'B' ? 'Breakdown' : 'Driver Complaint',
+        source: 'incident',
+      });
+      return;
+    }
+
+    if (item?.workflowDerived && type === 'W') {
+      navigation.navigate('MechanicDashboard');
+      return;
+    }
+
+    if ((type === 'T' || (isTeamLeaderUser(user) && type === 'J')) && docEntry) {
+      navigation.navigate('TeamApprovals', {
+        focusDocEntry: docEntry,
+      });
+      return;
+    }
 
     if (type === 'J') {
       navigation.navigate('WorkOrderDetail', {
@@ -160,11 +501,11 @@ const NotificationsScreen = ({ navigation }) => {
       return;
     }
 
-    if (type === 'D' || type === 'B') {
-      navigation.navigate('ComplaintDetail', {
-        complaintNo: docEntry,
+    if (docEntry) {
+      navigation.navigate('WorkOrderDetail', {
+        docEntry,
+        jobCardNo: docEntry,
         dbName: dbName || 'MUTSPL_TEST',
-        complaintType: type === 'B' ? 'Breakdown' : 'Driver Complaint',
       });
     }
   };
@@ -237,6 +578,19 @@ const NotificationsScreen = ({ navigation }) => {
           <Text style={[styles.message, { color: colors.gray }]} numberOfLines={2}>
             {item.message || item.Message}
           </Text>
+          <View style={styles.metaRow}>
+            <Text style={[styles.metaText, { color: colors.gray }]} numberOfLines={1}>
+              By: {item.creatorName || 'System'}
+            </Text>
+            <Text style={[styles.metaText, { color: colors.gray }]} numberOfLines={1}>
+              Significance: {getSignificanceLabel(item)}
+            </Text>
+          </View>
+          {!!item.busNo && (
+            <Text style={[styles.metaText, { color: colors.gray }]} numberOfLines={1}>
+              Bus: {item.busNo}
+            </Text>
+          )}
           <Text style={[styles.time, { color: colors.gray }]}>
             {formatDateTime(item.timestamp || item.Date)}
           </Text>
@@ -301,6 +655,13 @@ const NotificationsScreen = ({ navigation }) => {
         </View>
       </View>
 
+      {hasBackendCountMismatch && (
+        <View style={[styles.mismatchBanner, { backgroundColor: colors.white, borderColor: '#FFB300' }]}>
+          <MaterialIcons name="info-outline" size={18} color="#A66B00" />
+          <Text style={[styles.mismatchText, { color: '#7A5A00' }]}>Unread count is available, but details are not returned by backend yet. Pull to refresh.</Text>
+        </View>
+      )}
+
       <FlatList
         data={notifications}
         renderItem={renderNotificationItem}
@@ -319,7 +680,7 @@ const NotificationsScreen = ({ navigation }) => {
           <View style={styles.emptyContainer}>
             <MaterialIcons name="notifications-none" size={64} color={colors.gray} />
             <Text style={[styles.emptyText, { color: colors.gray }]}>
-              No notifications yet
+              {hasBackendCountMismatch ? 'Notifications are pending backend sync' : 'No notifications yet'}
             </Text>
           </View>
         }
@@ -349,6 +710,22 @@ const styles = StyleSheet.create({
   },
   listContent: {
     padding: SPACING.md,
+  },
+  mismatchBanner: {
+    marginHorizontal: SPACING.md,
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.xs,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mismatchText: {
+    fontSize: 12,
+    flex: 1,
   },
   notificationCard: {
     marginBottom: SPACING.md,
@@ -384,6 +761,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     marginBottom: 4,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 2,
+  },
+  metaText: {
+    fontSize: 11,
+    flex: 1,
   },
   time: {
     fontSize: 12,

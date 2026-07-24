@@ -40,11 +40,6 @@ export const authService = {
    * @returns {Promise}
    */
   logout: async () => {
-    try {
-      // Implement if backend has logout endpoint
-      return { success: true };
-    } catch (error) {
-      throw new Error(handleApiError(error));
-    }
+    throw new Error('Logout API is not implemented by backend');
   },
 };

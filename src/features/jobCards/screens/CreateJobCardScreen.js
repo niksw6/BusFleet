@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -14,10 +14,11 @@ import { useSelector } from 'react-redux';
 import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
-import { complaintService, jobCardService } from '../../../api/services';
+import { complaintService, jobCardService, masterService, storeService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import ModalSelector from '../../../shared/components/ModalSelector';
+import FaultMechanicPartsSection from '../components/FaultMechanicPartsSection';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { getJobTypeCode } from '../../../utils/helpers';
 
@@ -35,7 +36,7 @@ const jobCardValidationSchema = Yup.object().shape({
     then: (schema) => schema.required('Breakdown place is required for breakdown'),
     otherwise: (schema) => schema.notRequired(),
   }),
-  assignedMechanics: Yup.array().min(1, 'At least one mechanic must be assigned'),
+  assignedMechanics: Yup.array().notRequired(),
   instructions: Yup.string().notRequired(),
 });
 
@@ -67,21 +68,36 @@ const normalizeJobCardComplaintType = (value) => {
   }
 
   if (normalized.includes('mechanical')) {
-    return 'Mechanical';
+    // Backend JC series is typically keyed for Driver Complaints/Breakdown.
+    // Map mechanical labels to driver-complaint series to avoid unsupported JC series.
+    return 'Driver Complaints';
   }
 
-  return String(value || '').trim();
+  // Default all other non-breakdown values to Driver Complaints for stable series mapping.
+  return 'Driver Complaints';
 };
 
 const isJobCardSeriesNotFoundError = (error) => {
   const message = String(error?.message || '').toLowerCase();
-  return message.includes('qbs_jc_o') || message.includes('data qbs_jc_o not found');
+  return message.includes('qbs_jc_') || (message.includes('data qbs_jc_') && message.includes('not found'));
+};
+
+const getSeriesErrorMessage = (rawMessage) => {
+  const message = String(rawMessage || '');
+  const matched = message.match(/qbs_jc_[a-z0-9_]+/i);
+  if (matched?.[0]) {
+    return `Job card series setup missing (${matched[0].toUpperCase()}). Please contact backend admin.`;
+  }
+  return 'Job card series setup missing. Please contact backend admin.';
 };
 
 const CreateJobCardScreen = ({ route, navigation }) => {
   const { complaintNo, busNo, depot, faults, priority, complaintType, driverName, driverCode, odometer, routeNo, breakdownPlace, dbName } = route.params;
   
   console.log('🎫 Job Card Screen - Received Complaint Type:', complaintType);
+  console.log('🎫 Job Card Screen - Received faults param:', JSON.stringify(faults));
+  console.log('🎫 Job Card Screen - Active faults count (per-fault UI will show if > 0):',
+    (faults || []).filter(f => f && f.Fault && String(f.Fault).trim() !== '').length);
   
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
@@ -91,13 +107,64 @@ const CreateJobCardScreen = ({ route, navigation }) => {
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [formValues, setFormValues] = useState(null);
   const [mechanics, setMechanics] = useState([]);
+  const [spareParts, setSpareParts] = useState([]);
   const [routes, setRoutes] = useState([]);
+  const [maintenanceTeams, setMaintenanceTeams] = useState([]);
+  const [maintenanceTeamsAvailable, setMaintenanceTeamsAvailable] = useState(true);
   const [showMechanicModal, setShowMechanicModal] = useState(false);
   const [showRouteModal, setShowRouteModal] = useState(false);
+  const [showTeamModal, setShowTeamModal] = useState(false);
+  const [selectedTeam, setSelectedTeam] = useState(null); // { TeamCode, TeamName }
   const [loadingMechanics, setLoadingMechanics] = useState(true);
   const [loadingData, setLoadingData] = useState(true);
   const [tempSelectedMechanics, setTempSelectedMechanics] = useState([]);
   const formikRef = useRef(null);
+
+  // Per-fault assignments: { [assignmentKey]: { mechanics: [], parts: [] } }
+  const [faultAssignments, setFaultAssignments] = useState({});
+
+  const routeFaultEntries = useMemo(() => (
+    (faults || [])
+      .map((fault, originalIndex) => ({ fault, originalIndex }))
+      .filter(({ fault }) => {
+        const faultName = String(fault?.Fault || fault?.FaultName || fault?.FaultCode || '').trim();
+        const faultDesc = String(fault?.Description || fault?.Dscption || fault?.FaultDescription || fault?.FaultDesc || '').trim();
+        return Boolean(faultName || faultDesc);
+      })
+  ), [faults]);
+
+  const effectiveFaultEntries = useMemo(() => {
+    return routeFaultEntries.map(({ fault, originalIndex }, idx) => ({
+      fault,
+      assignmentKey: `route-${originalIndex}`,
+      faultLine: idx + 1,
+    }));
+  }, [routeFaultEntries]);
+
+  useEffect(() => {
+    setFaultAssignments((prev) => {
+      const next = { ...prev };
+      const activeKeys = new Set(effectiveFaultEntries.map(entry => entry.assignmentKey));
+
+      effectiveFaultEntries.forEach((entry) => {
+        if (!next[entry.assignmentKey]) {
+          next[entry.assignmentKey] = { mechanics: [], parts: [] };
+        }
+      });
+
+      Object.keys(next).forEach((key) => {
+        if (!activeKeys.has(key)) {
+          delete next[key];
+        }
+      });
+
+      return next;
+    });
+  }, [effectiveFaultEntries]);
+
+  const handleFaultAssignmentChange = (faultIndex, assignment) => {
+    setFaultAssignments(prev => ({ ...prev, [faultIndex]: assignment }));
+  };
 
   useEffect(() => {
     fetchAllData();
@@ -107,24 +174,75 @@ const CreateJobCardScreen = ({ route, navigation }) => {
     try {
       setLoadingData(true);
       console.log('🔍 Fetching all data for CreateJobCard...');
-      const [mechanicsRes, routesRes] = await Promise.all([
+      const [mechanicsResult, routesResult, sparePartsResult, teamsResult] = await Promise.allSettled([
         complaintService.getMechanics(dbName || 'MUTSPL_TEST'),
         complaintService.getRoutes(dbName || 'MUTSPL_TEST'),
+        masterService.getSpareParts(dbName || 'MUTSPL_TEST'),
+        masterService.getMaintenanceTeams(dbName || 'MUTSPL_TEST'),
       ]);
+
+      const mechanicsRes = mechanicsResult.status === 'fulfilled' ? mechanicsResult.value : null;
+      const routesRes = routesResult.status === 'fulfilled' ? routesResult.value : null;
+      const sparePartsRes = sparePartsResult.status === 'fulfilled' ? sparePartsResult.value : null;
+      const teamsRes = teamsResult.status === 'fulfilled' ? teamsResult.value : null;
+
+      if (mechanicsResult.status === 'rejected') {
+        console.warn('⚠️ Mechanics fetch failed:', mechanicsResult.reason?.message || mechanicsResult.reason);
+      }
+      if (routesResult.status === 'rejected') {
+        console.warn('⚠️ Routes fetch failed:', routesResult.reason?.message || routesResult.reason);
+      }
+      if (sparePartsResult.status === 'rejected') {
+        console.warn('⚠️ Spare parts fetch failed:', sparePartsResult.reason?.message || sparePartsResult.reason);
+      }
+      if (teamsResult.status === 'rejected') {
+        console.warn('⚠️ Maintenance teams fetch failed:', teamsResult.reason?.message || teamsResult.reason);
+      }
 
       console.log('📊 Mechanics response:', mechanicsRes);
       console.log('📊 Routes response:', routesRes);
 
-      if (mechanicsRes.Success) {
-        console.log('✅ Setting mechanics:', mechanicsRes.Data?.length || 0, 'items');
-        setMechanics(mechanicsRes.Data || []);
-      }
-      if (routesRes.Success) {
-        console.log('✅ Setting routes:', routesRes.Data?.length || 0, 'items');
-        if (routesRes.Data && routesRes.Data.length > 0) {
-          console.log('🚌 First route structure:', JSON.stringify(routesRes.Data[0], null, 2));
-        }
-        setRoutes(routesRes.Data || []);
+      const mechanicsData = Array.isArray(mechanicsRes?.Data) ? mechanicsRes.Data : [];
+      const normalizedMechanics = mechanicsData
+        .map((item, index) => {
+          const name = String(item?.FirstName || item?.Name || item?.UserName || item?.MechanicName || '').trim();
+          if (!name) return null;
+          const code = String(item?.Code || item?.EmpCode || item?.UserCode || '').trim();
+          return {
+            ...item,
+            FirstName: name,
+            Code: code || `M-${index + 1}`,
+          };
+        })
+        .filter(Boolean);
+      setMechanics(normalizedMechanics);
+
+      const routesData = Array.isArray(routesRes?.Data) ? routesRes.Data : [];
+      setRoutes(routesData);
+
+      const partsData = Array.isArray(sparePartsRes?.Data) ? sparePartsRes.Data : [];
+      const normalizedParts = partsData
+        .map((item) => {
+          const code = String(item?.ItemCode || item?.Code || '').trim();
+          const name = String(item?.ItemName || item?.Name || item?.Dscription || '').trim();
+          if (!code && !name) return null;
+          return {
+            ...item,
+            ItemCode: code,
+            ItemName: name || code,
+            UoM: item?.UoM || item?.InvntryUom || 'Nos',
+          };
+        })
+        .filter(Boolean);
+      setSpareParts(normalizedParts);
+
+      const teamsData = Array.isArray(teamsRes?.Data) ? teamsRes.Data : [];
+      if (teamsData.length > 0) {
+        setMaintenanceTeams(teamsData);
+        setMaintenanceTeamsAvailable(true);
+      } else {
+        setMaintenanceTeams([]);
+        setMaintenanceTeamsAvailable(false);
       }
 
       setLoadingMechanics(false);
@@ -150,6 +268,18 @@ const CreateJobCardScreen = ({ route, navigation }) => {
   };
 
   const handleSubmit = (values) => {
+    if (effectiveFaultEntries.length === 0) {
+      Toast.show({
+        type: 'error',
+        text1: 'Fault lines missing',
+        text2: 'This incident has no fault lines from API. Please refresh incident details and try again.',
+      });
+      return;
+    }
+
+    // Note: Mechanics/Electricians self-accept individual faults once the Team
+    // Leader accepts this job card (AcceptFault API) — Supervisor no longer needs
+    // to pre-assign a mechanic here.
     setFormValues(values);
     setShowConfirmation(true);
   };
@@ -199,19 +329,44 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         BranchNm: depot || '',
         Supervisr: user?.Code || user?.code || '',
         SprvsrNm: user?.FirstName || user?.name || '',
+        // Maintenance Team mapping — routes the Job Card to the correct Team Leader for accept/reject (SOP §1.3, §2)
+        TeamCode: selectedTeam?.TeamCode || '',
+        TeamName: selectedTeam?.TeamName || '',
+        TeamStatus: 'Pending',
         Operations: normalizedOperations,
         Parts: [],
-        Mechanics: formValues.assignedMechanics && formValues.assignedMechanics.length > 0
-          ? formValues.assignedMechanics.map(m => ({
-              Mechanic: m.FirstName || '',
-            }))
-          : [],
+        Mechanics: (function() {
+          if (effectiveFaultEntries.length > 0) {
+            // Derive unique mechanics from all per-fault assignments
+            const all = effectiveFaultEntries.flatMap(({ assignmentKey }) => (faultAssignments[assignmentKey]?.mechanics || []));
+            const unique = all.filter((m, i, arr) => arr.findIndex(x => (x.Code || x.FirstName) === (m.Code || m.FirstName)) === i);
+            return unique.map(m => ({ Mechanic: m.FirstName || '' }));
+          }
+          return (formValues.assignedMechanics || []).map(m => ({ Mechanic: m.FirstName || '' }));
+        }()),
         PartsReceived: [],
-        Faults: faults && faults.length > 0
-          ? faults.map(f => ({
-              Fault: f.Fault || '',
-              Dscption: f.Description || f.Dscption || f.FaultDescription || '',
-            }))
+        Faults: effectiveFaultEntries.length > 0
+          ? effectiveFaultEntries.map(({ fault: f, assignmentKey }) => {
+              const faultData = faultAssignments[assignmentKey] || { mechanics: [], parts: [] };
+              const mappedFaultName = String(f?.Fault || f?.FaultName || f?.FaultCode || f?.FaultDescription || '').trim();
+              const mappedFaultDesc = String(f?.Description || f?.Dscption || f?.FaultDescription || f?.FaultDesc || '').trim();
+              return {
+                Fault: mappedFaultName,
+                Dscption: mappedFaultDesc,
+                // Per-fault mechanics assigned by supervisor
+                Mechanics: faultData.mechanics.map(m => ({
+                  MechanicCode: m.Code || '',
+                  MechanicName: m.FirstName || m.Name || '',
+                })),
+                // Per-fault parts required
+                Parts: faultData.parts.map(p => ({
+                  ItemCode: p.ItemCode || p.Code || '',
+                  ItemName: p.ItemName || p.Name || '',
+                  Qty: parseFloat(p.Qty) || 1,
+                  UoM: p.UoM || 'Nos',
+                })),
+              };
+            })
           : [],
         ExtRmk: '',
         IntRmk: '',
@@ -243,11 +398,11 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           }
 
           const responseMessage = String(response?.Message || '');
-          if (responseMessage.toLowerCase().includes('qbs_jc_o')) {
-            throw new Error('Job card series setup missing (QBS_JC_O). Please contact backend admin.');
+          if (isJobCardSeriesNotFoundError({ message: responseMessage })) {
+            throw new Error(getSeriesErrorMessage(responseMessage));
           }
 
-          if (!responseMessage.toLowerCase().includes('qbs_jc_o')) {
+          if (!isJobCardSeriesNotFoundError({ message: responseMessage })) {
             break;
           }
 
@@ -255,7 +410,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         } catch (createError) {
           lastCreateError = createError;
           if (isJobCardSeriesNotFoundError(createError)) {
-            throw new Error('Job card series setup missing (QBS_JC_O). Please contact backend admin.');
+            throw new Error(getSeriesErrorMessage(createError?.message));
           }
 
           if (attempt === complaintTypeCandidates.length - 1) {
@@ -309,6 +464,37 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           }
         } catch (statusError) {
           console.log('ℹ️ Incident status sync skipped:', statusError?.message || statusError);
+        }
+
+        // Best-effort: forward any parts the Supervisor already knows are needed
+        // per fault to the Store module (RequestJobCardParts), keyed by FaultLine
+        // (1-based, matching the order faults were sent in the Faults[] array above).
+        if (createdJobCardDocEntry > 0) {
+          const partsPayload = effectiveFaultEntries
+            .map(({ assignmentKey, faultLine }) => ({ faultLine, parts: (faultAssignments[assignmentKey]?.parts || []) }))
+            .filter(({ parts }) => parts.length > 0)
+            .flatMap(({ faultLine, parts }) => parts.map(p => ({
+              FaultLine: faultLine,
+              ItemCode: p.ItemCode || p.Code || '',
+              ItemName: p.ItemName || p.Name || '',
+              ReqQty: parseFloat(p.Qty) || 1,
+              AddQty: 0,
+              Remarks: '',
+            })));
+
+          if (partsPayload.length > 0) {
+            try {
+              await storeService.requestJobCardParts({
+                CompanyDB: dbName || 'MUTSPL_TEST',
+                JobCardDocEntry: createdJobCardDocEntry,
+                UserCode: user?.Code || user?.code || '',
+                Parts: partsPayload,
+              });
+              console.log('✅ RequestJobCardParts sent for', partsPayload.length, 'part line(s)');
+            } catch (partsError) {
+              console.warn('⚠️ RequestJobCardParts failed (non-blocking):', partsError?.message || partsError);
+            }
+          }
         }
 
         Toast.show({
@@ -395,27 +581,55 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 <Text style={[styles.infoValue, { color: colors.dark }]}>{priority}</Text>
               </View>
 
-              {faults && faults.length > 0 && (
-                <View style={styles.faultsContainer}>
-                  <Text style={[styles.label, { color: colors.dark }]}>Reported Faults:</Text>
-                  {faults.filter(f => f.Fault && f.Fault.trim() !== '').map((fault, index) => (
-                    <View key={index} style={[styles.faultChip, { backgroundColor: colors.light }]}>
-                      <View style={styles.faultContent}>
-                        <View style={styles.faultHeader}>
-                          <MaterialIcons name="warning" size={16} color="#FF9800" />
-                          <Text style={[styles.faultText, { color: colors.dark, fontWeight: '600' }]}>{fault.Fault}</Text>
-                        </View>
-                        {(fault.Description || fault.Dscption || fault.FaultDescription) && (
-                          <Text style={[styles.faultDescription, { color: colors.gray }]}>
-                            {fault.Description || fault.Dscption || fault.FaultDescription}
-                          </Text>
-                        )}
-                      </View>
-                    </View>
-                  ))}
-                </View>
+              {effectiveFaultEntries.length > 0 && (
+                <Text style={[styles.hintText, { color: colors.gray }]}>
+                  Add Parts Required under each fault below.
+                </Text>
               )}
             </View>
+
+            {/* ── Fault Assignments Card (own prominent card) ── */}
+            {effectiveFaultEntries.length > 0 && (
+              <View style={[styles.section, { backgroundColor: colors.white }]}>
+                <View style={styles.sectionHeaderRow}>
+                  <MaterialIcons name="assignment-ind" size={20} color="#0070F2" />
+                  <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: 0, marginLeft: 8 }]}>
+                    Fault Parts
+                  </Text>
+                </View>
+                <Text style={[styles.sectionHint, { color: colors.gray }]}>
+                  Each fault has its own Parts Required. Mechanics/Electricians will self-accept faults once your Team Leader approves this job card.
+                </Text>
+                {effectiveFaultEntries
+                  .map(({ fault, assignmentKey }) => (
+                    <FaultMechanicPartsSection
+                      key={`fault-${assignmentKey}`}
+                      fault={fault}
+                      faultIndex={assignmentKey}
+                      mechanics={mechanics}
+                      spareParts={spareParts}
+                      isDarkMode={isDarkMode}
+                      value={faultAssignments[assignmentKey] || { mechanics: [], parts: [] }}
+                      onChange={handleFaultAssignmentChange}
+                      hideMechanics
+                    />
+                  ))}
+              </View>
+            )}
+
+            {effectiveFaultEntries.length === 0 && (
+              <View style={[styles.section, { backgroundColor: colors.white }]}>
+                <View style={styles.sectionHeaderRow}>
+                  <MaterialIcons name="warning-amber" size={20} color="#BB0000" />
+                  <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: 0, marginLeft: 8 }]}>
+                    Fault Parts
+                  </Text>
+                </View>
+                <Text style={[styles.sectionHint, { color: '#BB0000' }]}>
+                  No fault lines were returned by API for this incident. Job Card creation requires API fault data.
+                </Text>
+              </View>
+            )}
 
             {/* Job Card Details */}
             <View style={[styles.section, { backgroundColor: colors.white }]}>
@@ -457,6 +671,31 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 disabled
                 right={<TextInput.Icon icon="counter" />}
               />
+
+              {/* Maintenance Team — routes Job Card to a Team Leader for accept/reject (SOP §1.3, §2) */}
+              {maintenanceTeamsAvailable && maintenanceTeams.length > 0 && (
+                <>
+                  <Text style={[styles.label, { color: colors.dark }]}>Assign Maintenance Team (optional)</Text>
+                  <TouchableOpacity onPress={() => setShowTeamModal(true)} activeOpacity={0.7}>
+                    <View pointerEvents="none">
+                      <TextInput
+                        label="Select Team"
+                        mode="outlined"
+                        value={selectedTeam ? `${selectedTeam.TeamName || selectedTeam.TeamCode}` : ''}
+                        style={styles.input}
+                        placeholder="Tap to select maintenance team"
+                        editable={false}
+                        right={<TextInput.Icon icon="account-group" />}
+                      />
+                    </View>
+                  </TouchableOpacity>
+                  {selectedTeam?.TeamLeaderName ? (
+                    <Text style={[styles.hintText, { color: colors.gray, marginBottom: SPACING.sm }]}>
+                      Team Leader: {selectedTeam.TeamLeaderName}
+                    </Text>
+                  ) : null}
+                </>
+              )}
 
               {/* Route Number & Breakdown Place - Only for Breakdown */}
               {values.complaintType && values.complaintType.toLowerCase().includes('breakdown') && (
@@ -500,67 +739,6 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                   )}
                 </>
               )}
-
-              <Text style={[styles.label, { color: colors.dark }]}>Assign Mechanics *</Text>
-              <TouchableOpacity 
-                onPress={() => {
-                  // Initialize temp selected mechanics from formik values
-                  setTempSelectedMechanics(values.assignedMechanics || []);
-                  setShowMechanicModal(true);
-                }} 
-                activeOpacity={0.7}
-              >
-                <View pointerEvents="none">
-                  <TextInput
-                    label="Select Mechanics"
-                    mode="outlined"
-                    value={values.assignedMechanics.length > 0 
-                      ? `${values.assignedMechanics.length} mechanic(s) assigned` 
-                      : ''}
-                    error={errors.assignedMechanics && touched.assignedMechanics}
-                    style={styles.input}
-                    placeholder="Tap to select mechanics"
-                    editable={false}
-                    autoComplete="off"
-                    right={<TextInput.Icon icon="account-wrench" />}
-                  />
-                </View>
-              </TouchableOpacity>
-              {values.assignedMechanics.length > 0 && (
-                <View style={styles.selectedMechanics}>
-                  {values.assignedMechanics.map((mechanic, index) => (
-                    <Chip
-                      key={index}
-                      mode="flat"
-                      onClose={() => {
-                        const updated = values.assignedMechanics.filter((_, i) => i !== index);
-                        setFieldValue('assignedMechanics', updated);
-                      }}
-                      style={styles.mechanicChip}
-                    >
-                      {mechanic.FirstName}
-                    </Chip>
-                  ))}
-                </View>
-              )}
-              {errors.assignedMechanics && touched.assignedMechanics && (
-                <Text style={styles.errorText}>{errors.assignedMechanics}</Text>
-              )}
-
-              {/* Operations (Placeholder - API not ready) */}
-              <Text style={[styles.label, { color: colors.dark, marginTop: SPACING.md }]}>Operations</Text>
-              <View pointerEvents="none">
-                <TextInput
-                  label="Operations"
-                  mode="outlined"
-                  value={values.operations.length > 0 ? `${values.operations.length} operation(s) added` : 'Coming soon'}
-                  style={styles.input}
-                  placeholder="Operations management will be available soon"
-                  editable={false}
-                  disabled
-                  right={<TextInput.Icon icon="tools" />}
-                />
-              </View>
 
               <TextInput
                 label="Instructions *"
@@ -687,6 +865,42 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         message={`Are you sure you want to create job card for incident #${complaintNo}?`}
       />
 
+      {/* Maintenance Team Selector */}
+      <ModalSelector
+        visible={showTeamModal}
+        onClose={() => setShowTeamModal(false)}
+        onSelect={(value, item) => {
+          setSelectedTeam({
+            TeamCode: item.TeamCode || item.Code || '',
+            TeamName: item.TeamName || item.Name || item.TeamCode || '',
+            TeamLeaderName: item.TeamLeaderName || item.TeamLeader || '',
+          });
+          setShowTeamModal(false);
+        }}
+        title="Select Maintenance Team"
+        data={maintenanceTeams}
+        loading={loadingData}
+        searchPlaceholder="Search teams..."
+        displayKey="TeamName"
+        valueKey="TeamCode"
+        searchKeys={['TeamName', 'TeamCode', 'Depot']}
+        renderItem={(item) => (
+          <View>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: '#000' }}>
+              {item.TeamName || item.TeamCode}
+            </Text>
+            {item.TeamLeaderName ? (
+              <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
+                Team Leader: {item.TeamLeaderName}
+              </Text>
+            ) : null}
+            {item.Depot ? (
+              <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>Depot: {item.Depot}</Text>
+            ) : null}
+          </View>
+        )}
+      />
+
       <Loader visible={loading} text="Creating job card..." />
     </KeyboardAvoidingView>
   );
@@ -727,6 +941,19 @@ const styles = StyleSheet.create({
   },
   faultsContainer: {
     marginTop: SPACING.md,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  sectionHint: {
+    fontSize: 13,
+    marginBottom: SPACING.sm,
+  },
+  hintText: {
+    fontSize: 12,
+    marginTop: 2,
   },
   faultChip: {
     flexDirection: 'row',
