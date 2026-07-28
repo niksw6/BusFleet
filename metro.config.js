@@ -14,6 +14,16 @@ const customConfig = {
 			'expo-font': path.resolve(__dirname, 'shims/expo-font'),
 		},
 		resolveRequest: (context, moduleName, platform) => {
+			// Expo's Metro integration rewrites react-native-vector-icons to
+			// @expo/vector-icons. This bare Android build has no Expo asset native
+			// module, so that rewrite makes Material fonts download at runtime.
+			// Resolve both spellings to the locally bundled RNVI font instead.
+			if (moduleName === '@expo/vector-icons/MaterialIcons' || moduleName === 'react-native-vector-icons/MaterialIcons') {
+				return { filePath: path.resolve(__dirname, 'node_modules/react-native-vector-icons/MaterialIcons.js'), type: 'sourceFile' };
+			}
+			if (moduleName === '@expo/vector-icons/MaterialCommunityIcons' || moduleName === 'react-native-vector-icons/MaterialCommunityIcons') {
+				return { filePath: path.resolve(__dirname, 'node_modules/react-native-vector-icons/MaterialCommunityIcons.js'), type: 'sourceFile' };
+			}
 			// Redirect expo-asset and expo-file-system to no-op shims.
 			// expo/build/Expo.fx.js imports expo-asset which pulls in expo-file-system,
 			// but neither native side is linked in this bare workflow.

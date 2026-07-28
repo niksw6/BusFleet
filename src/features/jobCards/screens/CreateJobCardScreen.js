@@ -14,7 +14,7 @@ import { useSelector } from 'react-redux';
 import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
-import { complaintService, jobCardService, masterService, storeService } from '../../../api/services';
+import { complaintService, jobCardService, masterService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import ModalSelector from '../../../shared/components/ModalSelector';
@@ -53,14 +53,14 @@ const formatToHHMM = (value, fallback = '0000') => {
 
 const normalizeJobCardComplaintType = (value) => {
   const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) return 'Driver Complaints';
+  if (!normalized) return 'Driver Complaint';
 
   if (normalized === 'b' || normalized.includes('breakdown')) {
     return 'Breakdown';
   }
 
   if (normalized.includes('driver complaint') || normalized === 'd' || normalized === 'complaint') {
-    return 'Driver Complaints';
+    return 'Driver Complaint';
   }
 
   if (normalized.includes('preventive')) {
@@ -70,11 +70,11 @@ const normalizeJobCardComplaintType = (value) => {
   if (normalized.includes('mechanical')) {
     // Backend JC series is typically keyed for Driver Complaints/Breakdown.
     // Map mechanical labels to driver-complaint series to avoid unsupported JC series.
-    return 'Driver Complaints';
+    return 'Driver Complaint';
   }
 
   // Default all other non-breakdown values to Driver Complaints for stable series mapping.
-  return 'Driver Complaints';
+  return 'Driver Complaint';
 };
 
 const isJobCardSeriesNotFoundError = (error) => {
@@ -137,6 +137,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
     return routeFaultEntries.map(({ fault, originalIndex }, idx) => ({
       fault,
       assignmentKey: `route-${originalIndex}`,
+      // Store and mechanic APIs identify fault lines starting at 1.
       faultLine: idx + 1,
     }));
   }, [routeFaultEntries]);
@@ -295,10 +296,19 @@ const CreateJobCardScreen = ({ route, navigation }) => {
       const formattedHours = now.getHours().toString().padStart(2, '0');
       const formattedMinutes = now.getMinutes().toString().padStart(2, '0');
       const formattedTimeHHMM = `${formattedHours}${formattedMinutes}`;
+      const partRequestDate = formattedDate;
+      const partRequestTime = formattedTimeHHMM;
+      const supervisorCode = String(
+        user?.Code || user?.code || user?.UserCode || user?.userCode || user?.User || user?.user || ''
+      ).trim();
       const complaintTypeForApi = normalizeJobCardComplaintType(formValues.complaintType || complaintType);
       const normalizedOperations = (formValues.operations || []).map(operation => ({
-        ...operation,
-        U_RTime: formatToHHMM(operation?.U_RTime, formattedTimeHHMM),
+        OPCode: operation?.OPCode || operation?.Code || operation?.OperationCode || '',
+        OPName: operation?.OPName || operation?.Name || operation?.OperationName || '',
+        StdTime: operation?.StdTime || operation?.StandardTime || '',
+        STime: operation?.STime || operation?.StartTime || formattedTimeHHMM,
+        ETime: operation?.ETime || operation?.EndTime || '',
+        Status: operation?.Status || 'O',
       }));
       const jobTypeCode = getJobTypeCode(complaintTypeForApi);
 
@@ -323,48 +333,46 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         BreakdownPlace: formValues.breakdownPlace || '',
         FormType: jobTypeCode,
         JobType: jobTypeCode,
-        CmplaintNo: complaintNo || '',
-        ComplaintNo: complaintNo || '',
+        CmplaintNo: Number(complaintNo) || complaintNo || '',
+        ComplaintNo: Number(complaintNo) || complaintNo || '',
         Branch: '1',
         BranchNm: depot || '',
-        Supervisr: user?.Code || user?.code || '',
+        Supervisr: supervisorCode,
         SprvsrNm: user?.FirstName || user?.name || '',
-        // Maintenance Team mapping — routes the Job Card to the correct Team Leader for accept/reject (SOP §1.3, §2)
         TeamCode: selectedTeam?.TeamCode || '',
         TeamName: selectedTeam?.TeamName || '',
         TeamStatus: 'Pending',
         Operations: normalizedOperations,
-        Parts: [],
+        // The updated CreateJobCard contract stores each supervisor-selected
+        // part here, attached to its one-based fault line.
+        Parts: effectiveFaultEntries.flatMap(({ assignmentKey, faultLine }) => (
+          (faultAssignments[assignmentKey]?.parts || []).map(p => ({
+            ItemCode: p.ItemCode || p.Code || '',
+            ItemName: p.ItemName || p.Name || '',
+            ReqQty: parseFloat(p.Qty) || 1,
+            FaultLine: faultLine,
+            ReqBy: supervisorCode,
+            ReqDate: partRequestDate,
+            ReqTime: partRequestTime,
+          }))
+        )),
         Mechanics: (function() {
           if (effectiveFaultEntries.length > 0) {
             // Derive unique mechanics from all per-fault assignments
             const all = effectiveFaultEntries.flatMap(({ assignmentKey }) => (faultAssignments[assignmentKey]?.mechanics || []));
             const unique = all.filter((m, i, arr) => arr.findIndex(x => (x.Code || x.FirstName) === (m.Code || m.FirstName)) === i);
-            return unique.map(m => ({ Mechanic: m.FirstName || '' }));
+            return unique.map(m => ({ Mechanic: m.Code || m.EmpCode || m.FirstName || '' }));
           }
-          return (formValues.assignedMechanics || []).map(m => ({ Mechanic: m.FirstName || '' }));
+          return (formValues.assignedMechanics || []).map(m => ({ Mechanic: m.Code || m.EmpCode || m.FirstName || '' }));
         }()),
         PartsReceived: [],
         Faults: effectiveFaultEntries.length > 0
-          ? effectiveFaultEntries.map(({ fault: f, assignmentKey }) => {
-              const faultData = faultAssignments[assignmentKey] || { mechanics: [], parts: [] };
+          ? effectiveFaultEntries.map(({ fault: f }) => {
               const mappedFaultName = String(f?.Fault || f?.FaultName || f?.FaultCode || f?.FaultDescription || '').trim();
               const mappedFaultDesc = String(f?.Description || f?.Dscption || f?.FaultDescription || f?.FaultDesc || '').trim();
               return {
                 Fault: mappedFaultName,
                 Dscption: mappedFaultDesc,
-                // Per-fault mechanics assigned by supervisor
-                Mechanics: faultData.mechanics.map(m => ({
-                  MechanicCode: m.Code || '',
-                  MechanicName: m.FirstName || m.Name || '',
-                })),
-                // Per-fault parts required
-                Parts: faultData.parts.map(p => ({
-                  ItemCode: p.ItemCode || p.Code || '',
-                  ItemName: p.ItemName || p.Name || '',
-                  Qty: parseFloat(p.Qty) || 1,
-                  UoM: p.UoM || 'Nos',
-                })),
               };
             })
           : [],
@@ -372,56 +380,14 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         IntRmk: '',
       });
 
-      const complaintTypeCandidates = [complaintTypeForApi];
-      if (jobTypeCode === 'D') {
-        ['Driver Complaints', 'Mechanical', 'Driver Complaint'].forEach((candidate) => {
-          if (!complaintTypeCandidates.includes(candidate)) {
-            complaintTypeCandidates.push(candidate);
-          }
-        });
-      }
-
-      let response;
-      let lastCreateError;
-
-      for (let attempt = 0; attempt < complaintTypeCandidates.length; attempt += 1) {
-        const attemptComplaintType = complaintTypeCandidates[attempt];
-        const attemptPayload = createJobCardPayload(attemptComplaintType);
-
-        console.log('💼 Creating job card:', JSON.stringify(attemptPayload, null, 2));
-        console.log('🔍 ComplaintType (API):', attemptComplaintType, '| Input:', formValues.complaintType || complaintType, '| Attempt:', attempt + 1);
-
-        try {
-          response = await jobCardService.createJobCard(attemptPayload);
-          if (response?.Success) {
-            break;
-          }
-
-          const responseMessage = String(response?.Message || '');
-          if (isJobCardSeriesNotFoundError({ message: responseMessage })) {
-            throw new Error(getSeriesErrorMessage(responseMessage));
-          }
-
-          if (!isJobCardSeriesNotFoundError({ message: responseMessage })) {
-            break;
-          }
-
-          lastCreateError = new Error(responseMessage);
-        } catch (createError) {
-          lastCreateError = createError;
-          if (isJobCardSeriesNotFoundError(createError)) {
-            throw new Error(getSeriesErrorMessage(createError?.message));
-          }
-
-          if (attempt === complaintTypeCandidates.length - 1) {
-            throw createError;
-          }
-          console.warn('⚠️ Retrying CreateJobCard with fallback ComplaintType due to backend series error.');
-        }
-      }
-
-      if (!response?.Success && lastCreateError) {
-        throw lastCreateError;
+      // Use the same canonical type as the incident. Retrying with arbitrary
+      // type labels can create a Job Card in a different backend series.
+      const attemptPayload = createJobCardPayload(complaintTypeForApi);
+      console.log('💼 Creating job card:', JSON.stringify(attemptPayload, null, 2));
+      console.log('🔍 ComplaintType (API):', complaintTypeForApi, '| Input:', formValues.complaintType || complaintType);
+      const response = await jobCardService.createJobCard(attemptPayload);
+      if (response?.Success === false && isJobCardSeriesNotFoundError({ message: response?.Message })) {
+        throw new Error(getSeriesErrorMessage(response?.Message));
       }
       
       console.log('✅ Job card created:', response);
@@ -464,37 +430,6 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           }
         } catch (statusError) {
           console.log('ℹ️ Incident status sync skipped:', statusError?.message || statusError);
-        }
-
-        // Best-effort: forward any parts the Supervisor already knows are needed
-        // per fault to the Store module (RequestJobCardParts), keyed by FaultLine
-        // (1-based, matching the order faults were sent in the Faults[] array above).
-        if (createdJobCardDocEntry > 0) {
-          const partsPayload = effectiveFaultEntries
-            .map(({ assignmentKey, faultLine }) => ({ faultLine, parts: (faultAssignments[assignmentKey]?.parts || []) }))
-            .filter(({ parts }) => parts.length > 0)
-            .flatMap(({ faultLine, parts }) => parts.map(p => ({
-              FaultLine: faultLine,
-              ItemCode: p.ItemCode || p.Code || '',
-              ItemName: p.ItemName || p.Name || '',
-              ReqQty: parseFloat(p.Qty) || 1,
-              AddQty: 0,
-              Remarks: '',
-            })));
-
-          if (partsPayload.length > 0) {
-            try {
-              await storeService.requestJobCardParts({
-                CompanyDB: dbName || 'MUTSPL_TEST',
-                JobCardDocEntry: createdJobCardDocEntry,
-                UserCode: user?.Code || user?.code || '',
-                Parts: partsPayload,
-              });
-              console.log('✅ RequestJobCardParts sent for', partsPayload.length, 'part line(s)');
-            } catch (partsError) {
-              console.warn('⚠️ RequestJobCardParts failed (non-blocking):', partsError?.message || partsError);
-            }
-          }
         }
 
         Toast.show({

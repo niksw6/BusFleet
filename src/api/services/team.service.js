@@ -7,6 +7,7 @@ import { get, post, handleApiError } from '../client';
  *   GET  GetMechanicalDashboard?CompanyDB=...&UserCode=...
  *   GET  GetMyTeamMembers?CompanyDB=...&UserCode=...
  *   GET  GetJobCardFaults?CompanyDB=...&DocEntry=...
+ *   POST AssignTeam         { CompanyDB, JobCardDocEntry, TeamCode, UserCode }
  *   POST UpdateTeamStatus  { CompanyDB, DocEntry, UserCode, Status: 'A'|'R', Remarks }
  *
  * Flow (per SOP + Driver Complaint Incident Flow):
@@ -17,6 +18,37 @@ import { get, post, handleApiError } from '../client';
  *   assign faults, the team pulls work themselves.
  */
 export const teamService = {
+  getPendingAssignments: async (companyDB, leaderCode) => {
+    const response = await get(`GetPendingAssignments?CompanyDB=${companyDB}&LeaderCode=${encodeURIComponent(leaderCode)}`, { suppressErrorLog: true });
+    return response.data;
+  },
+
+  acceptIncident: async (companyDB, jobCardNo, leaderCode) => {
+    const response = await post('AcceptIncident', { CompanyDB: companyDB, JobCardNo: Number(jobCardNo) || jobCardNo, LeaderCode: leaderCode }, { suppressErrorLog: true });
+    return response.data;
+  },
+
+  rejectIncident: async (companyDB, jobCardNo, leaderCode, reason) => {
+    const response = await post('RejectIncident', { CompanyDB: companyDB, JobCardNo: Number(jobCardNo) || jobCardNo, LeaderCode: leaderCode, Reason: reason });
+    return response.data;
+  },
+
+  getAssignedFaults: async (companyDB, jobCardNo) => {
+    const response = await get(`GetAssignedFaults?CompanyDB=${companyDB}&JobCardNo=${jobCardNo}`);
+    return response.data;
+  },
+
+  // Live API contract:
+  // { CompanyDB, DocEntry, Lines:[{ FaultLine, FaultCode, FaultName,
+  //   MechanicCode, MechanicName, DueHours }] }
+  assignMechanics: async (companyDB, docEntry, lines) => {
+    const response = await post('AssignMechanics', {
+      CompanyDB: companyDB,
+      DocEntry: Number(docEntry) || docEntry,
+      Lines: lines,
+    }, { suppressErrorLog: true });
+    return response.data;
+  },
   /**
    * Team Leader's dashboard — summary + list of job cards for their team(s).
    * @param {string} companyDB
@@ -66,6 +98,23 @@ export const teamService = {
     } catch (error) {
       throw new Error(handleApiError(error));
     }
+  },
+
+  /**
+   * Ensures the accepting Team Leader's team is assigned to the Job Card before
+   * its acceptance status is changed.
+   */
+  assignTeam: async (companyDB, jobCardDocEntry, teamCode, userCode) => {
+    const payload = {
+      CompanyDB: companyDB,
+      JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
+      TeamCode: teamCode,
+      UserCode: userCode,
+    };
+    console.log('AssignTeam:', JSON.stringify(payload, null, 2));
+    const response = await post('AssignTeam', payload);
+    console.log('AssignTeam response:', response.data);
+    return response.data;
   },
 
   /**

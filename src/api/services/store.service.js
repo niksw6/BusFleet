@@ -26,9 +26,8 @@ export const storeService = {
    * Supervisor requests parts for one or more faults on a Job Card (known upfront).
    * @param {Object} payload
    * @param {string} payload.CompanyDB
-   * @param {number} payload.JobCardDocEntry
-   * @param {string} payload.UserCode - Supervisor code
-   * @param {Array}  payload.Parts - [{ FaultLine, ItemCode, ItemName, ReqQty, AddQty, Remarks }]
+   * @param {number} payload.DocEntry
+   * @param {Array}  payload.Parts - [{ FaultLine, ItemCode, ItemName, ReqQty, ReqBy, ReqDate, ReqTime }]
    */
   requestJobCardParts: async (payload) => {
     console.log('📦 RequestJobCardParts:', JSON.stringify(payload, null, 2));

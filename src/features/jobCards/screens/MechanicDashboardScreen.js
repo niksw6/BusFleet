@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
+import { useFocusEffect } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
 import MaterialIcons from '../../../components/AppIcon.js';
 
@@ -14,11 +15,11 @@ import { getUserRole } from '../../../utils/roleAccess';
 /**
  * MechanicDashboardScreen — Mechanic / Electrician's "My Work" queue.
  *
- * Uses the confirmed live endpoint:
- *   GET GetMechanicDashboard?CompanyDB=...&UserCode=...
+ * Prefers the documented GetMyJobs endpoint, with the deployed mechanic
+ * dashboard retained as a compatibility fallback.
  *
  * Flow: once a Team Leader accepts a Job Card, its faults become visible here
- * for the team's Mechanics/Electricians to self-accept (AcceptFault), then
+ * for the team's Mechanics/Electricians to accept, then
  * Start Work / log Work Entries / request parts / Complete Work — all handled
  * on FaultWorkScreen.
  */
@@ -60,6 +61,18 @@ const extractItems = (data) => {
 const getDocEntry = (item) => item?.DocEntry ?? item?.JobCardDocEntry ?? item?.JobCardNo ?? '';
 const getFaultLine = (item) => item?.FaultLine ?? item?.Line ?? item?.LineNum ?? 0;
 const itemKey = (item) => `${getDocEntry(item)}-${getFaultLine(item)}`;
+const getActiveWorkEntry = (item) => {
+  const entries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
+  return entries.find(entry => !['C', 'CM', 'COMPLETED', 'COMPLETE'].includes(String(entry?.Status || '').trim().toUpperCase()))
+    || entries[0]
+    || null;
+};
+const hasStartedWork = (item) => {
+  const status = String(item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? '').trim().toUpperCase();
+  return ['STARTED', 'IN PROGRESS', 'INPROGRESS', 'IP'].includes(status)
+    || Boolean(String(item?.StartDate || '').trim())
+    || Boolean(String(item?.StartTime || '').trim());
+};
 const getBusLabel = (item) => (
   String(
     item?.BusNo
@@ -77,6 +90,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const userCode = user?.Code || user?.code || user?.User || user?.user || user?.name || '';
+  const assigneeName = user?.FirstName || user?.Name || user?.name || userCode || 'You';
   const roleLabel = getUserRole(user) === 'Electrician' ? 'Electrician' : 'Mechanic';
 
   const [loading, setLoading] = useState(true);
@@ -88,7 +102,14 @@ const MechanicDashboardScreen = ({ navigation }) => {
   const fetchData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const res = await mechanicService.getMechanicDashboard(companyDb, userCode);
+      // Prefer the documented per-mechanic queue; retain the live dashboard as
+      // a compatibility fallback until every backend deployment is upgraded.
+      let res;
+      try {
+        res = await mechanicService.getMyJobs(companyDb, userCode);
+      } catch (apiError) {
+        res = await mechanicService.getMechanicDashboard(companyDb, userCode);
+      }
       setItems(extractItems(res?.Data ?? res));
     } catch (error) {
       console.error('❌ Error loading Mechanic Dashboard:', error);
@@ -99,9 +120,11 @@ const MechanicDashboardScreen = ({ navigation }) => {
     }
   }, [dbName, userCode]);
 
-  useEffect(() => {
+  // Refresh when returning from Fault Work so started faults and newly-created
+  // WorkEntries are not shown using the stale dashboard item.
+  useFocusEffect(useCallback(() => {
     fetchData();
-  }, [fetchData]);
+  }, [fetchData]));
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -119,7 +142,12 @@ const MechanicDashboardScreen = ({ navigation }) => {
     try {
       setSubmittingKey(key);
       const companyDb = dbName || 'MUTSPL_TEST';
-      const response = await mechanicService.acceptFault(companyDb, getDocEntry(item), getFaultLine(item), userCode);
+      const response = await mechanicService.acceptFault(
+        companyDb,
+        getDocEntry(item),
+        getFaultLine(item),
+        userCode,
+      );
       if (response?.Success !== false) {
         Toast.show({ type: 'success', text1: 'Fault accepted', text2: 'Head to "In Progress" to start work.' });
         setItems(prev => prev.map(i => (itemKey(i) === key ? { ...i, Status: 'A' } : i)));
@@ -135,10 +163,14 @@ const MechanicDashboardScreen = ({ navigation }) => {
   };
 
   const openFault = (item) => {
+    const activeWorkEntry = getActiveWorkEntry(item);
     navigation.navigate('FaultWork', {
       docEntry: getDocEntry(item),
       faultLine: getFaultLine(item),
       fault: item,
+      workEntryDocEntry: activeWorkEntry?.DocEntry || activeWorkEntry?.WorkEntryDocEntry || null,
+      existingWorkEntry: activeWorkEntry,
+      isWorkStarted: hasStartedWork(item),
       dbName: dbName || 'MUTSPL_TEST',
     });
   };
@@ -149,6 +181,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
     const faultName = item?.Fault || item?.FaultName || item?.Description || 'Fault';
     const busNo = getBusLabel(item);
     const displayNo = item?.JobCardNo || item?.DocNum || getDocEntry(item);
+    const assignedName = item?.AssignedMechanic?.UserName || item?.MechanicName || item?.AssignedToName || item?.EmployeeName || item?.EmpName || assigneeName;
 
     const statusColor =
       bucket === BUCKET.COMPLETED ? colors.statusCompleted
@@ -168,6 +201,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
           </View>
           <View style={{ flex: 1, marginLeft: 10 }}>
             <Text style={[styles.faultName, { color: colors.dark }]}>{faultName}</Text>
+            <Text style={[styles.assigneeText, { color: colors.primary }]}>Assigned to: {assignedName}</Text>
             <Text style={[styles.cardSub, { color: colors.gray }]}>
               Job Card #{displayNo} • {busNo} • {item?.Priority || 'Medium'}
             </Text>
@@ -206,7 +240,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
         title="My Work"
         subtitle={roleLabel}
         onMenuPress={() => navigation.openDrawer && navigation.openDrawer()}
-        showNotifications={false}
+        showNotifications={true}
         useGradient={false}
       />
 
@@ -284,6 +318,7 @@ const styles = StyleSheet.create({
   },
   faultName: { fontSize: 14, fontWeight: '700' },
   cardSub: { fontSize: 12, marginTop: 2 },
+  assigneeText: { fontSize: 12, marginTop: 4, fontWeight: '600' },
   acceptBtn: {
     flexDirection: 'row',
     alignItems: 'center',

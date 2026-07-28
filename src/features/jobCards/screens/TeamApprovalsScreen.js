@@ -15,8 +15,9 @@ import MaterialIcons from '../../../components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { teamService } from '../../../api/services';
+import { teamService, masterService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
+import { getUserTeamCode } from '../../../utils/roleAccess';
 
 /**
  * TeamApprovalsScreen — Team Leader's queue.
@@ -66,6 +67,64 @@ const extractJobCards = (data) => {
     if (Array.isArray(value)) return value;
   }
   return [];
+};
+
+const extractList = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+  return Object.values(data).find(Array.isArray) || [];
+};
+
+// AssignMechanics stores this value as the mechanic's FaultLine. The current
+// backend returns FaultLine as zero-based, while LineId (when supplied) is
+// already one-based. Always send the one-based contract.
+const getAssignmentFaultLine = (fault, index = 0) => {
+  const lineId = Number(fault?.LineId);
+  if (Number.isFinite(lineId) && lineId > 0) return lineId;
+
+  const backendLine = fault?.FaultLine ?? fault?.Line ?? fault?.LineNum;
+  const numericLine = Number(backendLine);
+  if (Number.isFinite(numericLine)) return numericLine + 1;
+
+  return index + 1;
+};
+
+const resolveLeaderTeamCode = (teams, user, leaderCode) => {
+  const normalizedLeaderCode = String(leaderCode || '').trim().toLowerCase();
+  const normalizedLeaderNames = [user?.FirstName, user?.Name, user?.name, user?.User, user?.user]
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  const match = teams.find((team) => {
+    const mappedLeaderCode = String(
+      team?.TeamLeaderCode || team?.TeamLeadCode || team?.LeaderCode || team?.UserCode || ''
+    ).trim().toLowerCase();
+    const mappedLeaderName = String(
+      team?.TeamLeaderName || team?.TeamLeadName || team?.LeaderName || ''
+    ).trim().toLowerCase();
+
+    return (normalizedLeaderCode && mappedLeaderCode === normalizedLeaderCode)
+      || (mappedLeaderName && normalizedLeaderNames.includes(mappedLeaderName));
+  });
+
+  return String(match?.TeamCode || match?.Code || '').trim() || null;
+};
+
+// GetMyTeamMembers is user-scoped, so its response is also a reliable fallback
+// when the team-master endpoint is not enabled on a deployment.
+const resolveMembersTeamCode = (members) => {
+  const memberWithTeam = members.find((member) => {
+    const value = member?.TeamCode || member?.teamCode || member?.MaintenanceTeamCode || member?.maintenanceTeamCode;
+    return String(value || '').trim();
+  });
+  return String(
+    memberWithTeam?.TeamCode
+    || memberWithTeam?.teamCode
+    || memberWithTeam?.MaintenanceTeamCode
+    || memberWithTeam?.maintenanceTeamCode
+    || ''
+  ).trim() || null;
 };
 
 const normalizeTeamMembers = (members = []) => (
@@ -135,6 +194,15 @@ const normalizeTeamMembers = (members = []) => (
 const getDocEntry = (job) => job?.DocEntry ?? job?.JobCardDocEntry ?? job?.JobCardNo ?? '';
 const jobKey = (job) => String(getDocEntry(job));
 
+const resolveMasterFaultCode = (fault, faultMasters = []) => {
+  const sourceValues = [fault?.FaultCode, fault?.Fault, fault?.FaultName, fault?.FaultDescription, fault?.Description]
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(Boolean);
+  const match = faultMasters.find((master) => [master?.FaultCode, master?.Fault, master?.Description]
+    .some(value => sourceValues.includes(String(value || '').trim().toLowerCase())));
+  return String(match?.FaultCode || fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
+};
+
 const getBusLabel = (entity) => (
   String(
     entity?.BusNo
@@ -153,15 +221,23 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const teamLeaderCode = user?.User || user?.user || user?.Code || user?.code || '';
   const teamLeaderName = user?.FirstName || user?.Name || user?.name || 'Team Leader';
+  const teamLeaderTeamCode = getUserTeamCode(user);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [jobCards, setJobCards] = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
+  const [maintenanceTeams, setMaintenanceTeams] = useState([]);
+  const [faultMasters, setFaultMasters] = useState([]);
+  const [teamCodeFromApi, setTeamCodeFromApi] = useState(null);
   const [activeTab, setActiveTab] = useState(STATUS.PENDING);
   const [expandedKey, setExpandedKey] = useState(null);
   const [faultsMap, setFaultsMap] = useState({}); // { [jobKey]: { loading, data } }
   const [submitting, setSubmitting] = useState(false);
+  const [assigningFaultKey, setAssigningFaultKey] = useState(null);
+  const [acceptTarget, setAcceptTarget] = useState(null);
+  const [faultAssignments, setFaultAssignments] = useState({});
+  const [showAssignmentConfirm, setShowAssignmentConfirm] = useState(false);
 
   // Reject reason modal
   const [rejectTarget, setRejectTarget] = useState(null);
@@ -174,13 +250,24 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
       if (!teamLeaderCode) {
         throw new Error('User code is missing for Team Leader API');
       }
-      const [dashboardRes, membersRes] = await Promise.all([
+      const [dashboardRes, membersRes, faultMastersRes] = await Promise.all([
         teamService.getMechanicalDashboard(companyDb, teamLeaderCode),
         teamService.getMyTeamMembers(companyDb, teamLeaderCode),
+        masterService.getFaultDetails(companyDb).catch(() => null),
       ]);
 
       setJobCards(extractJobCards(dashboardRes?.Data ?? dashboardRes));
-      setTeamMembers(normalizeTeamMembers(Array.isArray(membersRes?.Data) ? membersRes.Data : []));
+      const memberRows = extractList(membersRes);
+      console.log('GetMyTeamMembers response:', JSON.stringify(membersRes));
+      setTeamMembers(normalizeTeamMembers(memberRows));
+      setTeamCodeFromApi(String(
+        membersRes?.Data?.TeamCode
+        || membersRes?.data?.TeamCode
+        || membersRes?.TeamCode
+        || ''
+      ).trim() || null);
+      setMaintenanceTeams([]);
+      setFaultMasters(extractList(faultMastersRes));
     } catch (error) {
       console.error('❌ Error loading Team Dashboard:', error);
       Toast.show({ type: 'error', text1: 'Error', text2: error?.message || 'Failed to load your team dashboard' });
@@ -228,8 +315,10 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
         ? res.Data.Faults
         : (Array.isArray(res?.Data) ? res.Data : []);
       setFaultsMap(prev => ({ ...prev, [key]: { loading: false, data: faultRows } }));
+      return faultRows;
     } catch (error) {
       setFaultsMap(prev => ({ ...prev, [key]: { loading: false, data: [] } }));
+      return [];
     }
   };
 
@@ -243,16 +332,85 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
     loadFaults(job);
   };
 
-  const handleAccept = async (job) => {
+  const openAssignmentConfirm = async (job) => {
+    const faults = faultsMap[jobKey(job)]?.data || await loadFaults(job);
+    if (faults.length === 0) {
+      Toast.show({ type: 'error', text1: 'Faults are required', text2: 'This Job Card has no faults available to assign.' });
+      return;
+    }
+    setFaultAssignments({});
+    setAcceptTarget(job);
+    setShowAssignmentConfirm(true);
+  };
+
+  const handleAccept = async (job, assignments = {}) => {
     try {
       setSubmitting(true);
       const companyDb = dbName || 'MUTSPL_TEST';
       if (!teamLeaderCode) {
         throw new Error('User code is missing for Team Leader API');
       }
+      const mappedTeamCode = resolveLeaderTeamCode(maintenanceTeams, user, teamLeaderCode);
+      const membersTeamCode = resolveMembersTeamCode(teamMembers);
+      const teamCode = String(
+        job?.TeamCode
+        || job?.teamCode
+        || teamLeaderTeamCode
+        || teamCodeFromApi
+        || membersTeamCode
+        || mappedTeamCode
+        || ''
+      ).trim();
+      if (!teamCode) {
+        throw new Error('Team code is missing. Please contact an administrator before accepting this job card.');
+      }
+
+      // A Job Card must be assigned to this Team Leader's team before it can be accepted.
+      const assignResponse = await teamService.assignTeam(
+        companyDb,
+        getDocEntry(job),
+        teamCode,
+        teamLeaderCode,
+      );
+      if (assignResponse?.Success === false || assignResponse?.Status === false) {
+        throw new Error(assignResponse?.Message || 'Could not assign the team to this job card');
+      }
+
       const response = await teamService.updateTeamStatus(companyDb, getDocEntry(job), teamLeaderCode, 'A');
       if (response?.Success !== false) {
-        Toast.show({ type: 'success', text1: 'Accepted', text2: 'Your team will now be able to pick up faults on this job card.' });
+        const faultRows = faultsMap[jobKey(job)]?.data || [];
+        const assignmentRows = faultRows.map((fault, index) => {
+          const sourceCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
+          const code = resolveMasterFaultCode(fault, faultMasters);
+          const member = assignments[sourceCode];
+          return member ? {
+            FaultLine: getAssignmentFaultLine(fault, index),
+            FaultCode: code,
+            FaultName: String(fault?.FaultName || fault?.FaultDescription || fault?.Description || fault?.Dscption || code).trim(),
+            MechanicCode: member.ResolvedCode,
+            MechanicName: member.DisplayName,
+            DueHours: Number(fault?.DueHours || fault?.EstimatedHours || 0),
+          } : null;
+        }).filter(Boolean);
+        if (assignmentRows.length !== faultRows.length) {
+          throw new Error('Assign one mechanic or electrician to every fault before accepting.');
+        }
+        const assignmentResponse = await teamService.assignMechanics(companyDb, getDocEntry(job), assignmentRows);
+        if (assignmentResponse?.Success === false) {
+          throw new Error(assignmentResponse?.Message || 'Job accepted, but the fault assignments were not saved.');
+        }
+        setFaultsMap(previous => ({
+          ...previous,
+          [jobKey(job)]: {
+            ...previous[jobKey(job)],
+            data: faultRows.map(fault => {
+              const sourceCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
+              const member = assignments[sourceCode];
+              return member ? { ...fault, MechanicName: member.DisplayName, MechanicCode: member.ResolvedCode, Status: 'ASSIGNED' } : fault;
+            }),
+          },
+        }));
+        Toast.show({ type: 'success', text1: 'Job accepted and assigned', text2: 'Each mechanic now receives only their own fault.' });
         setJobCards(prev => prev.map(j => (jobKey(j) === jobKey(job) ? { ...j, Status: 'A', TeamStatus: 'A' } : j)));
       } else {
         Toast.show({ type: 'error', text1: 'Failed', text2: response?.Message || 'Could not accept job card' });
@@ -305,7 +463,58 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
     }
   };
 
-  const renderFaultRow = (fault, idx) => {
+  const assignMechanic = async (job, fault, member) => {
+    const faultCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
+    if (!faultCode || !member?.ResolvedCode) {
+      Toast.show({ type: 'error', text1: 'Cannot assign', text2: 'This fault or team member has no code.' });
+      return;
+    }
+    const key = `${jobKey(job)}-${faultCode}`;
+    try {
+      setAssigningFaultKey(key);
+      const response = await teamService.assignMechanics(
+        dbName || 'MUTSPL_TEST', getDocEntry(job),
+        [{
+          FaultLine: getAssignmentFaultLine(fault),
+          FaultCode: resolveMasterFaultCode(fault, faultMasters),
+          FaultName: String(fault?.FaultName || fault?.FaultDescription || fault?.Description || faultCode).trim(),
+          MechanicCode: member.ResolvedCode,
+          MechanicName: member.DisplayName,
+          DueHours: Number(fault?.DueHours || fault?.EstimatedHours || 0),
+        }],
+      );
+      if (response?.Success === false) throw new Error(response?.Message || 'Assignment was not saved');
+      setFaultsMap(previous => ({
+        ...previous,
+        [jobKey(job)]: {
+          ...previous[jobKey(job)],
+          data: (previous[jobKey(job)]?.data || []).map(row => row === fault
+            ? { ...row, MechanicName: member.DisplayName, Status: 'ASSIGNED' } : row),
+        },
+      }));
+      Toast.show({ type: 'success', text1: 'Mechanic assigned', text2: `${member.DisplayName} can now accept this fault.` });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Assignment failed', text2: error?.message || 'Could not assign this fault' });
+    } finally {
+      setAssigningFaultKey(null);
+    }
+  };
+
+  const confirmAcceptanceWithAssignments = async () => {
+    if (!acceptTarget) return;
+    const faults = faultsMap[jobKey(acceptTarget)]?.data || [];
+    const missingAssignment = faults.some(fault => !faultAssignments[String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim()]);
+    if (missingAssignment) {
+      Toast.show({ type: 'error', text1: 'Assign every fault', text2: 'Select one team member for each fault before accepting.' });
+      return;
+    }
+    setShowAssignmentConfirm(false);
+    await handleAccept(acceptTarget, faultAssignments);
+    setAcceptTarget(null);
+    setFaultAssignments({});
+  };
+
+  const renderFaultRow = (job, fault, idx) => {
     const faultCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
     const faultDesc = String(fault?.FaultDescription || fault?.Description || fault?.Dscption || '').trim();
     const faultName = faultCode && faultDesc
@@ -319,7 +528,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
       fault?.AcceptedBy ||
       '';
     return (
-      <View key={idx} style={[styles.faultRow, { borderColor: colors.border || '#E0E0E0' }]}>
+      <View key={`${faultCode}-${idx}`} style={[styles.faultRow, { borderColor: colors.border || '#E0E0E0' }]}>
         <MaterialIcons name="build" size={16} color={colors.primary} />
         <View style={{ flex: 1, marginLeft: 8 }}>
           <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{faultName}</Text>
@@ -335,6 +544,17 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
             </Text>
           )}
         </View>
+        {deriveStatus(job) === STATUS.ACCEPTED && !mechanicName && teamMembers.length > 0 && (
+          <View style={styles.memberChoiceRow}>
+            {teamMembers.slice(0, 4).map(member => {
+              const assignKey = `${jobKey(job)}-${faultCode}`;
+              return <TouchableOpacity key={member.ResolvedCode || member.DisplayName} disabled={assigningFaultKey === assignKey}
+                onPress={() => assignMechanic(job, fault, member)} style={[styles.memberChoice, { borderColor: colors.primary }]}>
+                <Text numberOfLines={1} style={[styles.memberChoiceText, { color: colors.primary }]}>{assigningFaultKey === assignKey ? 'Assigning…' : member.DisplayName}</Text>
+              </TouchableOpacity>;
+            })}
+          </View>
+        )}
       </View>
     );
   };
@@ -394,7 +614,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
             ) : (faultsState?.data || []).length === 0 ? (
               <Text style={{ color: colors.gray, fontSize: 13, marginBottom: 8 }}>No faults recorded on this job card.</Text>
             ) : (
-              faultsState.data.map(renderFaultRow)
+              faultsState.data.map((fault, index) => renderFaultRow(job, fault, index))
             )}
 
             {status === STATUS.PENDING && (
@@ -409,7 +629,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.actionBtn, { backgroundColor: colors.success }]}
-                  onPress={() => handleAccept(job)}
+                  onPress={() => openAssignmentConfirm(job)}
                   activeOpacity={0.8}
                 >
                   <MaterialIcons name="check" size={18} color="#FFF" />
@@ -420,7 +640,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
 
             {status === STATUS.ACCEPTED && (
               <Text style={{ color: colors.gray, fontSize: 12, marginTop: 8, fontStyle: 'italic' }}>
-                Your team's mechanics/electricians can now accept individual faults from their own dashboard.
+                Assign a team member above, or let a mechanic/electrician accept a fault from My Work.
               </Text>
             )}
           </View>
@@ -437,7 +657,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
         title="Team Dashboard"
         subtitle={teamLeaderName}
         onMenuPress={() => navigation.openDrawer && navigation.openDrawer()}
-        showNotifications={false}
+        showNotifications={true}
         useGradient={false}
       />
 
@@ -527,6 +747,36 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
         </View>
       </RNModal>
 
+      <RNModal visible={showAssignmentConfirm} transparent animationType="slide" onRequestClose={() => { setShowAssignmentConfirm(false); setAcceptTarget(null); }}>
+        <View style={styles.reasonOverlay}>
+          <View style={[styles.assignmentBox, { backgroundColor: colors.white }]}>
+            <Text style={[styles.reasonTitle, { color: colors.dark }]}>Assign faults before accepting</Text>
+            <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 12 }}>Choose one mechanic or electrician per fault. Only that person receives the work item.</Text>
+            <ScrollView style={{ maxHeight: 390 }}>
+              {(faultsMap[jobKey(acceptTarget)]?.data || []).map((fault, index) => {
+                const faultCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || `Fault ${index + 1}`).trim();
+                return <View key={faultCode} style={[styles.assignmentFault, { borderColor: colors.border || '#E0E0E0' }]}>
+                  <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13 }}>{fault?.FaultDescription || faultCode}</Text>
+                  <View style={styles.assignmentChoices}>
+                    {teamMembers.map(member => {
+                      const selected = faultAssignments[faultCode]?.ResolvedCode === member.ResolvedCode;
+                      return <TouchableOpacity key={member.ResolvedCode || member.DisplayName} onPress={() => setFaultAssignments(previous => ({ ...previous, [faultCode]: member }))}
+                        style={[styles.assignmentChoice, { borderColor: selected ? colors.primary : (colors.border || '#E0E0E0'), backgroundColor: selected ? `${colors.primary}18` : 'transparent' }]}>
+                        <Text style={{ color: selected ? colors.primary : colors.dark, fontSize: 12 }}>{member.DisplayName}</Text>
+                      </TouchableOpacity>;
+                    })}
+                  </View>
+                </View>;
+              })}
+            </ScrollView>
+            <View style={styles.reasonButtonRow}>
+              <TouchableOpacity style={[styles.reasonBtn, { backgroundColor: colors.grayLight }]} onPress={() => { setShowAssignmentConfirm(false); setAcceptTarget(null); }}><Text style={{ color: colors.dark }}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.reasonBtn, { backgroundColor: colors.success }]} onPress={confirmAcceptanceWithAssignments}><Text style={{ color: '#FFF', fontWeight: '700' }}>Accept & Assign</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </RNModal>
+
       <Loader visible={submitting} text="Please wait..." />
     </View>
   );
@@ -589,6 +839,9 @@ const styles = StyleSheet.create({
     padding: SPACING.sm,
     marginBottom: 6,
   },
+  memberChoiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 7 },
+  memberChoice: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 7, paddingVertical: 3, maxWidth: 116 },
+  memberChoiceText: { fontSize: 11, fontWeight: '600' },
   actionRow: {
     flexDirection: 'row',
     gap: 10,
@@ -616,6 +869,10 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
   },
+  assignmentBox: { width: '100%', borderRadius: BORDER_RADIUS.lg, padding: SPACING.md, maxHeight: '84%' },
+  assignmentFault: { borderWidth: 1, borderRadius: BORDER_RADIUS.md, padding: 10, marginBottom: 9 },
+  assignmentChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  assignmentChoice: { borderWidth: 1, borderRadius: 14, paddingVertical: 5, paddingHorizontal: 9 },
   reasonTitle: { fontSize: 16, fontWeight: '700', marginBottom: 8 },
   reasonInput: { marginBottom: 12 },
   reasonButtonRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },

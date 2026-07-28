@@ -35,6 +35,7 @@ export const API_ENDPOINTS = {
   // Team Leader workflow (SOP: accept/reject job card, assign Mechanic/Electrician)
   GET_MAINTENANCE_TEAMS: 'GetMaintenanceTeams',
   GET_TEAM_MEMBERS: 'GetTeamMembers',
+  ASSIGN_TEAM: 'AssignTeam',
   UPDATE_JOB_CARD: 'UpdateJobCard',
   CANCEL_JOB_CARD: 'CancelJobCard',
   GET_JOB_CARD_HISTORY: 'GetJobCardHistory',

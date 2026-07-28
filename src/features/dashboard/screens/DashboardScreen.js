@@ -684,24 +684,6 @@ const DashboardScreen = ({ navigation }) => {
                 </TouchableOpacity>
                 )}
 
-                {!driverUser && (
-                <TouchableOpacity
-                  style={[
-                    styles.actionCardWrapper,
-                      !showMechanicDashboard && styles.actionCardWrapperSingleRow,
-                  ]}
-                  onPress={() => navigation.navigate('WorkOrders')}
-                  activeOpacity={0.8}
-                >
-                  <View style={[styles.actionCard, { backgroundColor: colors.white, borderColor: colors.border }]}> 
-                    <View style={[styles.actionIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
-                      <MaterialIcons name="receipt-long" size={30} color={colors.primary} />
-                    </View>
-                    <Text style={[styles.actionLabel, { color: colors.dark }]}>Work Orders</Text>
-                    <Text style={[styles.actionSubtext, { color: colors.gray }]}>View open work list</Text>
-                  </View>
-                </TouchableOpacity>
-                )}
               </View>
             </View>
           </View>

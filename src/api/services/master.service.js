@@ -121,6 +121,22 @@ export const masterService = {
   },
 
   /**
+   * Work options / repair guidance configured for one fault.
+   * API: GET GetFaultByCode?CompanyDB=...&FaultCode=...
+   */
+  getFaultByCode: async (companyDB, faultCode) => {
+    try {
+      const response = await get(
+        `GetFaultByCode?CompanyDB=${companyDB}&FaultCode=${encodeURIComponent(faultCode)}`,
+        { suppressErrorLog: true },
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
    * Get list of routes
    * @param {string} companyDB - Company database name
    * @returns {Promise} List of routes

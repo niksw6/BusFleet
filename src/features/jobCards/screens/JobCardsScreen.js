@@ -188,7 +188,7 @@ const JobCardsScreen = ({ navigation, route }) => {
     <StandardListCard
       accentColor={colors.primary}
       onPress={() =>
-        navigation.navigate('WorkOrderDetail', {
+        navigation.navigate('JobCardDetail', {
           docEntry: item.DocEntry || item.JobCardNo,
           jobCardNo: item.JobCardNo,
           jobType: item.JobType || item.FormType || getJobTypeCode(item),
@@ -358,9 +358,9 @@ const JobCardsScreen = ({ navigation, route }) => {
     <View style={[styles.container, { backgroundColor: colors.light }]}>
       <ScreenHeader
         title="My Job Cards"
-        subtitle="Your assigned work orders"
+        subtitle="Track job cards and submitted work entries"
         onMenuPress={() => navigation.openDrawer()}
-        showNotifications={false}
+        showNotifications={true}
         useGradient={false}
       />
 

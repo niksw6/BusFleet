@@ -10,7 +10,7 @@ import { Badge } from 'react-native-paper';
 import { DashboardScreen, NotificationsScreen } from '../features/dashboard';
 import { ComplaintsScreen } from '../features/complaints';
 import { ProfileScreen } from '../features/auth';
-import { JobCardsScreen, WorkOrdersDashboardScreen, TeamApprovalsScreen, MechanicDashboardScreen, PartsApprovalScreen } from '../features/jobCards';
+import { JobCardsScreen, TeamApprovalsScreen, MechanicDashboardScreen, PartsApprovalScreen } from '../features/jobCards';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { logout } from '../store/slices/authSlice';
 import { isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isSupervisorUser, isDriverUser, getUserRole } from '../utils/roleAccess';
@@ -78,14 +78,6 @@ const CustomDrawerContent = (props) => {
       icon: 'build-circle', 
       color: '#8B5CF6',
       gradient: ['#8B5CF6', '#7C3AED'],
-      hideForDriver: true,
-    },
-    {
-      name: 'WorkOrders',
-      label: 'Work Orders',
-      icon: 'receipt-long',
-      color: '#06B6D4',
-      gradient: ['#06B6D4', '#0891B2'],
       hideForDriver: true,
     },
     { 
@@ -323,15 +315,6 @@ const DrawerNavigator = () => {
         <Drawer.Screen
           name="JobCards"
           component={JobCardsScreen}
-          options={{
-            headerShown: false,
-          }}
-        />
-      )}
-      {!driverUser && (
-        <Drawer.Screen
-          name="WorkOrders"
-          component={WorkOrdersDashboardScreen}
           options={{
             headerShown: false,
           }}

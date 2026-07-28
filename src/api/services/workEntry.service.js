@@ -9,6 +9,14 @@ import { get, post, handleApiError } from '../client';
  *   SAP STORE issues → Mechanic clicks "Part Received" → Mechanic completes work
  */
 export const workEntryService = {
+  getWorkHistory: async (companyDB, jobCardNo) => {
+    try {
+      const response = await get(`GetWorkHistory?CompanyDB=${companyDB}&JobCardNo=${jobCardNo}`, { suppressErrorLog: true });
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
 
   /**
    * Get all work entries for a work order.

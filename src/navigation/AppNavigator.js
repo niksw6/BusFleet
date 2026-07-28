@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSelector, useDispatch } from 'react-redux';
@@ -7,22 +7,21 @@ import { useSelector, useDispatch } from 'react-redux';
 // Feature-based imports
 import { LoginScreen } from '../features/auth';
 import { CreateFuelLogScreen, CreateScheduleScreen } from '../features/maintenance';
-import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, WorkOrderApiDetailScreen, WorkEntryScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen } from '../features/jobCards';
+import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen } from '../features/jobCards';
 import { CreateIncidentScreen } from '../features/complaints';
 import DrawerNavigator from './DrawerNavigator';
 
 // Legacy screens (to be refactored)
 import ComplaintDetailScreen from '../screens/ComplaintDetailScreen';
-import WorkOrderScreen from '../screens/WorkOrderScreen';
 import WorkflowGuideScreen from '../screens/WorkflowGuideScreen';
 
 import { loginSuccess } from '../store/slices/authSlice';
 import { setUnreadCount } from '../store/slices/notificationSlice';
 import { getUserData, getDBName } from '../utils/storage';
 import { setNavigationRef } from '../api/client';
-import { dashboardService } from '../api/services';
+import { dashboardService, storeService, teamService, mechanicService } from '../api/services';
 import { COLORS, DARK_COLORS } from '../constants/theme';
-import { isSupervisorUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser } from '../utils/roleAccess';
+import { isSupervisorUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../utils/roleAccess';
 
 const Stack = createNativeStackNavigator();
 
@@ -32,6 +31,7 @@ const AppNavigator = () => {
   const dispatch = useDispatch();
   const isAuthenticated = useSelector(state => state.auth.isAuthenticated);
   const user = useSelector(state => state.auth.user);
+  const dbName = useSelector(state => state.auth.dbName);
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const supervisorUser = isSupervisorUser(user);
@@ -39,6 +39,95 @@ const AppNavigator = () => {
   const fieldStaffUser = isFieldStaffUser(user);
   const teamLeaderUser = isTeamLeaderUser(user);
   const driverUser = isDriverUser(user);
+
+  // Refresh the badge whenever navigation changes. Some actionable items are
+  // workflow queues rather than rows from GetNotifications, so count them here.
+  const refreshNotificationCount = useCallback(async () => {
+    if (!isAuthenticated || !user) return;
+
+    const companyDb = dbName || 'MUTSPL_TEST';
+    const userCode = String(user?.User || user?.user || user?.username || user?.Code || user?.code || user?.Name || user?.name || '').trim();
+    let unreadCount = 0;
+
+    try {
+      if (userCode) {
+        const countResponse = await dashboardService.getNotificationCount(companyDb, userCode);
+        unreadCount = Number(countResponse?.Data) || 0;
+      }
+
+      if (teamLeaderUser && userCode) {
+        const teamResponse = await teamService.getMechanicalDashboard(companyDb, userCode);
+        const source = teamResponse?.Data ?? teamResponse;
+        const jobs = Array.isArray(source)
+          ? source
+          : (Array.isArray(source?.JobCards) ? source.JobCards : (Array.isArray(source?.Jobs) ? source.Jobs : []));
+        const teamCode = getUserTeamCode(user);
+        const pendingTeamJobs = jobs.filter((job) => {
+          const status = String(job?.TeamStatus ?? job?.Status ?? job?.AcceptStatus ?? '').trim().toUpperCase();
+          const belongsToTeam = !teamCode || !job?.TeamCode || String(job.TeamCode).trim() === teamCode;
+          return belongsToTeam && !['A', 'ACCEPTED', 'R', 'REJECTED'].includes(status);
+        }).length;
+        unreadCount += pendingTeamJobs;
+      }
+
+      if (fieldStaffUser && userCode) {
+        // Count only this mechanic/electrician's own queue. Prefer the new
+        // assignment-scoped endpoint and retain the live dashboard fallback.
+        let mechanicResponse;
+        try {
+          mechanicResponse = await mechanicService.getMyJobs(companyDb, userCode);
+        } catch (queueError) {
+          mechanicResponse = await mechanicService.getMechanicDashboard(companyDb, userCode);
+        }
+        const source = mechanicResponse?.Data ?? mechanicResponse;
+        const jobs = Array.isArray(source)
+          ? source
+          : (Array.isArray(source?.Faults) ? source.Faults : (Array.isArray(source?.Jobs) ? source.Jobs : (Array.isArray(source?.Items) ? source.Items : [])));
+        const assignedPending = jobs.filter((job) => {
+          const status = String(job?.Status ?? job?.FaultStatus ?? job?.WorkStatus ?? '').trim().toUpperCase();
+          return !['C', 'CM', 'COMPLETED', 'COMPLETE'].includes(status);
+        }).length;
+        let approvedPartJobs = 0;
+        try {
+          const approvedResponse = await storeService.getApprovedJobCardParts(companyDb, userCode);
+          const approvedParts = Array.isArray(approvedResponse?.Data)
+            ? approvedResponse.Data
+            : (Array.isArray(approvedResponse?.data) ? approvedResponse.data : []);
+          approvedPartJobs = new Set(
+            approvedParts
+              .filter((part) => !part?.Received && String(part?.Status ?? part?.ApprovalStatus ?? 'A').trim().toUpperCase() !== 'R')
+              .map((part) => part?.JobCardDocEntry ?? part?.JobCardNo ?? part?.DocEntry)
+              .filter((value) => value !== undefined && value !== null && String(value).trim())
+              .map(String)
+          ).size;
+        } catch (approvedPartsError) {
+          // Keep the work-queue badge available on server versions without this endpoint.
+        }
+        unreadCount = Math.max(unreadCount, assignedPending + approvedPartJobs);
+      }
+
+      if (supervisorUser) {
+        try {
+        const partsResponse = await storeService.getMechanicPartRequests(companyDb);
+        const partRows = Array.isArray(partsResponse?.Data) ? partsResponse.Data : (Array.isArray(partsResponse?.data) ? partsResponse.data : []);
+        const pendingWorkEntries = new Set(
+          partRows
+            .map((part) => part?.WorkEntryDocEntry ?? part?.WorkEntryNo ?? part?.DocEntry)
+            .filter((value) => value !== undefined && value !== null && String(value).trim())
+            .map(String)
+        );
+        unreadCount += pendingWorkEntries.size;
+        } catch (partsError) {
+          // A parts endpoint failure must not hide the backend notification count.
+          console.warn('Parts-request badge refresh failed:', partsError?.message || partsError);
+        }
+      }
+
+      dispatch(setUnreadCount(unreadCount));
+    } catch (error) {
+      console.warn('Notification badge refresh failed:', error?.message || error);
+    }
+  }, [dbName, dispatch, fieldStaffUser, isAuthenticated, supervisorUser, teamLeaderUser, user]);
 
   const [appIsReady, setAppIsReady] = useState(false);
 
@@ -55,13 +144,6 @@ const AppNavigator = () => {
             token: null,
           }));
 
-          // Fetch notification count on session restore so badge is populated before BottomTab mounts
-          const userId = userData?.User || userData?.user || userData?.username || userData?.Code || userData?.code || userData?.Name || userData?.name || '';
-          if (userId) {
-            dashboardService.getNotificationCount(dbName, userId)
-              .then(res => { if (res?.Success) dispatch(setUnreadCount(Number(res?.Data) || 0)); })
-              .catch(() => {});
-          }
         }
       } catch (e) {
         console.warn('Error restoring session:', e);
@@ -73,6 +155,10 @@ const AppNavigator = () => {
     prepare();
   }, []);
 
+  useEffect(() => {
+    refreshNotificationCount();
+  }, [refreshNotificationCount]);
+
   if (!appIsReady) {
     return null;
   }
@@ -80,6 +166,7 @@ const AppNavigator = () => {
   return (
     <NavigationContainer
       ref={(ref) => setNavigationRef(ref)}
+      onStateChange={refreshNotificationCount}
       theme={{
         ...(isDarkMode ? DarkTheme : DefaultTheme),
         colors: {
@@ -206,14 +293,6 @@ const AppNavigator = () => {
               />
             )}
             <Stack.Screen
-              name="WorkOrder"
-              component={WorkOrderScreen}
-              options={{
-                title: 'Work Order',
-                presentation: 'modal',
-              }}
-            />
-            <Stack.Screen
               name="JobCards"
               component={JobCardsScreen}
               options={{
@@ -221,27 +300,11 @@ const AppNavigator = () => {
               }}
             />
             <Stack.Screen
-              name="WorkOrderDetail"
+              name="JobCardDetail"
               component={WorkOrderDetailScreen}
               options={{
                 headerShown: true,
                 title: 'Job Card Details',
-              }}
-            />
-            <Stack.Screen
-              name="WorkOrderApiDetail"
-              component={WorkOrderApiDetailScreen}
-              options={{
-                headerShown: true,
-                title: 'Work Order Details',
-              }}
-            />
-            <Stack.Screen
-              name="WorkEntry"
-              component={WorkEntryScreen}
-              options={{
-                headerShown: true,
-                title: 'Work Entry',
               }}
             />
             <Stack.Screen

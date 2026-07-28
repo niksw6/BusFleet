@@ -163,17 +163,6 @@ const FaultMechanicPartsSection = ({
           </View>
         </View>
         <View style={styles.headerRight}>
-          <TouchableOpacity
-            style={styles.quickAddPartButton}
-            onPress={(event) => {
-              event?.stopPropagation?.();
-              setShowPartsModal(true);
-            }}
-            activeOpacity={0.8}
-          >
-            <MaterialIcons name="add" size={14} color="#2B7D2B" />
-            <Text style={styles.quickAddPartText}>Add Part</Text>
-          </TouchableOpacity>
           {hasMechanics && (
             <View style={[styles.summaryBadge, { backgroundColor: '#0070F220' }]}>
               <MaterialIcons name="engineering" size={12} color="#0070F2" />
@@ -398,22 +387,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     marginLeft: SPACING.sm,
-  },
-  quickAddPartButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#2B7D2B',
-    backgroundColor: '#2B7D2B12',
-    borderRadius: 12,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-  },
-  quickAddPartText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#2B7D2B',
-    marginLeft: 2,
   },
   summaryBadge: {
     flexDirection: 'row',

@@ -20,6 +20,15 @@ import { get, post, handleApiError } from '../client';
  *   closes it out with CompleteWork once done.
  */
 export const mechanicService = {
+  getMyJobs: async (companyDB, empCode) => {
+    const response = await get(`GetMyJobs?CompanyDB=${companyDB}&EmpCode=${encodeURIComponent(empCode)}`, { suppressErrorLog: true });
+    return response.data;
+  },
+
+  rejectWork: async (companyDB, jobCardNo, faultCode, empCode, reason) => {
+    const response = await post('RejectWork', { CompanyDB: companyDB, JobCardNo: Number(jobCardNo) || jobCardNo, FaultCode: faultCode, EmpCode: empCode, Reason: reason });
+    return response.data;
+  },
   /**
    * Mechanic's dashboard — faults available to accept + their active/completed work.
    * @param {string} companyDB

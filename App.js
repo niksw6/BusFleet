@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { StatusBar, View, Text } from 'react-native';
 import { Provider as PaperProvider, MD3LightTheme, MD3DarkTheme } from 'react-native-paper';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -6,7 +6,6 @@ import { Provider as ReduxProvider, useSelector } from 'react-redux';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Toast from 'react-native-toast-message';
-import AppIcon from './src/components/AppIcon';
 // Removed expo Font and SplashScreen dependencies (use native defaults)
 
 import store from './src/store';
@@ -133,38 +132,10 @@ class AppErrorBoundary extends React.Component {
 }
 
 export default function App() {
-  const [appIsReady, setAppIsReady] = useState(false);
-
   useEffect(() => {
     installDiagnosticHandlers();
     appendDiagnostic('INFO', 'App launched');
   }, []);
-
-  useEffect(() => {
-    async function prepare() {
-      try {
-        await Promise.all([
-          AppIcon.loadFont?.(),
-          MaterialCommunityIcons.loadFont?.(),
-        ]);
-      } catch (e) {
-        appendDiagnostic('STARTUP_ERROR', e?.stack || e?.message || String(e));
-        console.warn('Error during app prepare:', e);
-      } finally {
-        setAppIsReady(true);
-      }
-    }
-
-    prepare();
-  }, []);
-
-  useEffect(() => {
-    // no explicit splash handling after removing Expo
-  }, [appIsReady]);
-
-  if (!appIsReady) {
-    return null;
-  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

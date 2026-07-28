@@ -13,7 +13,7 @@ import Toast from 'react-native-toast-message';
 import MaterialIcons from '../components/AppIcon.js';
 
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
-import { complaintService, maintenanceService, jobCardService } from '../api/services';
+import { complaintService, maintenanceService, jobCardService, workEntryService } from '../api/services';
 import { getStatusName } from '../utils/helpers';
 import { isSupervisorUser } from '../utils/roleAccess';
 
@@ -91,7 +91,9 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     });
   };
 
-  const resolveWorkOrderCount = async (incidentData) => {
+  // Work Entries are the operational history for a Job Card.  Work Orders are
+  // deliberately not used in the incident lifecycle.
+  const resolveWorkEntryCount = async (incidentData) => {
     const linkedJobCardNo = String(
       incidentData?.JobCardNo || incidentData?.JobcardNo || routeJobCardNo || '',
     ).trim();
@@ -104,26 +106,14 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     }
 
     try {
-      const workOrdersResponse = await jobCardService.getWorkOrders(dbName || 'MUTSPL_TEST', null);
-      const workOrders = Array.isArray(workOrdersResponse?.Data) ? workOrdersResponse.Data : [];
-      const linkedOrders = workOrders.filter((entry) => {
-        const entryJcDocEntry = Number(entry?.JCDocEnt || entry?.DocEntry || 0);
-        const entryJcDocNum = String(entry?.JCDocNum || entry?.JobCardNo || '').trim();
-        return (
-          (linkedJobCardDocEntry > 0 && entryJcDocEntry === linkedJobCardDocEntry)
-          || (linkedJobCardNo && entryJcDocNum && entryJcDocNum === linkedJobCardNo)
-        );
-      });
-      const latestDocEntry = linkedOrders.reduce((maxDocEntry, entry) => {
-        const currentDocEntry = Number(entry?.DocEntry || 0);
-        return currentDocEntry > maxDocEntry ? currentDocEntry : maxDocEntry;
-      }, 0);
+      const jobCardRef = linkedJobCardNo || linkedJobCardDocEntry;
+      const workEntriesResponse = await workEntryService.getWorkHistory(dbName || 'MUTSPL_TEST', jobCardRef);
+      const workEntries = Array.isArray(workEntriesResponse?.Data) ? workEntriesResponse.Data : [];
       return {
-        count: linkedOrders.length,
-        latestDocEntry: latestDocEntry > 0 ? latestDocEntry : null,
+        count: workEntries.length,
+        latestDocEntry: null,
       };
-    } catch (workOrderError) {
-      console.warn('Unable to resolve linked work orders:', workOrderError?.message || workOrderError);
+    } catch (workEntryError) {
       return { count: 0, latestDocEntry: null };
     }
   };
@@ -219,7 +209,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       incidentData?.JobCardDocEntry || incidentData?.JobCardEntry || routeJobCardDocEntry || 0,
     );
     const jobCardCreated = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
-    const { count: workOrderCount, latestDocEntry: workOrderDocEntry } = await resolveWorkOrderCount(incidentData);
+    const { count: workOrderCount, latestDocEntry: workOrderDocEntry } = await resolveWorkEntryCount(incidentData);
     const workOrderCreated = workOrderCount > 0;
     const workOrderSubmitted = workOrderCreated;
     const closed = isClosedStatus(incidentStatus);
@@ -283,22 +273,6 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           }
         } catch (jobCardError) {
           console.warn('Unable to update linked job card status:', jobCardError?.message || jobCardError);
-        }
-      }
-
-      const linkedWorkOrderDocEntry = Number(progressMap?.workOrderDocEntry || 0);
-      if (linkedWorkOrderDocEntry > 0) {
-        try {
-          const workOrderCloseResponse = await jobCardService.closeIncident(
-            dbName || 'MUTSPL_TEST',
-            linkedWorkOrderDocEntry,
-            'W',
-          );
-          if (!workOrderCloseResponse?.Success) {
-            console.warn('Work order close skipped:', workOrderCloseResponse?.Message || 'Unknown response');
-          }
-        } catch (workOrderCloseError) {
-          console.warn('Unable to close linked work order:', workOrderCloseError?.message || workOrderCloseError);
         }
       }
 
@@ -715,10 +689,10 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
   const hasLinkedJobCard = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
   const linkedJobCardDisplay = linkedJobCardNo || (linkedJobCardDocEntry > 0 ? String(linkedJobCardDocEntry) : '');
   const jobTypeCode = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
-  const openWorkOrderDetail = () => {
+  const openJobCardDetail = () => {
     if (!linkedJobCardDisplay) return;
 
-    navigation.navigate('WorkOrderDetail', {
+    navigation.navigate('JobCardDetail', {
       docEntry: linkedJobCardDocEntry > 0 ? linkedJobCardDocEntry : linkedJobCardDisplay,
       jobCardNo: linkedJobCardDisplay,
       jobType: jobTypeCode,
@@ -734,14 +708,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     });
   };
 
-  const openSubmittedWorkOrder = () => {
-    if (!progressMap.workOrderDocEntry) return;
-
-    navigation.navigate('WorkOrderApiDetail', {
-      workOrderDocEntry: progressMap.workOrderDocEntry,
-      dbName,
-    });
-  };
+  const openSubmittedWorkOrder = openJobCardDetail;
 
   return (
     <ScrollView
@@ -807,7 +774,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           <Button
             mode="contained"
             icon="open-in-new"
-            onPress={openWorkOrderDetail}
+            onPress={openJobCardDetail}
             style={styles.viewJobCardButton}
             contentStyle={{ paddingVertical: 8 }}
           >
@@ -905,7 +872,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
               size={18}
               color={progressMap.workOrderSubmitted ? colors.primary : colors.gray}
             />
-            <Text style={[styles.progressText, { color: colors.dark }]}>Work Order Submitted</Text>
+            <Text style={[styles.progressText, { color: colors.dark }]}>Job Card Created</Text>
             {progressMap.workOrderSubmitted && progressMap.workOrderDocEntry ? (
               <TouchableOpacity onPress={openSubmittedWorkOrder} style={styles.progressLinkButton}>
                 <MaterialIcons name="open-in-new" size={14} color={colors.primary} />
@@ -939,7 +906,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
           {!progressMap.canSupervisorClose && supervisorUser && !progressMap.closed && (
             <Text style={[styles.progressHint, { color: colors.gray }]}>
-              Close button will be enabled after Work Order is submitted.
+              Close button will be enabled after the Job Card is created.
             </Text>
           )}
         </View>

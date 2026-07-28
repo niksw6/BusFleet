@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput as RNTextInput } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput as RNTextInput, Modal as RNModal } from 'react-native';
 import { Text, TextInput, Chip } from 'react-native-paper';
 import { useSelector } from 'react-redux';
 import Toast from 'react-native-toast-message';
@@ -8,7 +8,7 @@ import MaterialIcons from '../../../components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { mechanicService, storeService, masterService } from '../../../api/services';
+import { mechanicService, storeService, masterService, jobCardService } from '../../../api/services';
 
 /**
  * FaultWorkScreen — Mechanic/Electrician's step-by-step work flow for ONE fault line.
@@ -34,7 +34,7 @@ const STEP = {
 };
 
 const FaultWorkScreen = ({ route, navigation }) => {
-  const { docEntry, faultLine, fault, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry } = route.params || {};
+  const { docEntry, faultLine, fault, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, isWorkStarted } = route.params || {};
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
@@ -43,40 +43,193 @@ const FaultWorkScreen = ({ route, navigation }) => {
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState(STEP.START);
+  const [step, setStep] = useState(() => (
+    isWorkStarted || routeWorkEntryDocEntry || existingWorkEntry?.DocEntry ? STEP.WORKING : STEP.START
+  ));
   const [workEntryDocEntry, setWorkEntryDocEntry] = useState(routeWorkEntryDocEntry || null);
 
   const [workList, setWorkList] = useState([]);
   const [spareParts, setSpareParts] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
   const [approvedParts, setApprovedParts] = useState([]);
+  const [resolvedFaultCode, setResolvedFaultCode] = useState('');
 
   // Work entry form
-  const [finalRemarks, setFinalRemarks] = useState('');
-  const [details, setDetails] = useState([]); // [{ WorkCode, WorkDone, OtherDescription, Remarks }]
+  const [finalRemarks, setFinalRemarks] = useState(existingWorkEntry?.FinalRemarks || '');
+  const [details, setDetails] = useState(() => (Array.isArray(existingWorkEntry?.Details)
+    ? existingWorkEntry.Details.map(detail => ({
+        WorkCode: detail?.WorkCode || 'OTHER',
+        WorkDone: detail?.WorkDone || '',
+        OtherDescription: detail?.OtherDescription || '',
+        Remarks: detail?.Remarks || '',
+      }))
+    : [])); // [{ WorkCode, WorkDone, OtherDescription, Remarks }]
   const [showWorkListModal, setShowWorkListModal] = useState(false);
 
   // Parts request form
   const [partsDraft, setPartsDraft] = useState([]); // [{ ItemCode, ItemName, ReqQty, Warehouse, Remarks }]
   const [showPartsModal, setShowPartsModal] = useState(false);
+  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
+  const [warehouseTargetCode, setWarehouseTargetCode] = useState(null);
+  const [receiveTarget, setReceiveTarget] = useState(null);
+  const [receivedQty, setReceivedQty] = useState('');
+
+  const extractRows = (response) => {
+    const data = response?.Data ?? response?.data ?? response;
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== 'object') return [];
+    return Object.values(data).find(Array.isArray) || [];
+  };
+
+  const normalizeWorkItems = (rows) => rows.map((row) => ({
+    ...row,
+    Code: String(row?.Code || row?.WorkCode || row?.WorkListCode || row?.Solution || row?.WorkId || row?.ID || '').trim(),
+    Name: String(row?.Name || row?.WorkName || row?.WorkDone || row?.ActivityName || row?.Description || row?.Dscription || row?.Code || row?.WorkCode || '').trim(),
+  })).filter(row => row.Code || row.Name);
+
+  const normalizeParts = (rows) => rows.map((row) => ({
+    ...row,
+    ItemCode: String(row?.ItemCode || row?.Code || '').trim(),
+    ItemName: String(row?.ItemName || row?.Name || row?.Dscription || row?.Description || row?.ItemCode || row?.Code || '').trim(),
+  })).filter(row => row.ItemCode || row.ItemName);
+
+  const getPartQty = (part) => {
+    const values = [part?.ApprovedQty, part?.AprQty, part?.Qty, part?.ReqQty, part?.RequestedQty];
+    const positive = values.find(value => Number(value) > 0);
+    return positive ?? values.find(value => value !== undefined && value !== null && value !== '') ?? 1;
+  };
+
+  const isPartApproved = (part) => {
+    // Parts embedded with an assigned fault were selected by the Supervisor
+    // while creating the Job Card. They are pre-approved by business rule;
+    // only extra parts raised by a mechanic go through approval.
+    if (part?.SupervisorProvided) return true;
+    const status = String(part?.Status ?? part?.ApprovalStatus ?? '').trim().toUpperCase();
+    return Number(part?.AprQty ?? part?.ApprovedQty ?? 0) > 0
+      || ['A', 'AP', 'APPROVED', 'READY', 'READY TO COLLECT'].includes(status);
+  };
+
+  // Receipt is a backend line operation, never a UI-list-index operation.
+  // GetMechanicDashboard supplies Parts[].FaultLine for this exact fault;
+  // prefer it over all other line fields.
+  const getReceivedPartLine = (part) => {
+    const rawLine = part?.FaultLine
+      ?? part?.PartLine
+      ?? part?.FaultLineNo
+      ?? part?.Line
+      ?? part?.LineNum;
+    if (rawLine === undefined || rawLine === null || String(rawLine).trim() === '') return null;
+    const line = Number(rawLine);
+    if (!Number.isFinite(line) || line < 0) return null;
+    return line === 0 ? 1 : line;
+  };
+
+  const faultReference = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || fault?.Code || '').trim();
+  const partIdentityCandidates = [...new Set([
+    userCode,
+    user?.EmpCode,
+    user?.EmployeeCode,
+    user?.EmpID,
+    user?.EmployeeID,
+    user?.username,
+    user?.Name,
+    user?.name,
+  ].map(value => String(value || '').trim()).filter(Boolean))];
 
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [workListRes, sparePartsRes, approvedRes] = await Promise.all([
-        masterService.getWorkList(companyDb),
+      const [faultDetailsResult, sparePartsResult, warehousesResult, approvedResults, jobCardResult] = await Promise.all([
+        Promise.allSettled([
+        masterService.getFaultDetails(companyDb),
         masterService.getSpareParts(companyDb),
-        storeService.getApprovedJobCardParts(companyDb, userCode),
-      ]);
-      setWorkList(Array.isArray(workListRes?.Data) ? workListRes.Data : []);
-      setSpareParts(Array.isArray(sparePartsRes?.Data) ? sparePartsRes.Data : []);
-      const allApproved = Array.isArray(approvedRes?.Data) ? approvedRes.Data : [];
-      setApprovedParts(allApproved.filter(p => String(p?.JobCardDocEntry ?? p?.DocEntry ?? '') === String(docEntry)));
-    } catch (error) {
-      console.warn('FaultWorkScreen loadData error:', error?.message);
+        masterService.getWarehouses(companyDb),
+        ]),
+        Promise.allSettled(partIdentityCandidates.map(identity => storeService.getApprovedJobCardParts(companyDb, identity))),
+        Promise.allSettled([
+        jobCardService.getJobCardDetail(companyDb, docEntry),
+        ]),
+      ]).then(([masterResults, partResults, jobCardResults]) => [...masterResults, partResults, jobCardResults]);
+      const faultMasters = faultDetailsResult.status === 'fulfilled' ? extractRows(faultDetailsResult.value) : [];
+      const normalizedReference = faultReference.toLowerCase();
+      const matchingFault = faultMasters.find((row) => [row?.FaultCode, row?.Fault, row?.Description]
+        .some(value => String(value || '').trim().toLowerCase() === normalizedReference));
+      const resolvedFaultCode = String(matchingFault?.FaultCode || faultReference).trim();
+      setResolvedFaultCode(resolvedFaultCode);
+      let faultWorkItems = [];
+      if (resolvedFaultCode) {
+        try {
+          const faultResponse = await masterService.getFaultByCode(companyDb, resolvedFaultCode);
+          faultWorkItems = normalizeWorkItems(extractRows(faultResponse));
+        } catch (faultLookupError) {
+          // General work list below remains the safe fallback.
+        }
+      }
+      const workItems = faultWorkItems;
+      const partItems = sparePartsResult.status === 'fulfilled' ? normalizeParts(extractRows(sparePartsResult.value)) : [];
+      const warehouseRows = warehousesResult.status === 'fulfilled' ? extractRows(warehousesResult.value) : [];
+      setWarehouses(warehouseRows.map((row) => ({
+        ...row,
+        WarehouseCode: String(row?.WarehouseCode || row?.WhsCode || row?.Code || '').trim(),
+        WarehouseName: String(row?.WarehouseName || row?.WhsName || row?.Name || row?.WarehouseCode || row?.WhsCode || '').trim(),
+      })).filter(row => row.WarehouseCode || row.WarehouseName));
+      setWorkList([...workItems, { Code: 'OTHER', Name: 'Other work (enter manually)' }]);
+      setSpareParts([...partItems, { ItemCode: 'OTHER', ItemName: 'Other part (enter manually)' }]);
+
+      const approvedFromQueue = approvedResults.flatMap(result => (
+        result.status === 'fulfilled' ? extractRows(result.value) : []
+      ));
+      const detail = jobCardResult.status === 'fulfilled' ? (jobCardResult.value?.Data ?? jobCardResult.value) : {};
+      const detailParts = [
+        ...(Array.isArray(detail?.Parts) ? detail.Parts : []),
+        ...(Array.isArray(detail?.Faults) ? detail.Faults.flatMap((row, index) => (
+          Array.isArray(row?.Parts)
+            ? row.Parts.map(part => ({
+                ...part,
+                FaultLine: part?.FaultLine ?? part?.FaultLineNo ?? row?.FaultLine ?? row?.LineNum ?? index,
+              }))
+            : []
+        )) : []),
+      ];
+      const getPartFaultLine = (part) => {
+        return part?.FaultLine ?? part?.FaultLineNo ?? part?.JCLine ?? part?.Line ?? part?.LineNum;
+      };
+      const selectPartsForFault = (parts) => {
+        const unscoped = parts.filter(part => getPartFaultLine(part) === undefined || getPartFaultLine(part) === null);
+        const exact = parts.filter(part => String(getPartFaultLine(part)) === String(faultLine));
+        if (exact.length > 0) return [...exact, ...unscoped];
+
+        // Existing Job Cards created before the updated API contract used
+        // one-based lines. Use that only when no exact current-format match exists.
+        const legacy = parts.filter(part => Number(getPartFaultLine(part)) === Number(faultLine) + 1);
+        return [...legacy, ...unscoped];
+      };
+      const belongsToThisJobCard = (part) => {
+        const partJobCard = part?.JobCardDocEntry ?? part?.JobCardNo ?? part?.DocEntry;
+        return String(partJobCard ?? '') === String(docEntry);
+      };
+      const belongsToFault = (part) => {
+        const partFaultLine = part?.FaultLine ?? part?.FaultLineNo ?? part?.JCLine ?? part?.Line ?? part?.LineNum;
+        return partFaultLine === undefined || partFaultLine === null || String(partFaultLine) === String(faultLine);
+      };
+      const approved = [
+        ...selectPartsForFault(approvedFromQueue.filter(belongsToThisJobCard)),
+        ...selectPartsForFault(detailParts).map(p => ({ ...p, SupervisorProvided: true })),
+        // GetMechanicDashboard is the authoritative assigned-fault response.
+        // Its Parts collection must travel with the mechanic into Fault Work.
+        ...(Array.isArray(fault?.Parts) ? fault.Parts.map(part => ({
+          ...part,
+          FaultLine: part?.FaultLine ?? faultLine,
+          SupervisorProvided: true,
+        })) : []),
+      ];
+      const uniqueParts = new Map();
+      approved.forEach((part, index) => uniqueParts.set(`${part?.ItemCode || part?.Code || ''}-${part?.PartLine ?? index}`, part));
+      setApprovedParts(Array.from(uniqueParts.values()));
     } finally {
       setLoading(false);
     }
-  }, [dbName, userCode, docEntry]);
+  }, [dbName, userCode, docEntry, faultReference, faultLine, partIdentityCandidates.join('|')]);
 
   useEffect(() => {
     loadData();
@@ -90,6 +243,8 @@ const FaultWorkScreen = ({ route, navigation }) => {
 
   const faultName = fault?.Fault || fault?.FaultName || fault?.Description || 'Fault';
   const busNo = fault?.BusNo || '';
+  const approvedForCollection = approvedParts.filter(isPartApproved);
+  const pendingSupervisorParts = approvedParts.filter(part => !isPartApproved(part));
 
   const handleStartWork = async () => {
     try {
@@ -110,9 +265,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const addDetailLine = (workItem) => {
+    const workCode = String(workItem?.Code || workItem?.WorkCode || workItem?.WorkListCode || workItem?.Solution || workItem?.WorkId || 'OTHER').trim();
+    const workName = String(workItem?.Name || workItem?.WorkName || workItem?.WorkDone || workItem?.ActivityName || workItem?.Description || workItem?.Dscription || workCode).trim();
     setDetails(prev => [...prev, {
-      WorkCode: workItem?.Code || 'OTHER',
-      WorkDone: workItem?.Code === 'OTHER' ? '' : (workItem?.Name || ''),
+      WorkCode: workCode,
+      WorkDone: workCode === 'OTHER' ? '' : workName,
       OtherDescription: '',
       Remarks: '',
     }]);
@@ -145,8 +302,13 @@ const FaultWorkScreen = ({ route, navigation }) => {
       if (!workEntryDocEntry) {
         const payload = {
           CompanyDB: companyDb,
+          // The live work-entry endpoint resolves the assigned fault using the
+          // same DocEntry/FaultCode pair returned by GetMechanicDashboard.
+          DocEntry: Number(docEntry) || docEntry,
           JobCardDocEntry: Number(docEntry) || docEntry,
           FaultLine: Number(faultLine) || 0,
+          FaultCode: resolvedFaultCode || String(fault?.FaultCode || fault?.Fault || '').trim(),
+          FaultName: String(fault?.FaultName || fault?.Description || fault?.Fault || '').trim(),
           UserCode: userCode,
           FinalRemarks: finalRemarks,
           Details: detailsPayload,
@@ -270,7 +432,25 @@ const FaultWorkScreen = ({ route, navigation }) => {
     }
   };
 
-  const handleReceivePart = async (part, idx) => {
+  const openReceivePart = (part) => {
+    const partLine = getReceivedPartLine(part);
+    if (!partLine) {
+      Toast.show({ type: 'error', text1: 'Part line unavailable', text2: 'This part has no PartLine or FaultLine from the backend.' });
+      return;
+    }
+    setReceiveTarget({ part, partLine });
+    setReceivedQty(String(getPartQty(part)));
+  };
+
+  const handleReceivePart = async () => {
+    if (!receiveTarget) return;
+    const { part, partLine } = receiveTarget;
+    const approvedQty = Number(getPartQty(part));
+    const enteredQty = Number(receivedQty);
+    if (!enteredQty || enteredQty <= 0 || enteredQty > approvedQty) {
+      Toast.show({ type: 'error', text1: 'Enter a valid quantity', text2: `Received quantity must be between 1 and ${approvedQty}.` });
+      return;
+    }
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
       const response = await storeService.receiveJobCardParts({
@@ -278,13 +458,19 @@ const FaultWorkScreen = ({ route, navigation }) => {
         JobCardDocEntry: Number(docEntry) || docEntry,
         UserCode: userCode,
         Parts: [{
-          PartLine: part?.PartLine ?? idx,
-          ReceivedQty: parseFloat(part?.ApprovedQty ?? part?.ReqQty ?? 1),
+          PartLine: partLine,
+          ReceivedQty: enteredQty,
         }],
       });
       if (response?.Success !== false) {
         Toast.show({ type: 'success', text1: 'Part marked as received' });
-        setApprovedParts(prev => prev.map((p, i) => (i === idx ? { ...p, Received: true } : p)));
+        setApprovedParts(prev => prev.map(p => (
+          getReceivedPartLine(p) === partLine
+          && String(p?.ItemCode || p?.Code || '') === String(part?.ItemCode || part?.Code || '')
+            ? { ...p, Received: true, ReceivedQty: enteredQty }
+            : p
+        )));
+        setReceiveTarget(null);
       } else {
         Toast.show({ type: 'error', text1: 'Failed', text2: response?.Message || 'Could not mark received' });
       }
@@ -310,6 +496,21 @@ const FaultWorkScreen = ({ route, navigation }) => {
             Job Card #{docEntry} {busNo ? `• ${busNo}` : ''}
           </Text>
         </View>
+
+        {/* Supervisor-selected parts must be visible before work starts too. */}
+        {approvedParts.length > 0 && step === STEP.START && (
+          <View style={[styles.card, { backgroundColor: colors.white }]}>
+            <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts selected for this fault</Text>
+            <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 6 }}>
+              These parts were selected by the Supervisor. Approved parts can be collected after work starts.
+            </Text>
+            {approvedParts.map((part, index) => (
+              <Text key={`${part?.ItemCode || part?.Code || 'part'}-${index}`} style={{ color: colors.dark, fontSize: 13, marginTop: 5 }}>
+                • {part?.ItemName || part?.Name || part?.Dscription || part?.ItemCode || part?.Code} — Qty: {getPartQty(part)}{isPartApproved(part) ? ' · Approved' : ' · Awaiting approval'}
+              </Text>
+            ))}
+          </View>
+        )}
 
         {step === STEP.START && (
           <View style={[styles.card, { backgroundColor: colors.white }]}>
@@ -399,6 +600,13 @@ const FaultWorkScreen = ({ route, navigation }) => {
             {/* Parts */}
             <View style={[styles.card, { backgroundColor: colors.white }]}>
               <Text style={[styles.sectionTitle, { color: colors.dark }]}>Request Parts</Text>
+              {pendingSupervisorParts.length > 0 && (
+                <View style={[styles.approvedBox, { borderColor: '#2B7D2B40' }]}>
+                  <Text style={{ color: '#9A6700', fontWeight: '700', fontSize: 13 }}>Supervisor-selected parts — awaiting approval</Text>
+                  <Text style={{ color: colors.gray, fontSize: 12, marginTop: 3 }}>These parts are linked to this fault. They become ready to collect when the approved quantity is returned by the server.</Text>
+                  {pendingSupervisorParts.map((part, index) => <Text key={`${part?.ItemCode || part?.Code || 'part'}-${index}`} style={{ color: colors.dark, fontSize: 13, marginTop: 5 }}>• {part?.ItemName || part?.Name || part?.Dscription || part?.ItemCode || part?.Code} — Requested: {getPartQty(part)}</Text>)}
+                </View>
+              )}
               {!workEntryDocEntry && (
                 <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 8, fontStyle: 'italic' }}>
                   Save your Work Entry first to request parts against it.
@@ -416,13 +624,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
                         keyboardType="numeric"
                         style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
                       />
-                      <RNTextInput
-                        value={p.Warehouse}
-                        onChangeText={(v) => updatePartDraftField(p.ItemCode, 'Warehouse', v)}
-                        placeholder="Warehouse"
-                        placeholderTextColor={colors.gray}
-                        style={[styles.inlineInput, { flex: 1, color: colors.dark, borderColor: colors.border || '#CCC' }]}
-                      />
+                      <TouchableOpacity onPress={() => { setWarehouseTargetCode(p.ItemCode); setShowWarehouseModal(true); }} style={[styles.warehousePicker, { borderColor: colors.border || '#CCC' }]}>
+                        <Text numberOfLines={1} style={{ color: p.Warehouse ? colors.dark : colors.gray, fontSize: 13 }}>{p.Warehouse || 'Select warehouse'}</Text>
+                        <MaterialIcons name="arrow-drop-down" size={18} color={colors.gray} />
+                      </TouchableOpacity>
                     </View>
                   </View>
                   <TouchableOpacity onPress={() => removePartDraft(p.ItemCode)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -452,14 +657,14 @@ const FaultWorkScreen = ({ route, navigation }) => {
                 </TouchableOpacity>
               )}
 
-              {approvedParts.length > 0 && (
+              {approvedForCollection.length > 0 && (
                 <View style={{ marginTop: SPACING.md }}>
                   <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13, marginBottom: 6 }}>Approved — Ready to collect</Text>
-                  {approvedParts.map((p, idx) => (
+                  {approvedForCollection.map((p, idx) => (
                     <View key={idx} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
                       <View style={{ flex: 1 }}>
                         <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{p.ItemName}</Text>
-                        <Text style={{ color: colors.gray, fontSize: 12 }}>Qty: {p.ApprovedQty ?? p.ReqQty}</Text>
+                        <Text style={{ color: colors.gray, fontSize: 12 }}>Approved: {getPartQty(p)}{p.ReceivedQty ? ` • Received: ${p.ReceivedQty}` : ''}</Text>
                       </View>
                       {p.Received ? (
                         <Chip mode="flat" style={{ backgroundColor: '#2B7D2B20' }} textStyle={{ color: '#2B7D2B', fontSize: 11 }}>
@@ -468,7 +673,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
                       ) : (
                         <TouchableOpacity
                           style={[styles.smallBtn, { backgroundColor: '#2B7D2B' }]}
-                          onPress={() => handleReceivePart(p, idx)}
+                          onPress={() => openReceivePart(p)}
                           activeOpacity={0.8}
                         >
                           <Text style={styles.smallBtnText}>Mark Received</Text>
@@ -507,6 +712,20 @@ const FaultWorkScreen = ({ route, navigation }) => {
         searchKeys={['Name', 'Code']}
       />
 
+      <RNModal visible={Boolean(receiveTarget)} transparent animationType="fade" onRequestClose={() => setReceiveTarget(null)}>
+        <View style={styles.receiveOverlay}>
+          <View style={[styles.receiveBox, { backgroundColor: colors.white }]}>
+            <Text style={[styles.sectionTitle, { color: colors.dark }]}>Confirm received quantity</Text>
+            <Text style={{ color: colors.gray, fontSize: 13, marginBottom: 10 }}>Approved quantity: {receiveTarget ? getPartQty(receiveTarget.part) : 0}</Text>
+            <RNTextInput value={receivedQty} onChangeText={setReceivedQty} keyboardType="numeric" placeholder="Received quantity" placeholderTextColor={colors.gray} style={[styles.inlineInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]} />
+            <View style={styles.receiveActions}>
+              <TouchableOpacity style={[styles.smallBtn, { backgroundColor: colors.gray }]} onPress={() => setReceiveTarget(null)}><Text style={styles.smallBtnText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.smallBtn, { backgroundColor: '#2B7D2B' }]} onPress={handleReceivePart}><Text style={styles.smallBtnText}>Confirm</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </RNModal>
+
       <ModalSelector
         visible={showPartsModal}
         onClose={() => setShowPartsModal(false)}
@@ -518,6 +737,23 @@ const FaultWorkScreen = ({ route, navigation }) => {
         displayKey="ItemName"
         valueKey="ItemCode"
         searchKeys={['ItemName', 'ItemCode']}
+      />
+
+      <ModalSelector
+        visible={showWarehouseModal}
+        onClose={() => { setShowWarehouseModal(false); setWarehouseTargetCode(null); }}
+        onSelect={(value, item) => {
+          if (warehouseTargetCode !== null) updatePartDraftField(warehouseTargetCode, 'Warehouse', item?.WarehouseCode || value);
+          setShowWarehouseModal(false);
+          setWarehouseTargetCode(null);
+        }}
+        title="Select Warehouse"
+        data={warehouses}
+        loading={false}
+        searchPlaceholder="Search warehouses..."
+        displayKey="WarehouseName"
+        valueKey="WarehouseCode"
+        searchKeys={['WarehouseName', 'WarehouseCode']}
       />
 
       <Loader visible={submitting} text="Please wait..." />
@@ -570,6 +806,7 @@ const styles = StyleSheet.create({
     width: 50,
     textAlign: 'center',
   },
+  warehousePicker: { flex: 1, minHeight: 36, borderWidth: 1, borderRadius: 4, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   addLineBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -585,6 +822,10 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.sm,
   },
   smallBtnText: { color: '#FFF', fontSize: 11, fontWeight: '700' },
+  approvedBox: { borderWidth: 1, borderRadius: BORDER_RADIUS.sm, padding: SPACING.sm, marginBottom: SPACING.sm, backgroundColor: '#2B7D2B0D' },
+  receiveOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: SPACING.lg },
+  receiveBox: { borderRadius: BORDER_RADIUS.lg, padding: SPACING.md },
+  receiveActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: SPACING.md },
 });
 
 export default FaultWorkScreen;

@@ -14,7 +14,7 @@ import Toast from 'react-native-toast-message';
 
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { complaintService, jobCardService, masterService } from '../../../api/services';
+import { complaintService, jobCardService, masterService, workEntryService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
 import { isFieldStaffUser } from '../../../utils/roleAccess';
@@ -22,7 +22,7 @@ import { isFieldStaffUser } from '../../../utils/roleAccess';
 /**
  * Work Order Detail Screen
  * Mimics HeavyVehicleInspection.com work order detail view
- * Shows tabs: Mechanics, PartDetails, WorkOrder, Details
+ * Shows Job Card details plus submitted mechanic Work Entries.
  */
 const WorkOrderDetailScreen = ({ route, navigation }) => {
   const {
@@ -69,7 +69,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const tabs = [
     'Mechanics',
     'PartDetails',
-    'WorkOrder',
+    'WorkEntry',
     'Details',
   ];
 
@@ -99,7 +99,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const hasSubmittedWorkOrder = !loadingWorkOrderEntries && workOrderEntries.length > 0;
   // Multiple work orders per job card are allowed
-  const isWorkOrderLocked = false;
+  // Job Cards are the source of truth. Mechanics submit work through Fault Work;
+  // this screen is read-only and surfaces those entries.
+  const isWorkOrderLocked = true;
   const mechanicCount = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics.length : 0;
   const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
 
@@ -111,8 +113,33 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   }, []);
 
   const fetchRelatedWorkOrders = async () => {
+    // Work Orders are retired. Work Entries are shown from the Job Card's
+    // native work-entry data when that endpoint is available.
+    setLoadingWorkOrderEntries(false);
+    setWorkOrderEntries([]);
+    return;
+
     try {
       setLoadingWorkOrderEntries(true);
+      const jobCardDocEntry = Number(workOrder?.DocEntry || docEntry || 0);
+      const workEntriesResponse = await workEntryService.getWorkHistory(dbName || 'MUTSPL_TEST', jobCardDocEntry);
+      if (workEntriesResponse?.Success && Array.isArray(workEntriesResponse?.Data)) {
+        const entries = workEntriesResponse.Data.map((entry) => ({
+          ...entry,
+          AssignedMechanics: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-',
+          MechanicStartDt: entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
+          MechanicStartTm: entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
+          MechanicsTotalHrs: entry?.TotalHrs ?? entry?.Hours ?? null,
+          WorkDoneDetails: entry?.WorkDone || entry?.FinalRemarks || entry?.Remarks || entry?.Description || '',
+        }));
+        setWorkOrderEntries(entries);
+        return;
+      }
+
+      // Older backend deployments may not yet expose GetWorkEntries.
+      setWorkOrderEntries([]);
+      return;
+
       const response = await jobCardService.getWorkOrders(dbName || 'MUTSPL_TEST', null);
       if (response?.Success && Array.isArray(response?.Data)) {
         const currentDocEntry = Number(workOrder?.DocEntry || docEntry || 0);
@@ -1101,11 +1128,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     <View style={styles.tabContent}>
       {loadingWorkOrderEntries ? (
         <View style={styles.emptyState}>
-          <Text style={[styles.emptyText, { color: colors.gray }]}>Loading work orders...</Text>
+          <Text style={[styles.emptyText, { color: colors.gray }]}>Loading work entries...</Text>
         </View>
       ) : workOrderEntries.length === 0 ? (
         <View style={styles.emptyState}>
-          <Text style={[styles.emptyText, { color: colors.gray }]}>No work orders linked to this job card</Text>
+          <Text style={[styles.emptyText, { color: colors.gray }]}>No mechanic work entries submitted yet</Text>
         </View>
       ) : (
         <View style={styles.workOrderListContainer}>
@@ -1127,23 +1154,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                     >
                       <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={16} color={colors.primary} />
                     </TouchableOpacity>
-                    <Text style={[styles.workOrderEntryNo, { color: colors.dark }]}>WO #{entry?.DocEntry ?? '-'}</Text>
+                    <Text style={[styles.workOrderEntryNo, { color: colors.dark }]}>Work Entry #{entry?.WorkEntryDocEntry ?? entry?.DocEntry ?? '-'}</Text>
                   </View>
                   <View style={styles.workOrderEntryHeaderRight}>
                     <View style={[styles.priorityBadgeInline, { backgroundColor: getStatusColor(entry?.Status || 'O') }]}>
                       <Text style={styles.priorityTextInline}>{getStatusName(entry?.Status || 'O')}</Text>
                     </View>
-                    <TouchableOpacity
-                      style={[styles.entryOpenIconButton, { borderColor: colors.border || '#D0D0D0', backgroundColor: colors.light }]}
-                      onPress={() => navigation.navigate('WorkOrderApiDetail', {
-                        workOrderDocEntry: entry?.DocEntry,
-                        dbName: dbName || 'MUTSPL_TEST',
-                      })}
-                      disabled={!entry?.DocEntry}
-                      activeOpacity={0.7}
-                    >
-                      <MaterialIcons name="open-in-new" size={16} color={entry?.DocEntry ? colors.primary : colors.gray} />
-                    </TouchableOpacity>
                   </View>
                 </View>
 
@@ -1222,7 +1238,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         return renderPartsDetails();
       case 'Mechanics':
         return renderMechanicsDetails();
-      case 'WorkOrder':
+      case 'WorkEntry':
         return renderWorkOrderEntries();
       default:
         return null;
@@ -1293,16 +1309,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         </View>
         <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
           <Text style={[styles.summaryValue, { color: colors.dark }]}>{workOrderEntries.length}</Text>
-          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Work Orders</Text>
+          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Work Entries</Text>
         </View>
       </View>
 
-      {isWorkOrderLocked && (
-        <View style={[styles.lockBanner, { backgroundColor: colors.white, borderColor: inputBorderColor }]}> 
-          <MaterialIcons name="lock" size={16} color={colors.primary} />
-          <Text style={[styles.lockBannerText, { color: colors.dark }]}>One work order per job card is allowed. Editing is locked.</Text>
-        </View>
-      )}
 
       {/* Tabs */}
       <View style={[styles.tabsContainer, { backgroundColor: colors.white, borderBottomColor: inputBorderColor }]}>
@@ -1332,25 +1342,6 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         {renderTabContent()}
       </ScrollView>
 
-      <View
-        style={[
-          styles.bottomActionBar,
-          { backgroundColor: colors.white, borderTopColor: inputBorderColor }
-        ]}
-      >
-        <Button
-          mode="contained"
-          onPress={handleCreateWorkOrder}
-          loading={submittingWorkOrder}
-          disabled={submittingWorkOrder || isWorkOrderLocked}
-          buttonColor={colors.primary}
-          style={styles.bottomActionButton}
-          contentStyle={styles.bottomActionButtonContent}
-          labelStyle={styles.bottomActionLabel}
-        >
-          {isWorkOrderLocked ? 'Work Order Submitted' : 'Create Work Order'}
-        </Button>
-      </View>
 
       <ModalSelector
         visible={showPartsModal}

@@ -274,7 +274,7 @@ const PartsApprovalScreen = ({ navigation }) => {
         title="Parts Requests"
         subtitle="Approve mechanic parts"
         onMenuPress={() => navigation.openDrawer && navigation.openDrawer()}
-        showNotifications={false}
+        showNotifications={true}
         useGradient={false}
       />
 
