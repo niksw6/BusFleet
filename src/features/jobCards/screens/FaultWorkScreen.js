@@ -222,14 +222,24 @@ const FaultWorkScreen = ({ route, navigation }) => {
           FaultLine: part?.FaultLine ?? faultLine,
           SupervisorProvided: true,
         })) : []),
+        // Mechanic-requested parts are returned inside the active WorkEntry.
+        // Status AP marks them as approved by the Supervisor and ready to use.
+        ...(Array.isArray(existingWorkEntry?.Parts) ? existingWorkEntry.Parts.map(part => ({
+          ...part,
+          FaultLine: part?.FaultLine ?? faultLine,
+          WorkEntryDocEntry: existingWorkEntry?.DocEntry ?? workEntryDocEntry,
+        })) : []),
       ];
       const uniqueParts = new Map();
-      approved.forEach((part, index) => uniqueParts.set(`${part?.ItemCode || part?.Code || ''}-${part?.PartLine ?? index}`, part));
+      approved.forEach((part, index) => uniqueParts.set(
+        `${part?.ItemCode || part?.Code || ''}-${part?.FaultLine ?? part?.PartLine ?? part?.LineId ?? index}`,
+        part,
+      ));
       setApprovedParts(Array.from(uniqueParts.values()));
     } finally {
       setLoading(false);
     }
-  }, [dbName, userCode, docEntry, faultReference, faultLine, partIdentityCandidates.join('|')]);
+  }, [dbName, userCode, docEntry, faultReference, faultLine, workEntryDocEntry, existingWorkEntry, partIdentityCandidates.join('|')]);
 
   useEffect(() => {
     loadData();

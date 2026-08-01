@@ -138,12 +138,12 @@ const PartsApprovalScreen = ({ navigation }) => {
     }));
   };
 
-  const toggleApproved = (groupKey, partLine) => {
+  const setPartApproval = (groupKey, partLine, approved) => {
     setGroups(prev => prev.map(g => {
       if (String(g.workEntryDocEntry) !== groupKey) return g;
       return {
         ...g,
-        parts: g.parts.map(p => (p.partLine === partLine ? { ...p, approved: !p.approved } : p)),
+        parts: g.parts.map(p => (p.partLine === partLine ? { ...p, approved } : p)),
       };
     }));
   };
@@ -202,19 +202,24 @@ const PartsApprovalScreen = ({ navigation }) => {
           <View key={p.partLine} style={[styles.partRow, { borderColor: colors.border || '#E0E0E0' }]}>
             <View style={styles.partRowTop}>
               <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13, flex: 1 }}>{p.itemName}</Text>
-              <TouchableOpacity
-                style={[styles.approveToggle, { backgroundColor: p.approved ? '#2B7D2B20' : '#BB000020' }]}
-                onPress={() => toggleApproved(groupKey, p.partLine)}
-              >
-                <MaterialIcons
-                  name={p.approved ? 'check-circle' : 'cancel'}
-                  size={16}
-                  color={p.approved ? '#2B7D2B' : '#BB0000'}
-                />
-                <Text style={{ color: p.approved ? '#2B7D2B' : '#BB0000', fontSize: 12, fontWeight: '700', marginLeft: 4 }}>
-                  {p.approved ? 'Approve' : 'Reject'}
-                </Text>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                <TouchableOpacity
+                  style={[styles.approveToggle, { backgroundColor: p.approved ? '#2B7D2B20' : '#F1F5F9' }]}
+                  onPress={() => setPartApproval(groupKey, p.partLine, true)}
+                >
+                  <MaterialIcons name="check-circle" size={16} color="#2B7D2B" />
+                  <Text style={{ color: '#2B7D2B', fontSize: 12, fontWeight: '700', marginLeft: 4 }}>
+                    {p.approved ? 'Approved' : 'Approve'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.approveToggle, { backgroundColor: !p.approved ? '#BB000020' : '#F1F5F9' }]}
+                  onPress={() => setPartApproval(groupKey, p.partLine, false)}
+                >
+                  <MaterialIcons name="cancel" size={16} color="#BB0000" />
+                  <Text style={{ color: '#BB0000', fontSize: 12, fontWeight: '700', marginLeft: 4 }}>Reject</Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
             <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>Requested: {p.reqQty}</Text>

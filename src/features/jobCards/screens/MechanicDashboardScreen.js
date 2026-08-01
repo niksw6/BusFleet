@@ -41,9 +41,15 @@ const deriveBucket = (item) => {
     item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? ''
   ).trim().toUpperCase();
   if (['COMPLETED', 'COMPLETE', 'C', 'CM'].includes(raw)) return BUCKET.COMPLETED;
-  if (['ACCEPTED', 'A', 'IN PROGRESS', 'INPROGRESS', 'STARTED', 'I'].includes(raw)) return BUCKET.IN_PROGRESS;
+  // WC is the backend's mechanic-complete state: work is finished but must
+  // remain in progress until the Supervisor verifies/closes the job card.
+  if (['ACCEPTED', 'A', 'IN PROGRESS', 'INPROGRESS', 'STARTED', 'I', 'IP', 'WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw)) return BUCKET.IN_PROGRESS;
   return BUCKET.TO_ACCEPT; // covers 'PENDING', '', 'P', 'NEW'
 };
+
+const isAwaitingVerification = (item) => ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(
+  String(item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? '').trim().toUpperCase()
+);
 
 const extractItems = (data) => {
   if (Array.isArray(data)) return data;
@@ -171,6 +177,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
       workEntryDocEntry: activeWorkEntry?.DocEntry || activeWorkEntry?.WorkEntryDocEntry || null,
       existingWorkEntry: activeWorkEntry,
       isWorkStarted: hasStartedWork(item),
+      isAwaitingVerification: isAwaitingVerification(item),
       dbName: dbName || 'MUTSPL_TEST',
     });
   };
@@ -187,6 +194,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
       bucket === BUCKET.COMPLETED ? colors.statusCompleted
       : bucket === BUCKET.IN_PROGRESS ? colors.statusInProgress
       : colors.primary;
+    const awaitingVerification = isAwaitingVerification(item);
 
     return (
       <TouchableOpacity
@@ -222,7 +230,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
           <View style={styles.rowBetween}>
             <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}>
               <Text style={[styles.statusPillText, { color: statusColor }]}>
-                {bucket === BUCKET.COMPLETED ? 'Completed' : 'In Progress'}
+                {bucket === BUCKET.COMPLETED ? 'Completed' : awaitingVerification ? 'Awaiting Verification' : 'In Progress'}
               </Text>
             </View>
             <MaterialIcons name="chevron-right" size={22} color={colors.gray} />
