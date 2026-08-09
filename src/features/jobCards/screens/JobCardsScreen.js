@@ -15,11 +15,17 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import StandardListCard from '../../../shared/components/StandardListCard';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { jobCardService } from '../../../api/services';
-import { getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
+import { getStatusName, formatJobCardDisplayNo, getJobTypeCode, formatTime } from '../../../utils/helpers';
 
 const normalizeJobCardFilter = (filter) => {
   if (filter === 'C') return 'CM';
+  if (String(filter || '').trim().toUpperCase() === 'VERIFY') return 'VERIFY';
   return filter || 'All';
+};
+
+const isAwaitingVerification = (card) => {
+  const status = String(card?.Status ?? card?.WorkStatus ?? card?.FaultStatus ?? '').trim().toUpperCase();
+  return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(status);
 };
 
 const JobCardsScreen = ({ navigation, route }) => {
@@ -57,7 +63,11 @@ const JobCardsScreen = ({ navigation, route }) => {
     if (route?.params?.initialFilter) {
       setSelectedFilter(normalizeJobCardFilter(route.params.initialFilter));
     }
-  }, [route?.params?.initialFilter]);
+    const focusDocEntry = route?.params?.focusDocEntry;
+    if (focusDocEntry !== undefined && focusDocEntry !== null && String(focusDocEntry).trim()) {
+      setSearchQuery(String(focusDocEntry).trim());
+    }
+  }, [route?.params?.initialFilter, route?.params?.focusDocEntry]);
 
   const fetchJobCards = async () => {
     try {
@@ -84,7 +94,9 @@ const JobCardsScreen = ({ navigation, route }) => {
     let filtered = [...jobCards];
 
     if (selectedFilter !== 'All') {
-      if (selectedFilter === 'CM') {
+      if (selectedFilter === 'VERIFY') {
+        filtered = filtered.filter(isAwaitingVerification);
+      } else if (selectedFilter === 'CM') {
         filtered = filtered.filter((card) => {
           const status = String(card?.Status || '').trim().toUpperCase();
           return status === 'CM' || status === 'C' || status === 'COMPLETED';
@@ -112,11 +124,23 @@ const JobCardsScreen = ({ navigation, route }) => {
     setFilteredJobCards(filtered);
   };
 
+  const counts = {
+    all: jobCards.length,
+    open: jobCards.filter((card) => String(card?.Status || '').trim().toUpperCase() === 'O').length,
+    progress: jobCards.filter((card) => String(card?.Status || '').trim().toUpperCase() === 'I').length,
+    verify: jobCards.filter(isAwaitingVerification).length,
+    completed: jobCards.filter((card) => {
+      const status = String(card?.Status || '').trim().toUpperCase();
+      return status === 'CM' || status === 'C' || status === 'COMPLETED';
+    }).length,
+  };
+
   const filters = [
-    { key: 'All', label: 'All' },
-    { key: 'O', label: 'Open' },
-    { key: 'I', label: 'In Progress' },
-    { key: 'CM', label: 'Completed' },
+    { key: 'All', label: `All (${counts.all})` },
+    { key: 'O', label: `Open (${counts.open})` },
+    { key: 'I', label: `In Progress (${counts.progress})` },
+    { key: 'VERIFY', label: `Awaiting Verification (${counts.verify})` },
+    { key: 'CM', label: `Completed (${counts.completed})` },
   ];
 
   const getPriorityColor = (priority) => {
@@ -131,6 +155,7 @@ const JobCardsScreen = ({ navigation, route }) => {
     const s = String(status || '').trim().toUpperCase();
     if (s === 'O') return COLORS.statusOpen;
     if (s === 'I') return COLORS.statusInProgress;
+    if (['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(s)) return '#6D28D9';
     if (s === 'CM' || s === 'C') return COLORS.statusCompleted;
     if (s === 'D') return COLORS.statusDeclined;
     return colors.primary;
@@ -161,27 +186,7 @@ const JobCardsScreen = ({ navigation, route }) => {
       return hours ? `${hours}:00${amPm}` : '';
     }
 
-    if (/^\d{3,4}$/.test(value)) {
-      const normalized = value.padStart(4, '0');
-      return `${normalized.slice(0, 2)}:${normalized.slice(2)}`;
-    }
-
-    const isoMatch = value.match(/T(\d{2}:\d{2})(:\d{2})?/);
-    if (isoMatch?.[1]) {
-      return isoMatch[1];
-    }
-
-    const hhMmSsMatch = value.match(/^(\d{2}:\d{2}):\d{2}$/);
-    if (hhMmSsMatch?.[1]) {
-      return hhMmSsMatch[1];
-    }
-
-    const parsedDate = new Date(value);
-    if (!Number.isNaN(parsedDate.getTime())) {
-      return `${String(parsedDate.getHours()).padStart(2, '0')}:${String(parsedDate.getMinutes()).padStart(2, '0')}`;
-    }
-
-    return value;
+    return formatTime(value) || value;
   };
 
   const renderJobCard = ({ item }) => (
@@ -339,7 +344,9 @@ const JobCardsScreen = ({ navigation, route }) => {
             <View
               style={[styles.priorityBadge, { backgroundColor: `${getStatusColor(item.Status)}18` }]}
             >
-              <Text style={[styles.priorityText, { color: getStatusColor(item.Status) }]}>{getStatusName(item.Status)}</Text>
+              <Text style={[styles.priorityText, { color: getStatusColor(item.Status) }]}>
+                {isAwaitingVerification(item) ? 'Awaiting Verification' : getStatusName(item.Status)}
+              </Text>
             </View>
           )}
           {item.Priority && (

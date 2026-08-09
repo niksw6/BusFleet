@@ -2,7 +2,7 @@
 
 ## Base URL
 ```
-http://88.99.68.90:85/BMSSystem/
+http://116.202.223.120:6069/BMSSystem/
 ```
 
 ---
@@ -477,7 +477,7 @@ Use tools like:
 
 **Example cURL:**
 ```bash
-curl -X POST http://88.99.68.90:85/BMSSystem/MCheckLogin \
+curl -X POST http://116.202.223.120:6069/BMSSystem/MCheckLogin \
   -H "Content-Type: application/json" \
   -d '{"DBName":"MUTSPL","User":"test","Password":"test123"}'
 ```

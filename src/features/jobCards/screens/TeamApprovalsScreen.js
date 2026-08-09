@@ -48,32 +48,197 @@ const deriveStatus = (job) => {
   const raw = String(
     job?.TeamStatus ?? job?.Status ?? job?.AcceptStatus ?? job?.ApprovalStatus ?? ''
   ).trim().toUpperCase();
-  if (['A', 'ACCEPTED', 'ACCEPT'].includes(raw)) return STATUS.ACCEPTED;
+  if (['A', 'ACCEPTED', 'ACCEPT', 'AP', 'APPROVED', 'APPROVAL'].includes(raw)) return STATUS.ACCEPTED;
   if (['R', 'REJECTED', 'REJECT'].includes(raw)) return STATUS.REJECTED;
   return STATUS.PENDING; // covers 'P', 'PENDING', 'O', 'OPEN', '' etc.
 };
 
 // The dashboard endpoint's exact response shape isn't fixed yet — defensively
 // find the job-card array wherever it lives (flat array, or nested under a key).
-const extractJobCards = (data) => {
-  if (Array.isArray(data)) return data;
-  if (!data || typeof data !== 'object') return [];
-  const candidateKeys = ['JobCards', 'Jobs', 'List', 'Items', 'Data'];
-  for (const key of candidateKeys) {
-    if (Array.isArray(data[key])) return data[key];
-  }
-  // Fall back to first array-valued property found
-  for (const value of Object.values(data)) {
-    if (Array.isArray(value)) return value;
+const looksLikeJobCard = (item) => {
+  if (!item || typeof item !== 'object') return false;
+  return Boolean(
+    item?.DocEntry
+    || item?.JobCardNo
+    || item?.JobCardDocEntry
+    || item?.ComplaintNo
+    || item?.BusNo
+    || item?.FaultCode
+    || item?.FaultName
+    || item?.Description
+    || item?.Status
+  );
+};
+
+const extractArrayFromPayload = (payload, candidateKeys = [], itemMatcher = null) => {
+  const matches = (item) => {
+    if (!item || typeof item !== 'object') return false;
+    if (itemMatcher) return itemMatcher(item);
+    return true;
+  };
+
+  const search = (value) => {
+    if (Array.isArray(value)) {
+      const matchingItems = value.filter((item) => matches(item));
+      if (matchingItems.length > 0) return matchingItems;
+
+      for (const child of value) {
+        const nested = search(child);
+        if (nested.length > 0) return nested;
+      }
+      return [];
+    }
+
+    if (!value || typeof value !== 'object') return [];
+
+    for (const key of candidateKeys) {
+      const normalizedKey = String(key).toLowerCase();
+      const matchKey = Object.keys(value).find((entryKey) => String(entryKey).toLowerCase() === normalizedKey);
+      const nested = search(matchKey ? value[matchKey] : undefined);
+      if (nested.length > 0) return nested;
+    }
+
+    for (const child of Object.values(value)) {
+      const nested = search(child);
+      if (nested.length > 0) return nested;
+    }
+
+    return [];
+  };
+
+  return search(payload);
+};
+
+const extractJobCards = (data) => extractArrayFromPayload(data, ['JobCards', 'Jobs', 'List', 'Items', 'Data', 'Rows', 'Result'], looksLikeJobCard);
+
+const extractList = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  return extractArrayFromPayload(data, ['Data', 'List', 'Items', 'Rows', 'Result']);
+};
+
+const looksLikeFault = (item) => {
+  if (!item || typeof item !== 'object') return false;
+  const hasFaultLabel = Boolean(
+    item?.FaultCode
+    || item?.FaultName
+    || item?.Fault
+    || item?.FaultDescription
+    || item?.Description
+    || item?.Dscption
+    || item?.Problem
+    || item?.Issue
+  );
+  const hasAssignmentSignal = Boolean(
+    item?.MechanicCode
+    || item?.MechanicName
+    || item?.AssignedMechanic
+  );
+  const hasLineSignal = Boolean(item?.LineId || item?.Line || item?.LineNum || item?.FaultLine);
+  return hasFaultLabel || (hasAssignmentSignal && hasLineSignal);
+};
+
+const extractFaultRows = (response, job) => {
+  const sources = [response, job, response?.Data, job?.Data, response?.Result, job?.Result];
+  for (const source of sources) {
+    const rows = extractArrayFromPayload(source, ['Faults', 'FaultList', 'FaultDetails', 'FaultLineDetails', 'Details', 'Items', 'Rows', 'Result', 'Data'], looksLikeFault);
+    if (rows.length > 0) return rows;
   }
   return [];
 };
 
-const extractList = (response) => {
-  const data = response?.Data ?? response?.data ?? response;
-  if (Array.isArray(data)) return data;
-  if (!data || typeof data !== 'object') return [];
-  return Object.values(data).find(Array.isArray) || [];
+const tryExtractFaultRows = (response, job) => {
+  const rows = extractFaultRows(response, job);
+  if (rows.length > 0) return normalizeFaultRows(rows);
+
+  const fallbackSources = [
+    job?.Faults,
+    job?.FaultList,
+    job?.FaultDetails,
+    job?.FaultLineDetails,
+    job?.Details,
+    job?.Items,
+    job?.Rows,
+    job?.Result,
+    job?.Data,
+  ];
+
+  for (const source of fallbackSources) {
+    const nested = extractFaultRows(source, job);
+    if (nested.length > 0) return normalizeFaultRows(nested);
+  }
+
+  return [];
+};
+
+const normalizeFaultRows = (rows) => {
+  if (Array.isArray(rows)) return rows;
+  if (rows && typeof rows === 'object') return [rows];
+  return [];
+};
+
+const getFaultDisplayText = (fault) => {
+  const candidates = [
+    fault?.FaultCode,
+    fault?.FaultCodeNo,
+    fault?.Code,
+    fault?.Fault,
+    fault?.FaultName,
+    fault?.FaultDescription,
+    fault?.Description,
+    fault?.Dscption,
+    fault?.Problem,
+    fault?.Issue,
+    fault?.WorkDescription,
+    fault?.WorkDone,
+    fault?.WorkCode,
+    fault?.Name,
+    fault?.Title,
+    fault?.ShortDescription,
+    fault?.Details,
+    fault?.Remarks,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  if (candidates.length > 0) {
+    return candidates.join(' - ');
+  }
+
+  const nestedText = [
+    fault?.FaultDetails?.FaultName,
+    fault?.FaultDetails?.Description,
+    fault?.FaultDetails?.Dscption,
+    fault?.FaultData?.FaultName,
+    fault?.FaultData?.Description,
+    fault?.FaultData?.Dscption,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  return nestedText.length > 0 ? nestedText.join(' - ') : '';
+};
+
+const getMechanicDisplayText = (fault) => {
+  const candidates = [
+    fault?.AssignedMechanic?.UserName,
+    fault?.AssignedMechanic?.Name,
+    fault?.AssignedMechanic?.DisplayName,
+    fault?.MechanicName,
+    fault?.AssignedTo,
+    fault?.AcceptedBy,
+    fault?.AssignedToName,
+    fault?.EmployeeName,
+    fault?.Mechanic,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  return candidates[0] || '';
+};
+
+const getFaultStatusText = (fault) => {
+  const status = String(fault?.Status || fault?.MechanicStatus || fault?.AssignmentStatus || '').trim();
+  return status || '';
 };
 
 // AssignMechanics stores this value as the mechanic's FaultLine. The current
@@ -191,7 +356,7 @@ const normalizeTeamMembers = (members = []) => (
     .filter(member => member?.DisplayName)
 );
 
-const getDocEntry = (job) => job?.DocEntry ?? job?.JobCardDocEntry ?? job?.JobCardNo ?? '';
+const getDocEntry = (job) => job?.DocEntry ?? job?.JobCardDocEntry ?? job?.JobCardNo ?? job?.DocNum ?? '';
 const jobKey = (job) => String(getDocEntry(job));
 
 const resolveMasterFaultCode = (fault, faultMasters = []) => {
@@ -308,17 +473,40 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
     const key = jobKey(job);
     if (faultsMap[key]?.data || faultsMap[key]?.loading) return;
     setFaultsMap(prev => ({ ...prev, [key]: { loading: true, data: null } }));
+
+    const companyDb = dbName || 'MUTSPL_TEST';
+    const docIdentifiers = [
+      getDocEntry(job),
+      job?.DocNum,
+      job?.JobCardNo,
+      job?.JobCardDocEntry,
+      job?.DocEntry,
+    ].filter((value) => value !== undefined && value !== null && value !== '');
+
     try {
-      const companyDb = dbName || 'MUTSPL_TEST';
-      const res = await teamService.getJobCardFaults(companyDb, getDocEntry(job));
-      const faultRows = Array.isArray(res?.Data?.Faults)
-        ? res.Data.Faults
-        : (Array.isArray(res?.Data) ? res.Data : []);
+      let faultRows = [];
+      for (const identifier of docIdentifiers) {
+        try {
+          const res = await teamService.getJobCardFaults(companyDb, identifier);
+          faultRows = tryExtractFaultRows(res, job);
+          if (faultRows.length > 0) {
+            break;
+          }
+        } catch (error) {
+          continue;
+        }
+      }
+
+      if (faultRows.length === 0) {
+        faultRows = tryExtractFaultRows(job, job);
+      }
+
       setFaultsMap(prev => ({ ...prev, [key]: { loading: false, data: faultRows } }));
       return faultRows;
     } catch (error) {
-      setFaultsMap(prev => ({ ...prev, [key]: { loading: false, data: [] } }));
-      return [];
+      const fallbackFaultRows = tryExtractFaultRows(null, job);
+      setFaultsMap(prev => ({ ...prev, [key]: { loading: false, data: fallbackFaultRows } }));
+      return fallbackFaultRows;
     }
   };
 
@@ -333,7 +521,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
   };
 
   const openAssignmentConfirm = async (job) => {
-    const faults = faultsMap[jobKey(job)]?.data || await loadFaults(job);
+    const faults = normalizeFaultRows(faultsMap[jobKey(job)]?.data || await loadFaults(job));
     if (faults.length === 0) {
       Toast.show({ type: 'error', text1: 'Faults are required', text2: 'This Job Card has no faults available to assign.' });
       return;
@@ -515,46 +703,50 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
   };
 
   const renderFaultRow = (job, fault, idx) => {
-    const faultCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
-    const faultDesc = String(fault?.FaultDescription || fault?.Description || fault?.Dscption || '').trim();
-    const faultName = faultCode && faultDesc
-      ? `${faultCode} - ${faultDesc}`
-      : (faultDesc || faultCode || `Fault ${idx + 1}`);
-    const faultStatus = String(fault?.Status || fault?.MechanicStatus || '').trim();
-    const mechanicName =
-      fault?.AssignedMechanic?.UserName ||
-      fault?.MechanicName ||
-      fault?.AssignedTo ||
-      fault?.AcceptedBy ||
-      '';
-    return (
-      <View key={`${faultCode}-${idx}`} style={[styles.faultRow, { borderColor: colors.border || '#E0E0E0' }]}>
-        <MaterialIcons name="build" size={16} color={colors.primary} />
-        <View style={{ flex: 1, marginLeft: 8 }}>
-          <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{faultName}</Text>
-          {mechanicName ? (
-            <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>
-              {faultStatus ? `${faultStatus} · ` : ''}{mechanicName}
-            </Text>
-          ) : faultStatus ? (
-            <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>{faultStatus}</Text>
-          ) : (
-            <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2, fontStyle: 'italic' }}>
-              Awaiting a mechanic to accept this fault
-            </Text>
-          )}
-        </View>
-        {deriveStatus(job) === STATUS.ACCEPTED && !mechanicName && teamMembers.length > 0 && (
-          <View style={styles.memberChoiceRow}>
-            {teamMembers.slice(0, 4).map(member => {
-              const assignKey = `${jobKey(job)}-${faultCode}`;
-              return <TouchableOpacity key={member.ResolvedCode || member.DisplayName} disabled={assigningFaultKey === assignKey}
-                onPress={() => assignMechanic(job, fault, member)} style={[styles.memberChoice, { borderColor: colors.primary }]}>
-                <Text numberOfLines={1} style={[styles.memberChoiceText, { color: colors.primary }]}>{assigningFaultKey === assignKey ? 'Assigning…' : member.DisplayName}</Text>
-              </TouchableOpacity>;
-            })}
-          </View>
-        )}
+   const faultCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
+   const faultName = getFaultDisplayText(fault);
+   const faultStatus = getFaultStatusText(fault);
+   const mechanicName = getMechanicDisplayText(fault);
+   const displayTitle = faultName || `Fault ${idx + 1}`;
+
+   return (
+     <View key={`${faultCode || 'fault'}-${idx}`} style={[styles.faultRow, { borderColor: colors.border || '#E0E0E0' }]}>
+       <MaterialIcons name="build" size={16} color={colors.primary} />
+       <View style={{ flex: 1, marginLeft: 8 }}>
+         <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13, flexShrink: 1 }}>
+           {displayTitle}
+         </Text>
+         {mechanicName ? (
+           <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2, flexShrink: 1 }}>
+             {faultStatus ? `${faultStatus} · ` : ''}{mechanicName}
+           </Text>
+         ) : faultStatus ? (
+           <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2, flexShrink: 1 }}>{faultStatus}</Text>
+         ) : (
+           <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2, fontStyle: 'italic', flexShrink: 1 }}>
+             Awaiting a mechanic to accept this fault
+           </Text>
+         )}
+         {deriveStatus(job) === STATUS.ACCEPTED && !mechanicName && teamMembers.length > 0 && (
+           <View style={styles.memberChoiceRow}>
+             {teamMembers.slice(0, 4).map((member) => {
+               const assignKey = `${jobKey(job)}-${faultCode}`;
+               return (
+                 <TouchableOpacity
+                   key={member.ResolvedCode || member.DisplayName}
+                   disabled={assigningFaultKey === assignKey}
+                   onPress={() => assignMechanic(job, fault, member)}
+                   style={[styles.memberChoice, { borderColor: colors.primary }]}
+                 >
+                   <Text numberOfLines={1} style={[styles.memberChoiceText, { color: colors.primary }]}>
+                     {assigningFaultKey === assignKey ? 'Assigning…' : member.DisplayName}
+                   </Text>
+                 </TouchableOpacity>
+               );
+             })}
+           </View>
+         )}
+       </View>
       </View>
     );
   };
@@ -564,6 +756,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
     const status = deriveStatus(job);
     const isExpanded = expandedKey === key;
     const faultsState = faultsMap[key];
+    const faultRows = normalizeFaultRows(faultsState?.data);
 
     const statusColor =
       status === STATUS.ACCEPTED ? colors.statusCompleted
@@ -611,10 +804,17 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
             <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13, marginBottom: 6 }}>Faults</Text>
             {faultsState?.loading ? (
               <Text style={{ color: colors.gray, fontSize: 13 }}>Loading faults…</Text>
-            ) : (faultsState?.data || []).length === 0 ? (
-              <Text style={{ color: colors.gray, fontSize: 13, marginBottom: 8 }}>No faults recorded on this job card.</Text>
+            ) : faultRows.length === 0 ? (
+              <View style={{ marginBottom: 8 }}>
+                <Text style={{ color: colors.gray, fontSize: 13 }}>
+                  No fault rows were returned for this job card yet.
+                </Text>
+                <Text style={{ color: colors.gray, fontSize: 12, marginTop: 4 }}>
+                  The backend may be returning the fault list in a different payload shape or this card may still be syncing.
+                </Text>
+              </View>
             ) : (
-              faultsState.data.map((fault, index) => renderFaultRow(job, fault, index))
+              faultRows.map((fault, index) => renderFaultRow(job, fault, index))
             )}
 
             {status === STATUS.PENDING && (
@@ -833,7 +1033,7 @@ const styles = StyleSheet.create({
   },
   faultRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     borderWidth: 1,
     borderRadius: BORDER_RADIUS.sm,
     padding: SPACING.sm,

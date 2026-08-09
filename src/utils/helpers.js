@@ -8,13 +8,32 @@ export const validatePhone = (phone) => {
   return re.test(phone);
 };
 
-// Parses date strings including the API format "M/D/YYYY H:MM:SS AM/PM"
-// which doesn't parse reliably with new Date() on Android/Hermes.
+// Parses backend date/time strings reliably on Android/Hermes.
+// Supported formats include:
+// - M/D/YYYY H:MM[:SS] AM/PM
+// - DD-MM-YYYY [HH:MM[:SS]]
+// - YYYY-MM-DD [HH:MM[:SS]]
+// - ISO variants
+// - .NET /Date(1700000000000)/
 const parseDate = (date) => {
   if (!date) return null;
   if (date instanceof Date) return date;
+  if (typeof date === 'number') {
+    const fromNumber = new Date(date);
+    return isNaN(fromNumber.getTime()) ? null : fromNumber;
+  }
+
   const str = String(date).trim();
-  // Match "M/D/YYYY H:MM:SS AM/PM" or "M/D/YYYY H:MM AM/PM"
+  if (!str) return null;
+
+  // .NET ticks format: /Date(1700000000000)/
+  const dotNet = str.match(/^\/Date\((\d+)(?:[+-]\d+)?\)\/$/i);
+  if (dotNet) {
+    const fromDotNet = new Date(Number(dotNet[1]));
+    return isNaN(fromDotNet.getTime()) ? null : fromDotNet;
+  }
+
+  // M/D/YYYY H:MM:SS AM/PM or M/D/YYYY H:MM AM/PM
   const mdy12 = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
   if (mdy12) {
     let [, month, day, year, hours, minutes, seconds = '0', ampm] = mdy12;
@@ -23,6 +42,45 @@ const parseDate = (date) => {
     if (ampm.toUpperCase() === 'AM' && hours === 12) hours = 0;
     return new Date(parseInt(year), parseInt(month) - 1, parseInt(day), hours, parseInt(minutes), parseInt(seconds));
   }
+
+  // DD-MM-YYYY [HH:MM[:SS]]
+  const dmy = str.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (dmy) {
+    const [, day, month, year, hours = '0', minutes = '0', seconds = '0'] = dmy;
+    return new Date(
+      parseInt(year, 10),
+      parseInt(month, 10) - 1,
+      parseInt(day, 10),
+      parseInt(hours, 10),
+      parseInt(minutes, 10),
+      parseInt(seconds, 10)
+    );
+  }
+
+  // YYYY-MM-DD [HH:MM[:SS]] (space separated non-ISO)
+  const ymd = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (ymd) {
+    const [, year, month, day, hours = '0', minutes = '0', seconds = '0'] = ymd;
+    return new Date(
+      parseInt(year, 10),
+      parseInt(month, 10) - 1,
+      parseInt(day, 10),
+      parseInt(hours, 10),
+      parseInt(minutes, 10),
+      parseInt(seconds, 10)
+    );
+  }
+
+  // Time-only compact format e.g. HHMM -> treat as today at HH:MM
+  const hhmm = str.match(/^\d{3,4}$/);
+  if (hhmm) {
+    const normalized = str.padStart(4, '0');
+    const hours = parseInt(normalized.slice(0, 2), 10);
+    const minutes = parseInt(normalized.slice(2), 10);
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+  }
+
   // Fallback to native parse
   const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
@@ -54,8 +112,9 @@ export const formatDateTime = (date) => {
 
 export const calculateDuration = (startTime, endTime) => {
   if (!startTime || !endTime) return 0;
-  const start = new Date(startTime);
-  const end = new Date(endTime);
+  const start = parseDate(startTime);
+  const end = parseDate(endTime);
+  if (!start || !end) return 0;
   const diff = end - start;
   return Math.floor(diff / (1000 * 60)); // minutes
 };

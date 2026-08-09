@@ -10,19 +10,21 @@ const ConfirmationModal = ({
   message,
   onConfirm,
   onCancel,
+  onClose,
   confirmText = 'Confirm',
   cancelText = 'Cancel',
   confirmColor,
 }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const handleCancel = onCancel || onClose || (() => {});
 
   return (
     <Modal
       transparent={true}
       animationType="fade"
       visible={visible}
-      onRequestClose={onCancel}
+      onRequestClose={handleCancel}
     >
       <View style={styles.overlay}>
         <View style={[styles.container, { backgroundColor: colors.white }]}>
@@ -32,7 +34,7 @@ const ConfirmationModal = ({
           <View style={styles.buttonContainer}>
             <Button
               mode="outlined"
-              onPress={onCancel}
+              onPress={handleCancel}
               style={styles.button}
               labelStyle={{ color: colors.gray }}
             >

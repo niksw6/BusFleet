@@ -3,7 +3,7 @@ import { get, post, handleApiError } from '../client';
 /**
  * Mechanic Service — Mechanic / Electrician work module.
  *
- * Confirmed LIVE endpoints (tested against http://88.99.68.90:85/BMSSystem/):
+ * Confirmed LIVE endpoints (tested against http://116.202.223.120:6069/BMSSystem/):
  *   GET  GetMechanicDashboard?CompanyDB=...&UserCode=...
  *   POST AcceptFault      { CompanyDB, DocEntry, FaultLine, UserCode }
  *   POST StartWork        { CompanyDB, DocEntry, FaultLine, UserCode }

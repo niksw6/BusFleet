@@ -98,7 +98,7 @@ The app will:
 
 Contact your system administrator for test credentials.
 
-Backend URL: http://88.99.68.90:85/BMSSystem/
+Backend URL: http://116.202.223.120:6069/BMSSystem/
 
 ## Common Issues and Solutions
 

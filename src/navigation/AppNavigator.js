@@ -19,7 +19,7 @@ import { loginSuccess } from '../store/slices/authSlice';
 import { setUnreadCount } from '../store/slices/notificationSlice';
 import { getUserData, getDBName } from '../utils/storage';
 import { setNavigationRef } from '../api/client';
-import { dashboardService, storeService, teamService, mechanicService } from '../api/services';
+import { dashboardService, storeService, teamService, mechanicService, jobCardService } from '../api/services';
 import { COLORS, DARK_COLORS } from '../constants/theme';
 import { isSupervisorUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../utils/roleAccess';
 
@@ -39,6 +39,16 @@ const AppNavigator = () => {
   const fieldStaffUser = isFieldStaffUser(user);
   const teamLeaderUser = isTeamLeaderUser(user);
   const driverUser = isDriverUser(user);
+
+  const isSupervisorVerificationPending = (entity) => {
+    const raw = String(entity?.Status ?? entity?.WorkStatus ?? entity?.FaultStatus ?? '').trim().toUpperCase();
+    return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw);
+  };
+
+  const isPendingPartApproval = (part) => {
+    const status = String(part?.Status ?? part?.ApprovalStatus ?? '').trim().toUpperCase();
+    return !status || ['P', 'PENDING', 'RQ', 'REQUESTED'].includes(status);
+  };
 
   // Refresh the badge whenever navigation changes. Some actionable items are
   // workflow queues rather than rows from GetNotifications, so count them here.
@@ -108,18 +118,27 @@ const AppNavigator = () => {
 
       if (supervisorUser) {
         try {
-        const partsResponse = await storeService.getMechanicPartRequests(companyDb);
-        const partRows = Array.isArray(partsResponse?.Data) ? partsResponse.Data : (Array.isArray(partsResponse?.data) ? partsResponse.data : []);
-        const pendingWorkEntries = new Set(
-          partRows
-            .map((part) => part?.WorkEntryDocEntry ?? part?.WorkEntryNo ?? part?.DocEntry)
-            .filter((value) => value !== undefined && value !== null && String(value).trim())
-            .map(String)
-        );
-        unreadCount += pendingWorkEntries.size;
+          const partsResponse = await storeService.getMechanicPartRequests(companyDb);
+          const partRows = Array.isArray(partsResponse?.Data) ? partsResponse.Data : (Array.isArray(partsResponse?.data) ? partsResponse.data : []);
+          const pendingWorkEntries = new Set(
+            partRows
+              .filter(isPendingPartApproval)
+              .map((part) => part?.WorkEntryDocEntry ?? part?.WorkEntryNo ?? part?.DocEntry)
+              .filter((value) => value !== undefined && value !== null && String(value).trim())
+              .map(String)
+          );
+          unreadCount += pendingWorkEntries.size;
         } catch (partsError) {
-          // A parts endpoint failure must not hide the backend notification count.
+          // A parts endpoint failure must not hide other supervisor badges.
           console.warn('Parts-request badge refresh failed:', partsError?.message || partsError);
+        }
+
+        try {
+          const jobCardsResponse = await jobCardService.getJobCards(companyDb);
+          const jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
+          unreadCount += jobCards.filter(isSupervisorVerificationPending).length;
+        } catch (verificationError) {
+          console.warn('Verification badge refresh failed:', verificationError?.message || verificationError);
         }
       }
 

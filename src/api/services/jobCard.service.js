@@ -5,6 +5,19 @@ import { get, post, handleApiError } from '../client';
  * Handles job card creation, assignment, and tracking
  */
 export const jobCardService = {
+  /** Close a job card after every work entry is supervisor-verified. */
+  closeJobCard: async (companyDB, docEntry) => {
+    try {
+      const response = await post('CloseJobCard', {
+        CompanyDB: companyDB,
+        DocEntry: Number(docEntry) || docEntry,
+      });
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   /**
    * Close incident/job card via new API
    */

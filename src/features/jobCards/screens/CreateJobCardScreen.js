@@ -354,6 +354,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
             ReqBy: supervisorCode,
             ReqDate: partRequestDate,
             ReqTime: partRequestTime,
+            StoreItemStatus: String(p.StoreItemStatus || 'Direct').trim() || 'Direct',
           }))
         )),
         Mechanics: (function() {
@@ -794,7 +795,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
 
       <ConfirmationModal
         visible={showConfirmation}
-        onClose={() => setShowConfirmation(false)}
+        onCancel={() => setShowConfirmation(false)}
         onConfirm={handleConfirm}
         title="Create Job Card"
         message={`Are you sure you want to create job card for incident #${complaintNo}?`}

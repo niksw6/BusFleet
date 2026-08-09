@@ -135,6 +135,7 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
           ApprovedQty: approve ? (Number(part?.ReqQty) || 0) : 0,
           Approved: approve,
           StoreWarehouse: String(part?.Warehouse || '').trim(),
+          StoreItemStatus: 'Direct',
           Remarks: String(part?.Remarks || '').trim(),
         })),
       });
@@ -153,10 +154,22 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
 
   const getPartStatusConfig = (status) => {
     switch (String(status || '').toUpperCase()) {
-      case 'A': return { label: 'Approved',         color: '#2B7D2B', bg: '#2B7D2B15' };
-      case 'I': return { label: 'Issued by Store',  color: '#0070F2', bg: '#0070F215' };
-      case 'R': return { label: 'Received',         color: '#388E3C', bg: '#388E3C15' };
-      case 'X': return { label: 'Rejected',         color: '#BB0000', bg: '#BB000015' };
+      case 'AP':
+      case 'A':
+        return { label: 'Approved', color: '#2B7D2B', bg: '#2B7D2B15' };
+      case 'PS':
+        return { label: 'Partially Issued', color: '#0C63E7', bg: '#0C63E715' };
+      case 'IS':
+      case 'I':
+        return { label: 'Fully Issued', color: '#0070F2', bg: '#0070F215' };
+      case 'PR':
+        return { label: 'Partial Received', color: '#2F7A34', bg: '#2F7A3415' };
+      case 'RC':
+      case 'R':
+        return { label: 'Fully Received', color: '#388E3C', bg: '#388E3C15' };
+      case 'RJ':
+      case 'X':
+        return { label: 'Rejected', color: '#BB0000', bg: '#BB000015' };
       default:  return { label: 'Pending Approval', color: '#FF8F00', bg: '#FF8F0015' };
     }
   };

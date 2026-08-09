@@ -368,7 +368,7 @@ All documentation is **detailed**, **clear**, and **production-ready**.
 
 ### Base URL
 ```
-http://88.99.68.90:85/BMSSystem/
+http://116.202.223.120:6069/BMSSystem/
 ```
 
 ### Configured Endpoints

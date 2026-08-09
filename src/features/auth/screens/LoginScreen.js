@@ -158,11 +158,12 @@ const LoginScreen = ({ navigation }) => {
       >
         <View style={styles.header}>
           <View style={[styles.logoContainer, { backgroundColor: colors.primary }]}>
-            <MaterialIcons name="local-shipping" size={64} color="#fff" />
+            <MaterialIcons name="directions-bus" size={42} color="#fff" />
           </View>
+          <Text style={[styles.productLabel, { color: colors.primary }]}>FLEET OPERATIONS</Text>
           <Text style={[styles.title, { color: colors.dark }]}>Fleet Data Management</Text>
           <Text style={[styles.subtitle, { color: colors.gray }]}>
-            Sign in to continue
+            Sign in to manage maintenance work safely and efficiently
           </Text>
         </View>
 
@@ -252,6 +253,7 @@ const LoginScreen = ({ navigation }) => {
                 >
                   {loading ? 'Signing In...' : 'Sign In'}
                 </Button>
+                <Text style={[styles.signInHint, { color: colors.gray }]}>Use your assigned company and login credentials</Text>
               </View>
             )}
           </Formik>
@@ -269,20 +271,21 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    padding: SPACING.lg,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.xl,
     justifyContent: 'center',
   },
   header: {
     alignItems: 'center',
-    marginBottom: SPACING.xl,
+    marginBottom: SPACING.lg,
   },
   logoContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+    width: 82,
+    height: 82,
+    borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: SPACING.lg,
+    marginBottom: SPACING.sm,
     elevation: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -290,19 +293,27 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
   },
   title: {
-    fontSize: 28,
+    fontSize: 25,
     fontWeight: 'bold',
     marginBottom: SPACING.xs,
     textAlign: 'center',
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 14,
     textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: SPACING.md,
+  },
+  productLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    marginBottom: 4,
   },
   formContainer: {
-    padding: SPACING.lg,
-    borderRadius: BORDER_RADIUS.lg,
-    elevation: 2,
+    padding: SPACING.md,
+    borderRadius: BORDER_RADIUS.xl || BORDER_RADIUS.lg,
+    elevation: 3,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.18,
@@ -334,15 +345,20 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   loginButton: {
-    marginTop: SPACING.lg,
+    marginTop: SPACING.sm,
     borderRadius: BORDER_RADIUS.md,
   },
   loginButtonContent: {
-    height: 56,
+    height: 52,
   },
   loginButtonLabel: {
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  signInHint: {
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: SPACING.md,
   },
 });
 

@@ -74,6 +74,7 @@ const FaultMechanicPartsSection = ({
       ItemName: item.ItemName || item.Name || item.Dscription || '',
       Qty: '1',
       UoM: item.UoM || item.InvntryUom || 'Nos',
+      StoreItemStatus: 'Direct',
     };
     onChange(faultIndex, { mechanics: selectedMechanics, parts: [...selectedParts, newPart] });
     setShowPartsModal(false);
@@ -89,6 +90,13 @@ const FaultMechanicPartsSection = ({
   const updatePartQty = (itemCode, qty) => {
     const updated = selectedParts.map(p =>
       (p.ItemCode || p.Code) === itemCode ? { ...p, Qty: qty } : p
+    );
+    onChange(faultIndex, { mechanics: selectedMechanics, parts: updated });
+  };
+
+  const updatePartStoreItemStatus = (itemCode, mode) => {
+    const updated = selectedParts.map(p =>
+      (p.ItemCode || p.Code) === itemCode ? { ...p, StoreItemStatus: mode } : p
     );
     onChange(faultIndex, { mechanics: selectedMechanics, parts: updated });
   };
@@ -255,6 +263,27 @@ const FaultMechanicPartsSection = ({
                           {part.ItemName || part.Name || key}
                         </Text>
                         <Text style={[styles.partCode, { color: colors.gray }]}>{key}</Text>
+
+                        <View style={styles.radioRow}>
+                          <Text style={[styles.modeLabel, { color: colors.gray }]}>Mode:</Text>
+                          {['Direct', 'Interim'].map((mode) => {
+                            const selected = String(part?.StoreItemStatus || 'Direct').toLowerCase() === mode.toLowerCase();
+                            return (
+                              <TouchableOpacity
+                                key={`${key}-${mode}`}
+                                style={styles.radioOption}
+                                onPress={() => updatePartStoreItemStatus(key, mode)}
+                                activeOpacity={0.8}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <View style={[styles.radioOuter, selected && { borderColor: colors.primary }]}>
+                                  {selected ? <View style={[styles.radioInner, { backgroundColor: colors.primary }]} /> : null}
+                                </View>
+                                <Text style={{ color: colors.dark, fontSize: 12 }}>{mode}</Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
                       </View>
                       <View style={styles.partQtyRow}>
                         <Text style={[styles.uomText, { color: colors.gray }]}>{part.UoM}</Text>
@@ -457,6 +486,40 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: BORDER_RADIUS.sm,
     marginBottom: 4,
+  },
+  radioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  modeLabel: {
+    fontSize: 11,
+    marginRight: 6,
+    fontWeight: '600',
+  },
+  radioOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 14,
+    minHeight: 28,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  radioOuter: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#A0A0A0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 5,
+  },
+  radioInner: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   partInfo: {
     flex: 1,

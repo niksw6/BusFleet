@@ -41,7 +41,6 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const [loading, setLoading] = useState(true);
   const [closingIncident, setClosingIncident] = useState(false);
-  const [updatingIncidentStatus, setUpdatingIncidentStatus] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [complaint, setComplaint] = useState(null);
   const [schedulerLines, setSchedulerLines] = useState([]);
@@ -77,6 +76,29 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const normalizeStatus = (statusValue) => String(statusValue || '').trim().toUpperCase();
 
+  const resolveJobCardNo = (entity) => String(
+    entity?.JobCardNo
+    || entity?.JobcardNo
+    || entity?.JobCard
+    || entity?.JCDocNum
+    || entity?.JCNo
+    || ''
+  ).trim();
+
+  const resolveJobCardDocEntry = (entity) => {
+    const candidates = [
+      entity?.JobCardDocEntry,
+      entity?.JobCardEntry,
+      entity?.JCDocEnt,
+      entity?.JCDocEntry,
+    ];
+    for (const value of candidates) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    }
+    return 0;
+  };
+
   const isClosedStatus = (statusValue) => {
     const status = normalizeStatus(statusValue);
     return status === 'C' || status === 'CM' || status === 'COMPLETED' || status === 'CLOSED';
@@ -91,40 +113,52 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     });
   };
 
+  const isVerificationPendingStatus = (statusValue) => {
+    const status = normalizeStatus(statusValue);
+    return status === 'WC' || status === 'WORK COMPLETED' || status === 'AWAITING VERIFICATION';
+  };
+
+  const isWorkEntryCompletionStatus = (statusValue) => {
+    const status = normalizeStatus(statusValue);
+    return status === 'C' || status === 'CM' || status === 'COMPLETE' || status === 'COMPLETED' || status === 'WC' || status === 'WORK COMPLETED';
+  };
+
   // Work Entries are the operational history for a Job Card.  Work Orders are
   // deliberately not used in the incident lifecycle.
   const resolveWorkEntryCount = async (incidentData) => {
-    const linkedJobCardNo = String(
-      incidentData?.JobCardNo || incidentData?.JobcardNo || routeJobCardNo || '',
-    ).trim();
-    const linkedJobCardDocEntry = Number(
-      incidentData?.JobCardDocEntry || incidentData?.JobCardEntry || routeJobCardDocEntry || 0,
-    );
+    const linkedJobCardNo = resolveJobCardNo(incidentData) || String(routeJobCardNo || '').trim();
+    const linkedJobCardDocEntry = resolveJobCardDocEntry(incidentData) || Number(routeJobCardDocEntry || 0);
 
     if (!linkedJobCardNo && !linkedJobCardDocEntry) {
-      return { count: 0, latestDocEntry: null };
+      return { count: 0, latestDocEntry: null, hasCompletionSignal: false, allCompleted: false };
     }
 
     try {
       const jobCardRef = linkedJobCardNo || linkedJobCardDocEntry;
       const workEntriesResponse = await workEntryService.getWorkHistory(dbName || 'MUTSPL_TEST', jobCardRef);
       const workEntries = Array.isArray(workEntriesResponse?.Data) ? workEntriesResponse.Data : [];
+      const hasCompletionSignal = workEntries.some((entry) => (
+        isWorkEntryCompletionStatus(entry?.Status || entry?.WorkStatus)
+        || Boolean(String(entry?.CompleteDate || entry?.CompletedDate || '').trim())
+      ));
+      const allCompleted = workEntries.length > 0 && workEntries.every((entry) => (
+        isWorkEntryCompletionStatus(entry?.Status || entry?.WorkStatus)
+        || Boolean(String(entry?.CompleteDate || entry?.CompletedDate || '').trim())
+      ));
       return {
         count: workEntries.length,
         latestDocEntry: null,
+        hasCompletionSignal,
+        allCompleted,
       };
     } catch (workEntryError) {
-      return { count: 0, latestDocEntry: null };
+      return { count: 0, latestDocEntry: null, hasCompletionSignal: false, allCompleted: false };
     }
   };
 
   const resolveLinkedJobCardInfo = async (incidentData) => {
-    const existingJobCardNo = String(
-      incidentData?.JobCardNo || incidentData?.JobcardNo || routeJobCardNo || '',
-    ).trim();
-    const existingJobCardDocEntry = Number(
-      incidentData?.JobCardDocEntry || incidentData?.JobCardEntry || routeJobCardDocEntry || 0,
-    );
+    const existingJobCardNo = resolveJobCardNo(incidentData) || String(routeJobCardNo || '').trim();
+    const existingJobCardDocEntry = resolveJobCardDocEntry(incidentData) || Number(routeJobCardDocEntry || 0);
 
     if (existingJobCardNo || existingJobCardDocEntry > 0) {
       return {
@@ -189,8 +223,8 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
       return {
         ...incidentData,
-        JobCardNo: String(linkedCard?.JobCardNo || linkedCard?.DocNum || linkedCard?.DocEntry || '').trim(),
-        JobCardDocEntry: Number(linkedCard?.DocEntry || 0) || undefined,
+        JobCardNo: String(linkedCard?.JobCardNo || linkedCard?.DocNum || linkedCard?.JCDocNum || linkedCard?.DocEntry || '').trim(),
+        JobCardDocEntry: Number(linkedCard?.DocEntry || linkedCard?.JCDocEnt || 0) || undefined,
         JobCardStatus: linkedCard?.Status || incidentData?.JobCardStatus,
       };
     } catch (jobCardLookupError) {
@@ -202,17 +236,19 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
   const deriveProgressMap = async (incidentData) => {
     const incidentStatus = normalizeStatus(incidentData?.Status);
     const jobCardStatus = normalizeStatus(incidentData?.JobCardStatus);
-    const linkedJobCardNo = String(
-      incidentData?.JobCardNo || incidentData?.JobcardNo || routeJobCardNo || '',
-    ).trim();
-    const linkedJobCardDocEntry = Number(
-      incidentData?.JobCardDocEntry || incidentData?.JobCardEntry || routeJobCardDocEntry || 0,
-    );
+    const linkedJobCardNo = resolveJobCardNo(incidentData) || String(routeJobCardNo || '').trim();
+    const linkedJobCardDocEntry = resolveJobCardDocEntry(incidentData) || Number(routeJobCardDocEntry || 0);
     const jobCardCreated = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
-    const { count: workOrderCount, latestDocEntry: workOrderDocEntry } = await resolveWorkEntryCount(incidentData);
+    const {
+      count: workOrderCount,
+      latestDocEntry: workOrderDocEntry,
+      hasCompletionSignal,
+      allCompleted: allWorkEntriesCompleted,
+    } = await resolveWorkEntryCount(incidentData);
     const workOrderCreated = workOrderCount > 0;
     const workOrderSubmitted = workOrderCreated;
     const closed = isClosedStatus(incidentStatus);
+    const verificationPending = isVerificationPendingStatus(jobCardStatus) || hasCompletionSignal;
     const inProgress = !closed && (
       incidentStatus === 'I'
       || jobCardStatus === 'I'
@@ -228,9 +264,10 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       workOrderSubmitted,
       workOrderDocEntry,
       inProgress,
+      verificationPending,
       closed,
       workOrderCount,
-      canSupervisorClose: supervisorUser && !isPreventive && jobCardCreated && workOrderCreated && !closed,
+      canSupervisorClose: supervisorUser && !isPreventive && jobCardCreated && workOrderCreated && allWorkEntriesCompleted && !closed,
     });
   };
 
@@ -292,44 +329,6 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       });
     } finally {
       setClosingIncident(false);
-    }
-  };
-
-  const handleRejectIncident = async () => {
-    if (!complaint) return;
-
-    try {
-      setUpdatingIncidentStatus(true);
-      const formType = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
-      const docEntry = complaint?.ComplaintNo || complaintNo;
-
-      const response = await complaintService.updateComplaintStatus(
-        dbName || 'MUTSPL_TEST',
-        Number(docEntry) || docEntry,
-        'D',
-        formType,
-      );
-
-      if (!response?.Success) {
-        throw new Error(response?.Message || 'Unable to reject incident');
-      }
-
-      Toast.show({
-        type: 'success',
-        text1: 'Incident Rejected',
-        text2: response?.Message || 'Incident marked as declined',
-      });
-
-      await fetchComplaintDetail();
-    } catch (error) {
-      console.error('Error rejecting incident:', error);
-      Toast.show({
-        type: 'error',
-        text1: 'Reject Failed',
-        text2: error?.message || 'Unable to reject incident',
-      });
-    } finally {
-      setUpdatingIncidentStatus(false);
     }
   };
 
@@ -426,8 +425,8 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
         SupervisorCode: row?.SupervisorCode || row?.Supervisr || '-',
         RouteNo: row?.RouteNo || row?.Route || row?.RoutNo || '',
         BreakdownPlace: row?.BrkPlace || row?.BreakdownPlace || row?.Location || '',
-        JobCardNo: row?.JobCardNo || row?.JobcardNo || row?.JobCard || routeJobCardNo || '',
-        JobCardDocEntry: row?.JobCardDocEntry || row?.JobCardEntry || routeJobCardDocEntry,
+        JobCardNo: resolveJobCardNo(row) || routeJobCardNo || '',
+        JobCardDocEntry: resolveJobCardDocEntry(row) || routeJobCardDocEntry,
         JobCardStatus: row?.JobCardStatus,
         JobCardDate: row?.JobCardDate || row?.JobCardRegDate,
         Faults: Array.isArray(row?.Faults) ? row.Faults : [],
@@ -672,10 +671,8 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     );
   }
 
-  const linkedJobCardNo = String(complaint?.JobCardNo || complaint?.JobcardNo || routeJobCardNo || '').trim();
-  const linkedJobCardDocEntry = Number(
-    complaint?.JobCardDocEntry || complaint?.JobCardEntry || routeJobCardDocEntry || 0,
-  );
+  const linkedJobCardNo = resolveJobCardNo(complaint) || String(routeJobCardNo || '').trim();
+  const linkedJobCardDocEntry = resolveJobCardDocEntry(complaint) || Number(routeJobCardDocEntry || 0);
   const resolvedFaultsForJobCard = (() => {
     const rawFaults = Array.isArray(complaint?.Faults) ? complaint.Faults : [];
     const meaningfulFaults = rawFaults.filter((faultRow) => {
@@ -789,12 +786,12 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
             <MaterialIcons name="pending-actions" size={20} /> Supervisor Action
           </Text>
           <Text style={[styles.progressHint, { color: colors.gray, marginTop: 0, marginBottom: SPACING.sm }]}>
-            Accept to create a Job Card and push to Team Leader. Reject to decline this incident.
+            Create a Job Card to route this incident to the Team Leader.
           </Text>
           <View style={styles.supervisorActionRow}>
             <Button
               mode="contained"
-              icon="check-circle"
+              icon="plus-box"
               uppercase={false}
               onPress={() => navigation.navigate('CreateJobCard', {
                 complaintNo: complaint.ComplaintNo,
@@ -814,20 +811,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
               contentStyle={{ paddingVertical: 8 }}
               labelStyle={{ color: '#FFFFFF', fontWeight: '700' }}
             >
-              Accept
-            </Button>
-            <Button
-              mode="outlined"
-              icon="close-circle"
-              uppercase={false}
-              onPress={handleRejectIncident}
-              loading={updatingIncidentStatus}
-              disabled={updatingIncidentStatus}
-              style={[styles.supervisorActionButton, { borderColor: '#BB0000' }]}
-              labelStyle={{ color: '#BB0000', fontWeight: '700' }}
-              contentStyle={{ paddingVertical: 8 }}
-            >
-              Reject
+              Create Job Card
             </Button>
           </View>
         </View>
@@ -872,7 +856,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
               size={18}
               color={progressMap.workOrderSubmitted ? colors.primary : colors.gray}
             />
-            <Text style={[styles.progressText, { color: colors.dark }]}>Job Card Created</Text>
+            <Text style={[styles.progressText, { color: colors.dark }]}>Work Entry Submitted</Text>
             {progressMap.workOrderSubmitted && progressMap.workOrderDocEntry ? (
               <TouchableOpacity onPress={openSubmittedWorkOrder} style={styles.progressLinkButton}>
                 <MaterialIcons name="open-in-new" size={14} color={colors.primary} />
@@ -906,7 +890,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
           {!progressMap.canSupervisorClose && supervisorUser && !progressMap.closed && (
             <Text style={[styles.progressHint, { color: colors.gray }]}>
-              Close button will be enabled after the Job Card is created.
+              Close button will be enabled after mechanic work is completed and ready for supervisor verification.
             </Text>
           )}
         </View>
@@ -1192,4 +1176,3 @@ const styles = StyleSheet.create({
 });
 
 export default ComplaintDetailScreen;
-

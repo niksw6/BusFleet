@@ -270,7 +270,7 @@ FleetDataApp/
 
 ## ⚙️ Configuration
 
-**Backend URL:** `http://88.99.68.90:85/BMSSystem/`  
+**Backend URL:** `http://116.202.223.120:6069/BMSSystem/`  
 **Edit in:** `src/constants/config.js`
 
 **Theme Colors:**  

@@ -10,7 +10,7 @@ import { Badge } from 'react-native-paper';
 import { DashboardScreen, NotificationsScreen } from '../features/dashboard';
 import { ComplaintsScreen } from '../features/complaints';
 import { ProfileScreen } from '../features/auth';
-import { JobCardsScreen, TeamApprovalsScreen, MechanicDashboardScreen, PartsApprovalScreen } from '../features/jobCards';
+import { JobCardsScreen, TeamApprovalsScreen, MechanicDashboardScreen, PartsApprovalScreen, ReviewWorkEntriesScreen } from '../features/jobCards';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { logout } from '../store/slices/authSlice';
 import { isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isSupervisorUser, isDriverUser, getUserRole } from '../utils/roleAccess';
@@ -59,7 +59,7 @@ const CustomDrawerContent = (props) => {
     },
     {
       name: 'PartsApproval',
-      label: 'Parts Requests',
+      label: 'Parts & Tools Requests',
       icon: 'inventory',
       color: '#EA580C',
       gradient: ['#EA580C', '#C2410C'],
@@ -79,6 +79,14 @@ const CustomDrawerContent = (props) => {
       color: '#8B5CF6',
       gradient: ['#8B5CF6', '#7C3AED'],
       hideForDriver: true,
+    },
+    {
+      name: 'ReviewWorkEntries',
+      label: 'Review Work Entries',
+      icon: 'task-alt',
+      color: '#6D28D9',
+      gradient: ['#6D28D9', '#5B21B6'],
+      supervisorOnly: true,
     },
     { 
       name: 'Notifications', 
@@ -111,6 +119,7 @@ const CustomDrawerContent = (props) => {
   };
 
   const activeRoute = state.routes[state.index].name;
+  const activeRouteParams = state.routes[state.index]?.params || {};
 
   return (
     <DrawerContentScrollView 
@@ -155,7 +164,7 @@ const CustomDrawerContent = (props) => {
                 styles.menuItem,
                 isActive && styles.menuItemActive
               ]}
-              onPress={() => navigation.navigate(item.name)}
+              onPress={() => navigation.navigate(item.name, item.params || undefined)}
               activeOpacity={0.7}
             >
               <LinearGradient
@@ -306,6 +315,15 @@ const DrawerNavigator = () => {
         <Drawer.Screen
           name="PartsApproval"
           component={PartsApprovalScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+      )}
+      {supervisorUser && (
+        <Drawer.Screen
+          name="ReviewWorkEntries"
+          component={ReviewWorkEntriesScreen}
           options={{
             headerShown: false,
           }}
@@ -468,4 +486,3 @@ const styles = StyleSheet.create({
 });
 
 export default DrawerNavigator;
-

@@ -21,17 +21,50 @@ import { complaintService, jobCardService, maintenanceService, teamService } fro
 import { formatDate } from '../../../utils/helpers';
 import { isMechanicUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
 
+const looksLikeJobCard = (item) => {
+  if (!item || typeof item !== 'object') return false;
+  return Boolean(
+    item?.DocEntry
+    || item?.JobCardNo
+    || item?.JobCardDocEntry
+    || item?.ComplaintNo
+    || item?.BusNo
+    || item?.FaultCode
+    || item?.FaultName
+    || item?.Description
+    || item?.Status
+  );
+};
+
 const extractTeamLeaderJobCards = (data) => {
-  if (Array.isArray(data)) return data;
-  if (!data || typeof data !== 'object') return [];
-  const candidateKeys = ['JobCards', 'Jobs', 'List', 'Items', 'Data'];
-  for (const key of candidateKeys) {
-    if (Array.isArray(data[key])) return data[key];
-  }
-  for (const value of Object.values(data)) {
-    if (Array.isArray(value)) return value;
-  }
-  return [];
+  const search = (value) => {
+    if (Array.isArray(value)) {
+      const matchingItems = value.filter((item) => looksLikeJobCard(item));
+      if (matchingItems.length > 0) return matchingItems;
+      for (const child of value) {
+        const nested = search(child);
+        if (nested.length > 0) return nested;
+      }
+      return [];
+    }
+
+    if (!value || typeof value !== 'object') return [];
+
+    const candidateKeys = ['JobCards', 'Jobs', 'List', 'Items', 'Data', 'Rows', 'Result'];
+    for (const key of candidateKeys) {
+      const nested = search(value[key]);
+      if (nested.length > 0) return nested;
+    }
+
+    for (const child of Object.values(value)) {
+      const nested = search(child);
+      if (nested.length > 0) return nested;
+    }
+
+    return [];
+  };
+
+  return search(data);
 };
 
 const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
@@ -72,6 +105,11 @@ const deriveTeamLeaderStatus = (job) => {
   if (['A', 'ACCEPTED', 'ACCEPT'].includes(raw)) return 'ACCEPTED';
   if (['R', 'REJECTED', 'REJECT'].includes(raw)) return 'REJECTED';
   return 'PENDING';
+};
+
+const isAwaitingVerificationStatus = (statusValue) => {
+  const status = String(statusValue || '').trim().toUpperCase();
+  return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION', 'V', 'VERIFY'].includes(status);
 };
 
 /**
@@ -118,6 +156,7 @@ const DashboardScreen = ({ navigation }) => {
   const [recentIncidents, setRecentIncidents] = useState([]);
   const [overdueIncidents, setOverdueIncidents] = useState([]);
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  const [pendingVerificationCount, setPendingVerificationCount] = useState(0);
   
   const [stats, setStats] = useState({
     total: 0,
@@ -229,6 +268,21 @@ const DashboardScreen = ({ navigation }) => {
 
         setRecentIncidents([]);
         return;
+      }
+
+      if (supervisorUser) {
+        try {
+          const verificationResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
+          const verificationCards = Array.isArray(verificationResponse?.Data) ? verificationResponse.Data : [];
+          setPendingVerificationCount(
+            verificationCards.filter((card) => isAwaitingVerificationStatus(card?.Status || card?.WorkStatus || card?.FaultStatus)).length,
+          );
+        } catch (verificationError) {
+          console.warn('Supervisor verification count fetch failed:', verificationError?.message || verificationError);
+          setPendingVerificationCount(0);
+        }
+      } else {
+        setPendingVerificationCount(0);
       }
 
       const companyDb = dbName || 'MUTSPL_TEST';
@@ -566,13 +620,13 @@ const DashboardScreen = ({ navigation }) => {
               </View>
             )}
 
-            {/* ── Parts Requests (Supervisor) ── */}
+            {/* ── Parts & Tools Requests (Supervisor) ── */}
             {supervisorUser && (
               <View style={styles.actionsSection}>
                 <View style={styles.sectionHeader}>
-                  <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts Requests</Text>
+                  <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts & Tools Requests</Text>
                   <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
-                    Approve mechanics' mid-work parts requests
+                    Approve mechanics' mid-work parts and tool requests
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -583,9 +637,45 @@ const DashboardScreen = ({ navigation }) => {
                   <View style={styles.overdueLeft}>
                     <View style={[styles.overdueDot, { backgroundColor: '#EA580C' }]} />
                     <View>
-                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Parts Requests</Text>
+                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Parts & Tools Requests</Text>
                       <Text style={[styles.overdueSub, { color: colors.gray }]}>
                         Approve or reject requested quantities
+                      </Text>
+                    </View>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#0F766E40' }]}
+                  onPress={() => navigation.navigate('PartsApproval', { initialSection: 'tools' })}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.overdueLeft}>
+                    <View style={[styles.overdueDot, { backgroundColor: '#0F766E' }]} />
+                    <View>
+                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Approve Special Tools</Text>
+                      <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                        Review and approve mechanics' special tool requests
+                      </Text>
+                    </View>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#6D28D940' }]}
+                  onPress={() => navigation.navigate('ReviewWorkEntries')}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.overdueLeft}>
+                    <View style={[styles.overdueDot, { backgroundColor: '#6D28D9' }]} />
+                    <View>
+                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Work Entries</Text>
+                      <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                        {pendingVerificationCount > 0
+                          ? `${pendingVerificationCount} pending verification`
+                          : 'No work entries awaiting verification'}
                       </Text>
                     </View>
                   </View>
@@ -880,4 +970,3 @@ const styles = StyleSheet.create({
 });
 
 export default DashboardScreen;
-

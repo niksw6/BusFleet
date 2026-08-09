@@ -4,6 +4,11 @@ const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
 const defaultConfig = getDefaultConfig(__dirname);
 
 const customConfig = {
+	transformer: {
+		// Required by Expo's embedded release bundle task so image/font assets
+		// receive content hashes before Android packages them.
+		assetPlugins: ['expo-asset/tools/hashAssetFiles'],
+	},
 	resolver: {
 		assetRegistryPath: 'react-native/Libraries/Image/AssetRegistry',
 		extraNodeModules: {

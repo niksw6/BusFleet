@@ -121,7 +121,16 @@ const NotificationsScreen = ({ navigation }) => {
     return baseTitle.replace(/incident\s*#\s*\d+/i, `Incident #${typeCode}-${incidentDocEntry}`);
   };
 
-  const mapNotificationItem = (item) => ({
+  const mapNotificationItem = (item) => {
+    const rawType = String(item?.Type || '').trim().toUpperCase();
+    const normalizedType = rawType === 'WE' ? 'V' : rawType;
+    const workEntryDoc = String(item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || '').trim();
+    const defaultTitle = item?.Message || item?.Title || item?.title || 'Notification';
+    const resolvedTitle = rawType === 'WE'
+      ? `Mechanic completed Work Entry ${workEntryDoc || '-'}`
+      : formatIncidentTitle(item);
+
+    return {
     creatorName: item?.CreatedBy || item?.CreatorName || item?.UserName || item?.AssignBy || item?.SprvsrNm || item?.DriverName || '',
     priority: item?.Priority || item?.Severity || item?.Significance || '',
     busNo: item?.BusNo || item?.Vehicle || item?.BusCode || item?.BusRegistrationNo || item?.RegNo || '',
@@ -130,18 +139,83 @@ const NotificationsScreen = ({ navigation }) => {
     ...item,
     id: item?.id || item?.Code || item?.DocEntry,
     code: item?.Code || item?.id || item?.DocEntry,
-    title: formatIncidentTitle(item),
+    title: resolvedTitle || defaultTitle,
     message: item?.Message || item?.message || '',
     read: String(item?.Read || '').trim().toUpperCase() === 'Y',
-    type: String(item?.Type || '').trim().toUpperCase(),
+    type: normalizedType,
     timestamp: item?.Date || item?.timestamp || null,
     docEntry: item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || item?.JobCardDocEntry || item?.ComplaintNo,
-  });
+    };
+  };
+
+  const parseBackendDateTimeToMs = (dateValue, timeValue) => {
+    const rawDate = String(dateValue || '').trim();
+    const rawTime = String(timeValue || '').trim();
+
+    if (!rawDate && !rawTime) return 0;
+
+    const dotNetMatch = rawDate.match(/^\/Date\((\d+)(?:[+-]\d+)?\)\/$/i);
+    if (dotNetMatch?.[1]) {
+      const ticksMs = Number(dotNetMatch[1]);
+      if (Number.isFinite(ticksMs)) return ticksMs;
+    }
+
+    const dateOnlyMdy = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    const hhmmss24 = rawTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (dateOnlyMdy && hhmmss24) {
+      const month = Number(dateOnlyMdy[1]);
+      const day = Number(dateOnlyMdy[2]);
+      const year = Number(dateOnlyMdy[3]);
+      const hour = Number(hhmmss24[1]);
+      const minute = Number(hhmmss24[2]);
+      const second = Number(hhmmss24[3] || 0);
+      const d = new Date(year, month - 1, day, hour, minute, second);
+      const ms = d.getTime();
+      return Number.isNaN(ms) ? 0 : ms;
+    }
+
+    const combined = [rawDate, rawTime].filter(Boolean).join(' ');
+    const parsed = new Date(combined || rawDate || rawTime);
+    const ms = parsed.getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+  };
+
+  const getNotificationSortMs = (item) => {
+    const dateCandidate = item?.timestamp || item?.Date || item?.CreatedDate || item?.ReqDate || item?.RequestDate;
+    const timeCandidate = item?.Time || item?.time || item?.ReqTime || item?.RequestTime;
+    return parseBackendDateTimeToMs(dateCandidate, timeCandidate);
+  };
 
   const getSignificanceLabel = (item) => {
     const raw = String(item?.significance || item?.priority || '').trim();
     if (!raw) return 'Normal';
     return raw;
+  };
+
+  const ensureUniqueNotificationKeys = (items = []) => {
+    const seen = new Map();
+    return (Array.isArray(items) ? items : []).map((item, index) => {
+      const baseKey = [
+        item?.id,
+        item?.code,
+        item?.type,
+        item?.docEntry,
+        item?.detailDocEntry,
+        item?.timestamp,
+        item?.title,
+      ]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join('|') || `notification-${index}`;
+
+      const occurrence = seen.get(baseKey) || 0;
+      seen.set(baseKey, occurrence + 1);
+
+      return {
+        ...item,
+        _listKey: occurrence === 0 ? baseKey : `${baseKey}#${occurrence + 1}`,
+      };
+    });
   };
 
   const inferComplaintTypeFromNotification = (item) => {
@@ -175,6 +249,16 @@ const NotificationsScreen = ({ navigation }) => {
     return 'PENDING';
   };
 
+  const isSupervisorVerificationPending = (entity) => {
+    const raw = String(entity?.Status ?? entity?.WorkStatus ?? entity?.FaultStatus ?? '').trim().toUpperCase();
+    return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw);
+  };
+
+  const isPendingPartApproval = (part) => {
+    const status = String(part?.Status ?? part?.ApprovalStatus ?? '').trim().toUpperCase();
+    return !status || ['P', 'PENDING', 'RQ', 'REQUESTED'].includes(status);
+  };
+
   const buildWorkflowNotifications = async (companyDb, identityCandidates) => {
     const primaryIdentity = identityCandidates[0] || '';
     const nowIso = new Date().toISOString();
@@ -185,6 +269,11 @@ const NotificationsScreen = ({ navigation }) => {
       const incidents = Array.isArray(incidentsRes?.Data) ? incidentsRes.Data : [];
       const jobCardsRes = await jobCardService.getJobCards(companyDb);
       const jobCards = Array.isArray(jobCardsRes?.Data) ? jobCardsRes.Data : [];
+      const incidentsByDocEntry = new Map(
+        incidents
+          .filter((item) => item?.DocEntry !== undefined && item?.DocEntry !== null && String(item.DocEntry).trim())
+          .map((item) => [String(item.DocEntry), item])
+      );
       const incidentsWithJobCards = new Set(
         jobCards
           .map(card => card?.ComplaintNo ?? card?.IncidentNo ?? card?.ComplaintDocEntry ?? card?.IncidentDocEntry ?? card?.SourceDocEntry)
@@ -219,8 +308,47 @@ const NotificationsScreen = ({ navigation }) => {
         })));
       }
 
+      const verificationPending = jobCards
+        .filter(isSupervisorVerificationPending)
+        .sort((a, b) => Number(b?.DocEntry || b?.JobCardDocEntry || b?.JobCardNo || 0) - Number(a?.DocEntry || a?.JobCardDocEntry || a?.JobCardNo || 0));
+
+      workflowNotifications.push(...verificationPending.map((card, index) => {
+        const jobCardDocEntry = card?.DocEntry ?? card?.JobCardDocEntry ?? card?.JCDocEnt ?? card?.JobCardNo ?? `${index + 1}`;
+        const jobCardNo = card?.JobCardNo || card?.DocNum || jobCardDocEntry;
+        const linkedIncidentDocEntry = String(
+          card?.ComplaintNo
+          ?? card?.IncidentNo
+          ?? card?.ComplaintDocEntry
+          ?? card?.IncidentDocEntry
+          ?? ''
+        ).trim();
+        const linkedIncident = linkedIncidentDocEntry ? incidentsByDocEntry.get(linkedIncidentDocEntry) : null;
+
+        return {
+          id: `workflow-verify-${jobCardDocEntry}`,
+          code: `workflow-verify-${jobCardDocEntry}`,
+          title: `Verification pending for Job Card #${jobCardNo}`,
+          message: 'Mechanic marked work complete. Verify the updates and close the incident.',
+          creatorName: String(card?.MechName || card?.MechanicName || card?.AssignedTo || 'Mechanic'),
+          significance: String(card?.Priority || 'High'),
+          priority: String(card?.Priority || 'High'),
+          busNo: String(card?.Vehicle || card?.BusNo || card?.RegNo || '').trim(),
+          detailDocEntry: linkedIncidentDocEntry || jobCardDocEntry,
+          docEntry: linkedIncidentDocEntry || jobCardDocEntry,
+          complaintNo: linkedIncident?.ComplaintNo || linkedIncident?.DocEntry || linkedIncidentDocEntry || null,
+          complaintType: linkedIncident?.ComplaintType || null,
+          jobCardDocEntry,
+          jobCardNo,
+          read: false,
+          type: 'V',
+          timestamp: card?.UpdateDate || card?.ModDate || card?.AssignDt || nowIso,
+          workflowDerived: true,
+        };
+      }));
+
       const partsRes = await storeService.getMechanicPartRequests(companyDb);
-      const partRows = Array.isArray(partsRes?.Data) ? partsRes.Data : (Array.isArray(partsRes?.data) ? partsRes.data : []);
+      const partRows = (Array.isArray(partsRes?.Data) ? partsRes.Data : (Array.isArray(partsRes?.data) ? partsRes.data : []))
+        .filter(isPendingPartApproval);
       const requestsByWorkEntry = new Map();
       partRows.forEach((part) => {
         const workEntry = part?.WorkEntryDocEntry ?? part?.WorkEntryNo ?? part?.DocEntry;
@@ -417,6 +545,8 @@ const NotificationsScreen = ({ navigation }) => {
         console.warn('Workflow notification derivation failed:', workflowError?.message || workflowError);
       }
 
+      mappedNotifications.sort((a, b) => getNotificationSortMs(b) - getNotificationSortMs(a));
+
       // Some live deployments return only an unread count for mechanics. Keep
       // each update actionable instead of compressing several updates into one card.
       if (isFieldStaffUser(user) && mappedNotifications.length === 0 && effectiveUnreadCount > 0) {
@@ -434,6 +564,8 @@ const NotificationsScreen = ({ navigation }) => {
           workflowDerived: true,
         }));
       }
+
+      mappedNotifications = ensureUniqueNotificationKeys(mappedNotifications);
 
       const mismatch = mappedNotifications.length === 0 && effectiveUnreadCount > 0;
       setHasBackendCountMismatch(mismatch);
@@ -553,16 +685,15 @@ const NotificationsScreen = ({ navigation }) => {
       return;
     }
 
-    const incidentDocEntry = resolveIncidentDocEntryFromNotification(item);
-
-    if (incidentDocEntry) {
-      const navigatedToIncident = await navigateToIncidentDetail(item, incidentDocEntry);
-      if (navigatedToIncident) {
-        return;
-      }
-    }
-
     if (type === 'D' || type === 'B') {
+      const incidentDocEntry = resolveIncidentDocEntryFromNotification(item);
+      if (incidentDocEntry) {
+        const navigatedToIncident = await navigateToIncidentDetail(item, incidentDocEntry);
+        if (navigatedToIncident) {
+          return;
+        }
+      }
+
       const navigatedToIncident = await navigateToIncidentDetail(item, docEntry);
       if (navigatedToIncident) {
         return;
@@ -584,6 +715,26 @@ const NotificationsScreen = ({ navigation }) => {
 
     if (item?.workflowDerived && type === 'P') {
       navigation.navigate('PartsApproval');
+      return;
+    }
+
+    if (item?.workflowDerived && type === 'V') {
+      const workEntryTarget = String(item?.workEntryDocEntry || item?.DocEntry || item?.docEntry || item?.detailDocEntry || '').trim();
+      const jobCardTarget = item?.jobCardDocEntry || item?.jobCardNo || docEntry;
+      navigation.navigate('ReviewWorkEntries', {
+        focusJobCardDocEntry: jobCardTarget,
+        focusWorkEntryDocEntry: workEntryTarget,
+      });
+      return;
+    }
+
+    if (type === 'V') {
+      const workEntryTarget = String(item?.workEntryDocEntry || item?.DocEntry || item?.docEntry || item?.detailDocEntry || '').trim();
+      const jobCardTarget = item?.jobCardDocEntry || item?.jobCardNo || docEntry;
+      navigation.navigate('ReviewWorkEntries', {
+        focusJobCardDocEntry: jobCardTarget,
+        focusWorkEntryDocEntry: workEntryTarget,
+      });
       return;
     }
 
@@ -610,7 +761,12 @@ const NotificationsScreen = ({ navigation }) => {
     }
   };
 
-  const getNotificationIcon = (type) => {
+  const getNotificationIcon = (type, item = {}) => {
+    const rawType = String(type || '').trim().toUpperCase();
+    const notificationText = `${item?.title || item?.Title || ''} ${item?.message || item?.Message || ''}`.toUpperCase();
+    if (['W', 'WE', 'WORK', 'WORKENTRY', 'WORK ENTRY'].includes(rawType) || notificationText.includes('WORK ENTRY')) {
+      return 'build';
+    }
     switch (type) {
       case 'D':
         return 'report-problem';
@@ -620,10 +776,10 @@ const NotificationsScreen = ({ navigation }) => {
         return 'assignment';
       case 'T':
         return 'fact-check';
-      case 'W':
-        return 'engineering';
       case 'P':
         return 'inventory';
+      case 'V':
+        return 'task-alt';
       default:
         return 'notifications';
     }
@@ -643,6 +799,8 @@ const NotificationsScreen = ({ navigation }) => {
         return '#00689E'; // SAP Teal
       case 'P':
         return '#EA580C'; // Parts request orange
+      case 'V':
+        return '#6D28D9'; // Verification purple
       default:
         return '#0070F2'; // SAP Blue
     }
@@ -661,28 +819,15 @@ const NotificationsScreen = ({ navigation }) => {
       activeOpacity={0.7}
     >
       <View style={styles.notificationContent}>
-        <View
-          style={[
-            styles.iconContainer,
-            { backgroundColor: getNotificationColor(item.type || item.Type) + '20' },
-          ]}
-        >
-          <MaterialIcons
-            name={getNotificationIcon(item.type || item.Type)}
-            size={24}
-            color={getNotificationColor(item.type || item.Type)}
-          />
-        </View>
-
         <View style={styles.textContainer}>
-          <Text
-            style={[
-              styles.title,
-              { color: colors.dark, fontWeight: item.read ? 'normal' : 'bold' },
-            ]}
-          >
-            {item.title || 'Notification'}
-          </Text>
+          <View style={styles.titleRow}>
+            <View style={[styles.inlineIcon, { backgroundColor: getNotificationColor(item.type || item.Type) + '20' }]}>
+              <MaterialIcons name={getNotificationIcon(item.type || item.Type, item)} size={14} color={getNotificationColor(item.type || item.Type)} />
+            </View>
+            <Text style={[styles.title, { color: colors.dark, fontWeight: item.read ? 'normal' : 'bold' }]} numberOfLines={1}>
+              {item.title || 'Notification'}
+            </Text>
+          </View>
           <Text style={[styles.message, { color: colors.gray }]} numberOfLines={2}>
             {item.message || item.Message}
           </Text>
@@ -702,6 +847,16 @@ const NotificationsScreen = ({ navigation }) => {
           <Text style={[styles.time, { color: colors.gray }]}>
             {formatDateTime(item.timestamp || item.Date)}
           </Text>
+          {item?.workflowDerived && String(item?.type || '').toUpperCase() === 'V' && (
+            <TouchableOpacity
+              onPress={() => handleNotificationPress(item)}
+              style={[styles.quickActionBtn, { borderColor: '#6D28D9' }]}
+              activeOpacity={0.8}
+            >
+              <MaterialIcons name="task-alt" size={14} color="#6D28D9" />
+              <Text style={styles.quickActionText}>Verify Now</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {!item.read && (
@@ -773,7 +928,7 @@ const NotificationsScreen = ({ navigation }) => {
       <FlatList
         data={notifications}
         renderItem={renderNotificationItem}
-        keyExtractor={(item, index) => item.id?.toString() || index.toString()}
+        keyExtractor={(item, index) => item._listKey || item.id?.toString() || item.code?.toString() || index.toString()}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -836,7 +991,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   notificationCard: {
-    marginBottom: SPACING.md,
+    marginBottom: SPACING.sm,
     borderRadius: BORDER_RADIUS.lg,
     borderLeftWidth: 4,
     elevation: 2,
@@ -847,28 +1002,35 @@ const styles = StyleSheet.create({
   },
   notificationContent: {
     flexDirection: 'row',
-    padding: SPACING.md,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 10,
     alignItems: 'flex-start',
-  },
-  iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: SPACING.md,
   },
   textContainer: {
     flex: 1,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  inlineIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 6,
+  },
   title: {
-    fontSize: 16,
-    marginBottom: 4,
+    fontSize: 15,
+    lineHeight: 19,
+    flex: 1,
   },
   message: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 4,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 3,
   },
   metaRow: {
     flexDirection: 'row',
@@ -885,11 +1047,28 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   unreadIndicator: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginLeft: SPACING.sm,
-    marginTop: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginLeft: 6,
+    marginTop: 6,
+  },
+  quickActionBtn: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#6D28D915',
+  },
+  quickActionText: {
+    color: '#6D28D9',
+    fontSize: 12,
+    fontWeight: '700',
   },
   emptyContainer: {
     alignItems: 'center',
@@ -904,4 +1083,3 @@ const styles = StyleSheet.create({
 });
 
 export default NotificationsScreen;
-

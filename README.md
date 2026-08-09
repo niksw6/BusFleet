@@ -175,7 +175,7 @@ FleetDataApp/
 
 ## Backend Integration
 
-**Base URL:** `http://88.99.68.90:85/BMSSystem/`
+**Base URL:** `http://116.202.223.120:6069/BMSSystem/`
 
 ### API Endpoints
 

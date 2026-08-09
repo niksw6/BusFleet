@@ -3,13 +3,17 @@ import { get, post, handleApiError } from '../client';
 /**
  * Store Service — Spare parts request / approval / receipt module.
  *
- * Confirmed LIVE endpoints (tested against http://88.99.68.90:85/BMSSystem/):
+ * Confirmed LIVE endpoints (tested against http://116.202.223.120:6069/BMSSystem/):
  *   POST RequestJobCardParts        (Supervisor requests parts known upfront, per fault line)
  *   GET  GetApprovedJobCardParts?CompanyDB=...&UserCode=...   (Mechanic checks approved parts)
  *   POST ReceiveJobCardParts        (confirm parts physically received)
+ *   POST ReceiveWorkEntryParts      (confirm work-entry part receipt by mechanic)
  *   POST RequestWorkEntryParts      (Mechanic requests parts while doing the work)
  *   GET  GetMechanicPartRequests?CompanyDB=...   (Supervisor sees all pending mechanic requests)
  *   POST ApproveMechanicPartRequest (Supervisor approves/rejects each part line)
+ *   POST RequestSpecialTool         (Mechanic requests special tool while doing work)
+ *   GET  GetSpecialTools?CompanyDB=...&Depot=...  (Supervisor sees pending tool requests)
+ *   POST ApproveSpecialToolRequest  (Supervisor approves/rejects requested special tools)
  *
  * Flow (per SOP + Driver Complaint Incident Flow):
  *   Parts required by Mechanic/Electrician → Supervisor notified → Supervisor
@@ -68,6 +72,20 @@ export const storeService = {
   },
 
   /**
+   * Confirm work-entry parts have been physically received by the mechanic.
+   * @param {Object} payload
+   * @param {string} payload.CompanyDB
+   * @param {number} payload.WorkEntryDocEntry
+   * @param {Array}  payload.Parts - [{ LineId, ReceivedQty }]
+   */
+  receiveWorkEntryParts: async (payload) => {
+    console.log('📦 ReceiveWorkEntryParts:', JSON.stringify(payload, null, 2));
+    const response = await post('ReceiveWorkEntryParts', payload);
+    console.log('📦 ReceiveWorkEntryParts response:', response.data);
+    return response.data;
+  },
+
+  /**
    * Mechanic requests parts discovered as needed while performing a Work Entry.
    * @param {Object} payload
    * @param {string} payload.CompanyDB
@@ -97,6 +115,20 @@ export const storeService = {
   },
 
   /**
+   * Supervisor views all pending special-tool requests raised by mechanics.
+   * @param {string} companyDB
+   */
+  getMechanicToolRequests: async (companyDB) => {
+   try {
+     const response = await get(`GetMechanicToolRequests?CompanyDB=${companyDB}`);
+     console.log('🧰 GetMechanicToolRequests response:', JSON.stringify(response.data));
+     return response.data;
+   } catch (error) {
+     throw new Error(handleApiError(error));
+   }
+  },
+
+  /**
    * Supervisor approves/rejects each part line of a mechanic's part request.
    * @param {Object} payload
    * @param {string} payload.CompanyDB
@@ -109,6 +141,89 @@ export const storeService = {
     console.log('✅ ApproveMechanicPartRequest:', JSON.stringify(payload, null, 2));
     const response = await post('ApproveMechanicPartRequest', payload);
     console.log('✅ ApproveMechanicPartRequest response:', response.data);
+    return response.data;
+  },
+
+  /**
+   * Mechanic requests special tools for an in-progress work entry.
+   * @param {Object} payload
+   * @param {string} payload.CompanyDB
+   * @param {number} payload.WorkEntryDocEntry
+   * @param {string} payload.MechanicCode
+   * @param {Array}  payload.Tools - [{ ToolCode, ToolName, Remarks }]
+   */
+  requestSpecialTool: async (payload) => {
+    console.log('🧰 RequestSpecialTool:', JSON.stringify(payload, null, 2));
+    const response = await post('RequestSpecialTool', payload);
+    console.log('🧰 RequestSpecialTool response:', response.data);
+    return response.data;
+  },
+
+  /**
+   * Mechanic receives an approved special tool for the work entry.
+   * @param {Object} payload
+   * @param {string} payload.CompanyDB
+   * @param {number} payload.WorkEntryDocEntry
+   * @param {string} payload.MechanicCode
+   * @param {Array}  payload.Tools - [{ LineId, ToolCode }]
+   */
+  receiveSpecialTool: async (payload) => {
+    console.log('🧰 ReceiveSpecialTool:', JSON.stringify(payload, null, 2));
+    const response = await post('ReceiveSpecialTool', payload);
+    console.log('🧰 ReceiveSpecialTool response:', response.data);
+    return response.data;
+  },
+
+  /**
+   * Supervisor views special-tool requests by depot.
+   * @param {string} companyDB
+   * @param {string} depot
+   */
+  getSpecialTools: async (companyDB, depot = '') => {
+    try {
+      const query = `GetSpecialTools?CompanyDB=${companyDB}${depot ? `&Depot=${encodeURIComponent(depot)}` : ''}`;
+      const response = await get(query);
+      console.log('🧰 GetSpecialTools response:', JSON.stringify(response.data));
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Supervisor approves/rejects requested special tools by line.
+   * @param {Object} payload
+   * @param {string} payload.CompanyDB
+   * @param {number} payload.WorkEntryDocEntry
+   * @param {string} payload.SupervisorCode
+   * @param {Array}  payload.Tools - [{ LineId, Approved, Remarks }]
+   */
+  approveSpecialToolRequest: async (payload) => {
+    console.log('✅ ApproveSpecialToolRequest:', JSON.stringify(payload, null, 2));
+    const response = await post('ApproveSpecialToolRequest', payload);
+    console.log('✅ ApproveSpecialToolRequest response:', response.data);
+    return response.data;
+  },
+
+  /**
+   * Mechanic returns unused/wrong parts from a Work Entry.
+   * Status is set to RR (Return Requested) by the backend.
+   * @param {Object} payload
+   * @param {string} payload.CompanyDB
+   * @param {number} payload.WorkEntryDocEntry
+   * @param {string} payload.MechanicCode
+   * @param {Array}  payload.Parts - [{ LineId, ReturnQty, ReturnReason, Remarks }]
+   */
+  requestPartReturn: async (payload) => {
+    console.log('📦 RequestPartReturn:', JSON.stringify(payload, null, 2));
+    const response = await post('RequestPartReturn', payload);
+    console.log('📦 RequestPartReturn response:', response.data);
+    return response.data;
+  },
+
+  /** Mechanic returns received special tools for a work entry. */
+  returnSpecialTool: async (payload) => {
+    const response = await post('ReturnSpecialTool', payload);
     return response.data;
   },
 };

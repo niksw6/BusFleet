@@ -43,6 +43,11 @@ import { formatDateTime } from '../../../utils/helpers';
 
 const isApiSuccess = (res) => res?.Success === true || res?.Status === true;
 
+const isAwaitingVerificationStatus = (value) => {
+  const status = String(value || '').trim().toUpperCase();
+  return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION', 'V', 'VERIFY'].includes(status);
+};
+
 const extractApiRows = (res) => {
   if (Array.isArray(res)) return res;
   if (Array.isArray(res?.Data)) return res.Data;
@@ -158,6 +163,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
   // Complete Work confirmation
   const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
   const [completeRemarks, setCompleteRemarks] = useState('');
+  const [awaitingVerification, setAwaitingVerification] = useState(false);
+
+  const workEntryLocked = awaitingVerification || (Array.isArray(storeEntries) ? storeEntries.some(entry => isAwaitingVerificationStatus(entry?.Status || entry?.WorkStatus || entry?.FaultStatus)) : false);
 
   const resolvedJobCardDocEntry = Number(jobCardDocEntry || workOrderDocEntry) || workOrderDocEntry;
 
@@ -217,6 +225,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
   // ─── Submit work entry ────────────────────────────────────────────────────────
   const handleAddWorkEntry = async () => {
+    if (workEntryLocked) {
+      Toast.show({ type: 'info', text1: 'Work already completed', text2: 'No further work entries can be added.' });
+      return;
+    }
+
     const description = resolveWorkDescription();
     if (!description) {
       Toast.show({ type: 'error', text1: 'Please select or enter a work description' });
@@ -265,6 +278,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
   // ─── Submit parts request ─────────────────────────────────────────────────────
   const handleRequestParts = async () => {
+    if (workEntryLocked) {
+      Toast.show({ type: 'info', text1: 'Work already completed', text2: 'Parts requests are no longer needed.' });
+      return;
+    }
     if (partsDraft.length === 0) {
       Toast.show({ type: 'error', text1: 'Add at least one part' });
       return;
@@ -304,18 +321,17 @@ const WorkEntryScreen = ({ route, navigation }) => {
   // ─── Mark part received ───────────────────────────────────────────────────────
   const handleMarkReceived = async (request) => {
     try {
-      const res = await storeService.receiveJobCardParts({
+      const res = await storeService.receiveWorkEntryParts({
         CompanyDB: dbName || 'MUTSPL_TEST',
-        JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
-        UserCode: mechanicCode,
+        WorkEntryDocEntry: Number(request?.WorkEntryDocEntry) || request?.WorkEntryDocEntry,
         Parts: (request?.Parts || []).map((part) => ({
-          PartLine: Number(part?.PartLine) || 0,
+          LineId: Number(part?.LineId ?? part?.PartLine) || 0,
           ReceivedQty: Number(part?.IssuedQty ?? part?.ApprovedQty ?? part?.ReqQty ?? 0) || 0,
         })),
       });
       if (res?.Success) {
         const requestCode = request?.RequestCode || request?.WorkEntryDocEntry || '';
-        dispatch(updatePartRequestStatus({ docEntry: workOrderDocEntry, requestCode, status: 'R' }));
+        dispatch(updatePartRequestStatus({ docEntry: workOrderDocEntry, requestCode, status: 'RC' }));
         Toast.show({ type: 'success', text1: 'Part marked as received' });
       } else {
         Toast.show({ type: 'error', text1: res?.Message || 'Failed' });
@@ -327,6 +343,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
   // ─── Complete work ─────────────────────────────────────────────────────────────
   const handleCompleteWork = async () => {
+    if (workEntryLocked) {
+      Toast.show({ type: 'info', text1: 'Work already completed', text2: 'Completion action is no longer available.' });
+      return;
+    }
+
     try {
       setSubmitting(true);
       setShowCompleteConfirm(false);
@@ -348,7 +369,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
           text2: 'Supervisor has been notified to inspect and close the incident.',
           visibilityTime: 5000,
         });
-        navigation.goBack();
+        setAwaitingVerification(true);
       } else {
         Toast.show({ type: 'error', text1: res?.Message || 'Failed to complete work' });
       }
@@ -362,10 +383,22 @@ const WorkEntryScreen = ({ route, navigation }) => {
   // ─── Part status badge ────────────────────────────────────────────────────────
   const getPartStatusConfig = (status) => {
     switch (String(status || '').toUpperCase()) {
-      case 'A': return { label: 'Approved', color: '#2B7D2B', bg: '#2B7D2B15' };
-      case 'I': return { label: 'Issued by Store', color: '#0070F2', bg: '#0070F215' };
-      case 'R': return { label: 'Received', color: '#388E3C', bg: '#388E3C15' };
-      case 'X': return { label: 'Rejected', color: '#BB0000', bg: '#BB000015' };
+      case 'AP':
+      case 'A':
+        return { label: 'Approved', color: '#2B7D2B', bg: '#2B7D2B15' };
+      case 'PS':
+        return { label: 'Partially Issued', color: '#0C63E7', bg: '#0C63E715' };
+      case 'IS':
+      case 'I':
+        return { label: 'Fully Issued', color: '#0070F2', bg: '#0070F215' };
+      case 'PR':
+        return { label: 'Partial Received', color: '#2F7A34', bg: '#2F7A3415' };
+      case 'RC':
+      case 'R':
+        return { label: 'Fully Received', color: '#388E3C', bg: '#388E3C15' };
+      case 'RJ':
+      case 'X':
+        return { label: 'Rejected', color: '#BB0000', bg: '#BB000015' };
       default:  return { label: 'Pending Approval', color: '#FF8F00', bg: '#FF8F0015' };
     }
   };
@@ -391,6 +424,12 @@ const WorkEntryScreen = ({ route, navigation }) => {
           <Text style={[styles.cardSubtitle, { color: colors.gray }]}>
             WO #{workOrderDocEntry}{jobCardNo ? `  ·  JC #${jobCardNo}` : ''}
           </Text>
+          {(awaitingVerification || storeEntries.some(entry => isAwaitingVerificationStatus(entry?.Status || entry?.WorkStatus || entry?.FaultStatus))) && (
+            <View style={styles.awaitingPill}>
+              <MaterialIcons name="task-alt" size={14} color="#6D28D9" />
+              <Text style={styles.awaitingPillText}>Awaiting Verification</Text>
+            </View>
+          )}
         </View>
 
         {/* ── Work Entries ── */}
@@ -399,9 +438,13 @@ const WorkEntryScreen = ({ route, navigation }) => {
             <MaterialIcons name="assignment" size={18} color="#0070F2" />
             <Text style={[styles.sectionTitle, { color: colors.dark }]}>Work Entries</Text>
             <TouchableOpacity
-              style={[styles.addBtn, { backgroundColor: '#0070F2' }]}
-              onPress={() => setShowAddEntry(true)}
+              style={[styles.addBtn, { backgroundColor: workEntryLocked ? '#94A3B8' : '#0070F2' }]}
+              onPress={() => {
+                if (workEntryLocked) return;
+                setShowAddEntry(true);
+              }}
               activeOpacity={0.7}
+              disabled={workEntryLocked}
             >
               <MaterialIcons name="add" size={16} color="#FFF" />
               <Text style={styles.addBtnText}>Add</Text>
@@ -430,13 +473,15 @@ const WorkEntryScreen = ({ route, navigation }) => {
                   </View>
                 </View>
                 <TouchableOpacity
-                  style={[styles.partsBtn, { borderColor: '#2B7D2B' }]}
+                  style={[styles.partsBtn, { borderColor: workEntryLocked ? '#94A3B8' : '#2B7D2B' }]}
                   onPress={() => {
+                    if (workEntryLocked) return;
                     setPendingEntryCode(entry.Code || entry.DocEntry || String(i));
                     setPartsDraft([]);
                     setShowPartsModal(true);
                   }}
                   activeOpacity={0.7}
+                  disabled={workEntryLocked}
                 >
                   <MaterialIcons name="settings" size={13} color="#2B7D2B" />
                   <Text style={[styles.partsBtnText, { color: '#2B7D2B' }]}>Parts</Text>
@@ -456,8 +501,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
             {storePartsRequests.map((req, i) => {
               const cfg = getPartStatusConfig(req.Status);
-              const isIssued = String(req.Status || '').toUpperCase() === 'I';
-              const isReceived = String(req.Status || '').toUpperCase() === 'R';
+              const status = String(req.Status || '').toUpperCase();
+              const isIssued = ['I', 'IS', 'PS', 'PR'].includes(status);
+              const isReceived = ['R', 'RC'].includes(status);
               const requestCode = req.RequestCode || req.Code || String(i);
 
               return (
@@ -577,12 +623,17 @@ const WorkEntryScreen = ({ route, navigation }) => {
           />
           <Button
             mode="contained"
-            onPress={() => setShowCompleteConfirm(true)}
+            onPress={() => {
+              if (!workEntryLocked) {
+                setShowCompleteConfirm(true);
+              }
+            }}
             icon="check-circle"
-            style={[styles.completeBtn, { backgroundColor: '#2B7D2B' }]}
+            style={[styles.completeBtn, { backgroundColor: workEntryLocked ? '#64748B' : '#2B7D2B' }]}
+            disabled={submitting || workEntryLocked}
             contentStyle={{ paddingVertical: 6 }}
           >
-            Complete Work
+            {workEntryLocked ? 'Completed' : submitting ? 'Completing…' : 'Complete Work'}
           </Button>
         </View>
       </ScrollView>
@@ -918,6 +969,22 @@ const styles = StyleSheet.create({
   completeHint: { fontSize: 13, marginBottom: SPACING.sm, lineHeight: 18 },
   remarksInput: { marginBottom: SPACING.sm },
   completeBtn: { borderRadius: BORDER_RADIUS.md },
+  awaitingPill: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#6D28D915',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  awaitingPillText: {
+    marginLeft: 6,
+    color: '#6D28D9',
+    fontWeight: '700',
+    fontSize: 12,
+  },
   // Modal
   modalOverlay: {
     flex: 1,

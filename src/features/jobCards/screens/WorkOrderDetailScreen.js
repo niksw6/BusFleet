@@ -1,23 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  TextInput,
   FlatList,
 } from 'react-native';
-import { Text, Button, Divider, TextInput as PaperTextInput } from 'react-native-paper';
+import { Text, Divider, TextInput as PaperTextInput } from 'react-native-paper';
 import { useSelector } from 'react-redux';
+import { useFocusEffect } from '@react-navigation/native';
 import MaterialIcons from '../../../components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { complaintService, jobCardService, masterService, workEntryService } from '../../../api/services';
+import { complaintService, jobCardService, masterService, workEntryService, storeService, teamService, mechanicService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
-import { isFieldStaffUser } from '../../../utils/roleAccess';
+import { isFieldStaffUser, isSupervisorUser } from '../../../utils/roleAccess';
 
 /**
  * Work Order Detail Screen
@@ -35,12 +35,16 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     regTime: routeRegTime,
     complaintTime: routeComplaintTime,
     incidentTime: routeIncidentTime,
+    mechanicCode: routeMechanicCode,
+    mechanicName: routeMechanicName,
+    mechanics: routeMechanics,
   } = route.params;
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const mechanicUser = isFieldStaffUser(user);
+  const supervisorUser = isSupervisorUser(user);
   const inputBorderColor = colors.border || COLORS.border;
 
   const [loading, setLoading] = useState(true);
@@ -65,6 +69,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [workOrderEntries, setWorkOrderEntries] = useState([]);
   const [loadingWorkOrderEntries, setLoadingWorkOrderEntries] = useState(false);
   const [workOrderExpandedMap, setWorkOrderExpandedMap] = useState({});
+  const [mechanicPartRequests, setMechanicPartRequests] = useState([]);
+  const [loadingMechanicPartRequests, setLoadingMechanicPartRequests] = useState(false);
+  const [verifyingEntryId, setVerifyingEntryId] = useState(null);
+  const [closingJobCard, setClosingJobCard] = useState(false);
 
   const tabs = [
     'Mechanics',
@@ -72,6 +80,392 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     'WorkEntry',
     'Details',
   ];
+
+  const extractRows = (response) => {
+    const data = response?.Data ?? response?.data ?? response;
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== 'object') return [];
+    return Object.values(data).find(Array.isArray) || [];
+  };
+
+  const extractDashboardItems = (data) => {
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== 'object') return [];
+    const candidateKeys = ['Faults', 'Jobs', 'List', 'Items', 'Data'];
+    for (const key of candidateKeys) {
+      if (Array.isArray(data[key])) return data[key];
+    }
+    for (const value of Object.values(data)) {
+      if (Array.isArray(value)) return value;
+    }
+    return [];
+  };
+
+  const extractSingleRecord = (response) => {
+    const data = response?.Data ?? response?.data ?? response;
+    if (Array.isArray(data)) return data[0] || null;
+    if (!data || typeof data !== 'object') return null;
+    return data;
+  };
+
+  const asWorkEntryId = (entry) => (
+    entry?.WorkEntryDocEntry
+    ?? entry?.WorkEntryNo
+    ?? entry?.WorkEntry
+    ?? entry?.DocEntry
+    ?? null
+  );
+
+  const resolveUserCode = () => String(
+    user?.Code
+    || user?.code
+    || user?.User
+    || user?.user
+    || user?.username
+    || user?.name
+    || ''
+  ).trim();
+
+  const getMechanicIdentityCandidates = (jobCardSnapshot = null) => {
+    const source = jobCardSnapshot || workOrder || {};
+    const values = [
+      routeMechanicCode,
+      ...(Array.isArray(source?.Mechanics) ? source.Mechanics.flatMap((mechanic) => [
+        mechanic?.MechanicCode,
+        mechanic?.MechCode,
+        mechanic?.UserCode,
+        mechanic?.Code,
+      ]) : []),
+      ...(Array.isArray(routeMechanics) ? routeMechanics.flatMap((mechanic) => [
+        mechanic?.MechanicCode,
+        mechanic?.MechCode,
+        mechanic?.UserCode,
+        mechanic?.Code,
+      ]) : []),
+      ...(Array.isArray(source?.Faults) ? source.Faults.flatMap((fault) => [
+        fault?.MechanicCode,
+        fault?.MechCode,
+        fault?.UserCode,
+        fault?.AssignedTo,
+      ]) : []),
+    ];
+
+    // A mechanic can open their own Job Card directly. A supervisor must not
+    // be used as the GetMechanicDashboard user, because that endpoint is a
+    // mechanic-specific queue.
+    if (mechanicUser) values.push(resolveUserCode());
+
+    return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+  };
+
+  const normalizePartRequestRow = (row, index) => ({
+    key: `${row?.RequestCode || row?.WorkEntryDocEntry || 'REQ'}-${row?.PartLine || index}`,
+    requestCode: String(row?.RequestCode || '').trim(),
+    workEntryDocEntry: String(row?.WorkEntryDocEntry || '').trim(),
+    jobCardDocEntry: String(row?.JobCardDocEntry || row?.JCDocEnt || '').trim(),
+    itemCode: String(row?.ItemCode || '').trim(),
+    itemName: String(row?.ItemName || row?.Name || row?.Dscription || row?.ItemCode || '').trim(),
+    reqQty: Number(row?.ReqQty ?? row?.RequestedQty ?? row?.Qty ?? 0) || 0,
+    approvedQty: Number(row?.ApprovedQty ?? row?.AprQty ?? 0) || 0,
+    issuedQty: Number(row?.IssQty ?? row?.IssuedQty ?? 0) || 0,
+    receivedQty: Number(row?.RecQty ?? row?.ReceivedQty ?? 0) || 0,
+    warehouse: String(row?.Warehouse || row?.StoreWarehouse || row?.WhsCode || '').trim(),
+    status: String(row?.Status || row?.ApprovalStatus || '').trim().toUpperCase(),
+    remarks: String(row?.Remarks || '').trim(),
+  });
+
+  const getDisplayText = (...candidates) => {
+    const extract = (value) => {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'string') return value.trim();
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+      if (Array.isArray(value)) {
+        return value.map((item) => extract(item)).filter(Boolean).join(', ');
+      }
+      if (typeof value === 'object') {
+        const preferred = [
+          value?.WorkDone,
+          value?.WorkName,
+          value?.Description,
+          value?.Dscription,
+          value?.Remarks,
+          value?.OtherDescription,
+          value?.FaultDesc,
+          value?.FaultName,
+          value?.ItemName,
+          value?.Name,
+          value?.WorkCode,
+          value?.Code,
+        ];
+        for (const item of preferred) {
+          const text = extract(item);
+          if (text) return text;
+        }
+        return '';
+      }
+      return '';
+    };
+
+    for (const candidate of candidates) {
+      const text = extract(candidate);
+      if (text) return text;
+    }
+    return '';
+  };
+
+  const mapWorkEntryForView = (entry, index = 0) => ({
+    ...entry,
+    AssignedMechanics: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-',
+    MechanicStartDt: entry?.StartDate || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
+    MechanicStartTm: entry?.StartTime || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
+    MechanicsTotalHrs: entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours ?? null,
+    WorkDoneDetails: getDisplayText(entry?.WorkDone, entry?.FinalRemarks, entry?.Remarks, entry?.Description),
+    DetailedFaults: Array.isArray(entry?.DetailedFaults) && entry.DetailedFaults.length > 0
+      ? entry.DetailedFaults
+      : (Array.isArray(entry?.Faults) && entry.Faults.length > 0
+        ? entry.Faults
+        : [{ FaultCode: entry?.FaultCode || entry?.Fault, FaultDesc: getDisplayText(entry?.FaultName, entry?.Description), Status: entry?.Status }]),
+    DetailedParts: Array.isArray(entry?.DetailedParts) && entry.DetailedParts.length > 0
+      ? entry.DetailedParts
+      : (Array.isArray(entry?.Parts) ? entry.Parts : []),
+    __fallbackKey: `entry-${asWorkEntryId(entry) || index}`,
+  });
+
+  const isApiSuccess = (response) => response?.Success !== false && response?.Status !== false;
+  const getEntryStatus = (entry) => String(entry?.Status ?? entry?.WorkStatus ?? entry?.FaultStatus ?? '').trim().toUpperCase();
+  const isAwaitingSupervisorVerification = (entry) => ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(getEntryStatus(entry));
+  const isSupervisorVerified = (entry) => ['SV', 'C', 'CM', 'COMPLETED', 'COMPLETE'].includes(getEntryStatus(entry));
+
+  const setExpandedEntryKeys = (entries = []) => {
+    setWorkOrderExpandedMap((prev) => {
+      const next = { ...prev };
+      entries.forEach((entry, index) => {
+        const key = String(entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.DocNum || entry?.__fallbackKey || `entry-${index}`);
+        if (next[key] === undefined) {
+          next[key] = true;
+        }
+      });
+      return next;
+    });
+  };
+
+  const buildWorkEntriesByIds = async (companyDb, ids = []) => {
+    const uniqueIds = Array.from(new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || '').trim()).filter(Boolean)));
+    if (uniqueIds.length === 0) return [];
+
+    const rows = await Promise.all(uniqueIds.map(async (id) => {
+      try {
+        const response = await workEntryService.getWorkEntry(companyDb, id);
+        const record = extractSingleRecord(response);
+        if (!record) return null;
+        return { ...record, WorkEntryDocEntry: asWorkEntryId(record) || id };
+      } catch (error) {
+        console.log('GetWorkEntry fallback failed for id:', id, error?.message || error);
+        return null;
+      }
+    }));
+
+    return rows.filter(Boolean).map((entry, index) => mapWorkEntryForView(entry, index));
+  };
+
+  const hydrateFromMechanicDashboard = async (jobCardSnapshot = null) => {
+    const companyDb = dbName || 'MUTSPL_TEST';
+    const currentUserCode = resolveUserCode();
+    let teamMemberRows = [];
+    if (currentUserCode) {
+      try {
+        teamMemberRows = extractRows(await teamService.getMyTeamMembers(companyDb, currentUserCode));
+      } catch (error) {
+        // A mechanic/supervisor may not have a team-member mapping; their own
+        // dashboard remains a valid source for the current Job Card.
+      }
+    }
+
+    const teamMemberCodes = teamMemberRows.flatMap((member) => [
+      member?.UserCode,
+      member?.MechanicCode,
+      member?.MechCode,
+      member?.EmpCode,
+      member?.Code,
+    ]);
+    const findTeamMember = (code) => teamMemberRows.find((member) => (
+      String(member?.UserCode || member?.MechanicCode || member?.MechCode || member?.EmpCode || member?.Code || '').trim()
+        === String(code || '').trim()
+    ));
+    const userCodes = [...new Set([
+      ...getMechanicIdentityCandidates(jobCardSnapshot),
+      ...teamMemberCodes.map((value) => String(value || '').trim()).filter(Boolean),
+    ])];
+    if (userCodes.length === 0) {
+      return { faults: [], mechanics: [], workEntries: [], parts: [], operations: [] };
+    }
+
+    const source = jobCardSnapshot || workOrder || {};
+    const targetDoc = String(source?.DocEntry || source?.JobCardDocEntry || docEntry || '').trim();
+    const targetJobNo = String(source?.JobCardNo || jobCardNo || '').trim();
+
+    const dashboardResults = await Promise.allSettled(
+      userCodes.map(async (userCode) => ({
+        userCode,
+        response: await mechanicService.getMechanicDashboard(companyDb, userCode),
+      }))
+    );
+
+    const rows = dashboardResults
+      .filter((result) => result.status === 'fulfilled')
+      .flatMap((result) => extractDashboardItems(result.value?.response?.Data ?? result.value?.response)
+        .map((row) => {
+          const member = findTeamMember(result.value?.userCode);
+          return {
+            ...row,
+            MechanicCode: row?.MechanicCode || result.value?.userCode,
+            MechanicName: row?.MechanicName || row?.MechName || member?.MechanicName || member?.EmployeeName || member?.Name || routeMechanicName || result.value?.userCode,
+          };
+        }));
+
+    const relatedRows = rows.filter((row) => {
+      const rowDoc = String(row?.DocEntry || row?.JobCardDocEntry || '').trim();
+      const rowJob = String(row?.JobCardNo || row?.DocNum || '').trim();
+      return (targetDoc && rowDoc === targetDoc) || (targetJobNo && rowJob === targetJobNo);
+    });
+
+    const faults = relatedRows.map((row, index) => ({
+      FaultCode: String(row?.FaultCode || row?.Fault || `FLT${index + 1}`).trim(),
+      FaultDesc: String(row?.FaultName || row?.Description || row?.Fault || row?.FaultCode || '').trim(),
+      Status: String(row?.Status || row?.FaultStatus || row?.WorkStatus || '').trim(),
+    }));
+
+    const mechanicMap = new Map();
+    relatedRows.forEach((row, index) => {
+      const name = String(
+        row?.AssignedMechanic?.UserName
+        || row?.MechanicName
+        || row?.EmployeeName
+        || row?.EmpName
+        || row?.AssignedToName
+        || ''
+      ).trim();
+      if (!name) return;
+      const code = String(
+        row?.AssignedMechanic?.Code
+        || row?.MechanicCode
+        || row?.EmpCode
+        || row?.Code
+        || ''
+      ).trim();
+      const key = `${name}-${code || index}`;
+      if (!mechanicMap.has(key)) {
+        mechanicMap.set(key, { MechName: name, MechanicName: name, MechanicCode: code });
+      }
+    });
+
+    const nestedEntries = relatedRows.flatMap((row) => (
+      Array.isArray(row?.WorkEntries)
+        ? row.WorkEntries.map((entry) => ({
+          ...row,
+          ...entry,
+          FaultCode: entry?.FaultCode || row?.FaultCode,
+          Fault: entry?.Fault || row?.FaultCode || row?.FaultName,
+          FaultName: entry?.FaultName || row?.FaultName,
+          Vehicle: entry?.Vehicle || row?.Vehicle,
+          MechanicCode: entry?.MechanicCode || row?.MechanicCode,
+          MechanicName: entry?.MechanicName || row?.MechanicName,
+        }))
+        : []
+    ));
+    // A dashboard fault is not itself a work entry. Only its nested WorkEntries
+    // belong in the WorkEntry tab; this avoids showing a phantom entry when a
+    // mechanic has accepted a fault but has not submitted work yet.
+    const sourceEntries = nestedEntries;
+
+    const workEntries = sourceEntries
+      .map((entry, index) => ({
+        ...entry,
+        WorkEntryDocEntry: asWorkEntryId(entry),
+        AssignedMechanics: String(entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-').trim(),
+        MechanicStartDt: entry?.StartDate || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
+        MechanicStartTm: entry?.StartTime || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
+        MechanicsTotalHrs: entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours ?? null,
+        WorkDoneDetails: getDisplayText(entry?.WorkDone, entry?.FinalRemarks, entry?.Remarks, entry?.Description),
+        DetailedFaults: Array.isArray(entry?.Faults) && entry.Faults.length > 0
+          ? entry.Faults
+          : [{ FaultCode: entry?.FaultCode || entry?.Fault, FaultDesc: getDisplayText(entry?.FaultName, entry?.Description), Status: entry?.Status }],
+        DetailedParts: Array.isArray(entry?.Parts) ? entry.Parts : [],
+        __fallbackKey: `dash-${asWorkEntryId(entry) || index}`,
+      }))
+      .filter((entry) => entry?.WorkEntryDocEntry || entry?.WorkDoneDetails || entry?.AssignedMechanics);
+
+    const parts = relatedRows.flatMap((row) => {
+      const fault = row?.FaultCode || row?.Fault || row?.FaultName || '';
+      const faultLine = row?.FaultLine ?? row?.LineId ?? '';
+      const faultParts = Array.isArray(row?.Parts) ? row.Parts : [];
+      const workEntryParts = (Array.isArray(row?.WorkEntries) ? row.WorkEntries : [])
+        .flatMap((entry) => Array.isArray(entry?.Parts) ? entry.Parts : []);
+
+      return [...faultParts, ...workEntryParts].map((part) => ({
+        ...part,
+        Fault: part?.Fault || part?.FaultCode || fault,
+        FaultLine: part?.FaultLine ?? faultLine,
+      }));
+    });
+
+    const operations = relatedRows.flatMap((row) => (
+      (Array.isArray(row?.WorkEntries) ? row.WorkEntries : []).flatMap((entry) => (
+        (Array.isArray(entry?.Details) ? entry.Details : []).map((detail) => ({
+          ...detail,
+          WorkEntryDocEntry: asWorkEntryId(entry),
+          FaultCode: entry?.FaultCode || row?.FaultCode || row?.Fault,
+          FaultDesc: getDisplayText(entry?.FaultName, row?.FaultName, row?.Description),
+          MechanicName: entry?.MechanicName || row?.MechanicName,
+          WorkDone: getDisplayText(detail?.WorkDone, detail?.Description, detail?.Dscription, detail?.WorkCode, detail),
+          Remarks: getDisplayText(detail?.Remarks, detail?.OtherDescription),
+        }))
+      ))
+    ));
+
+    return {
+      faults,
+      mechanics: Array.from(mechanicMap.values()),
+      workEntries,
+      parts,
+      operations,
+    };
+  };
+
+  const extractDataRecord = (response) => {
+    const data = response?.Data ?? response?.data ?? response;
+    if (Array.isArray(data)) return data[0] || null;
+    if (!data || typeof data !== 'object') return null;
+
+    const nestedCandidates = [
+      data?.JobCard,
+      data?.Header,
+      data?.JobCardDetail,
+      data?.JobCardDetails,
+      data?.Record,
+    ].filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+
+    const nestedRecord = nestedCandidates.find((value) => value?.DocEntry || value?.JobCardNo) || nestedCandidates[0] || null;
+    const merged = nestedRecord ? { ...data, ...nestedRecord } : { ...data };
+
+    if (!Array.isArray(merged.Faults) && Array.isArray(data?.Faults)) merged.Faults = data.Faults;
+    if (!Array.isArray(merged.Mechanics) && Array.isArray(data?.Mechanics)) merged.Mechanics = data.Mechanics;
+    if (!Array.isArray(merged.Parts) && Array.isArray(data?.Parts)) merged.Parts = data.Parts;
+    if (!Array.isArray(merged.Operations) && Array.isArray(data?.Operations)) merged.Operations = data.Operations;
+    if (!Array.isArray(merged.WorkEntries) && Array.isArray(data?.WorkEntries)) merged.WorkEntries = data.WorkEntries;
+
+    return merged;
+  };
+
+  const findJobCardInList = (rows = [], referenceDocEntry, referenceJobCardNo) => {
+    const refDoc = String(referenceDocEntry || '').trim();
+    const refJobNo = String(referenceJobCardNo || '').trim();
+    return (Array.isArray(rows) ? rows : []).find((row) => {
+      const rowDoc = String(row?.DocEntry || row?.JobCardDocEntry || '').trim();
+      const rowJob = String(row?.JobCardNo || row?.DocNum || '').trim();
+      return (refDoc && rowDoc === refDoc) || (refJobNo && rowJob === refJobNo);
+    }) || null;
+  };
 
   const getBusLabel = (entity) => (
     String(
@@ -102,147 +496,112 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   // Job Cards are the source of truth. Mechanics submit work through Fault Work;
   // this screen is read-only and surfaces those entries.
   const isWorkOrderLocked = true;
-  const mechanicCount = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics.length : 0;
+  const derivedMechanics = Array.from(new Map(
+    (Array.isArray(workOrderEntries) ? workOrderEntries : [])
+      .map((entry, index) => {
+        const name = String(entry?.AssignedMechanics || entry?.MechanicName || entry?.MechName || '').trim();
+        const code = String(entry?.MechanicCode || entry?.MechCode || entry?.UserCode || '').trim();
+        if (!name || name === '-') return null;
+        return [`${name}-${code || index}`, { MechName: name, MechanicName: name, MechanicCode: code }];
+      })
+      .filter(Boolean)
+  ).values());
+  const mechanicsForDisplay = Array.isArray(workOrder?.Mechanics) && workOrder.Mechanics.length > 0
+    ? workOrder.Mechanics
+    : derivedMechanics;
+  const mechanicCount = mechanicsForDisplay.length;
   const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
 
-  useEffect(() => {
-    fetchWorkOrderDetails();
-    fetchSpareParts();
-    fetchWarehouses();
-    fetchRelatedWorkOrders();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      fetchWorkOrderDetails();
+      fetchSpareParts();
+      fetchWarehouses();
+    }, [docEntry, jobCardNo, dbName])
+  );
 
-  const fetchRelatedWorkOrders = async () => {
-    // Work Orders are retired. Work Entries are shown from the Job Card's
-    // native work-entry data when that endpoint is available.
-    setLoadingWorkOrderEntries(false);
-    setWorkOrderEntries([]);
-    return;
-
+  const fetchRelatedWorkOrders = async (jobCardSnapshot = null, dashboardEntries = []) => {
     try {
       setLoadingWorkOrderEntries(true);
-      const jobCardDocEntry = Number(workOrder?.DocEntry || docEntry || 0);
-      const workEntriesResponse = await workEntryService.getWorkHistory(dbName || 'MUTSPL_TEST', jobCardDocEntry);
-      if (workEntriesResponse?.Success && Array.isArray(workEntriesResponse?.Data)) {
-        const entries = workEntriesResponse.Data.map((entry) => ({
-          ...entry,
-          AssignedMechanics: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-',
-          MechanicStartDt: entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
-          MechanicStartTm: entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
-          MechanicsTotalHrs: entry?.TotalHrs ?? entry?.Hours ?? null,
-          WorkDoneDetails: entry?.WorkDone || entry?.FinalRemarks || entry?.Remarks || entry?.Description || '',
-        }));
-        setWorkOrderEntries(entries);
-        return;
-      }
-
-      // Older backend deployments may not yet expose GetWorkEntries.
-      setWorkOrderEntries([]);
-      return;
-
-      const response = await jobCardService.getWorkOrders(dbName || 'MUTSPL_TEST', null);
-      if (response?.Success && Array.isArray(response?.Data)) {
-        const currentDocEntry = Number(workOrder?.DocEntry || docEntry || 0);
-        const currentJobCardNo = String(workOrder?.JobCardNo || jobCardNo || '').trim();
-        const filtered = response.Data.filter(entry => {
-          const entryDoc = Number(entry?.JCDocEnt || entry?.DocEntry || 0);
-          const entryJobNo = String(entry?.JCDocNum || entry?.JobCardNo || '').trim();
-          return (currentDocEntry && entryDoc === currentDocEntry) ||
-            (currentJobCardNo && entryJobNo && entryJobNo === currentJobCardNo);
-        });
-
-        const enriched = await Promise.all(
-          filtered.map(async (entry) => {
-            const workOrderDocEntry = Number(entry?.DocEntry || 0);
-            if (!workOrderDocEntry) {
-              return {
-                ...entry,
-                AssignedMechanics: String(entry?.MechName || '').trim(),
-                MechanicStartDt: entry?.StartDt || null,
-                MechanicStartTm: entry?.StartTm || null,
-                MechanicsTotalHrs: entry?.TotalHrs ?? null,
-                WorkDoneDetails: String(entry?.Remarks || entry?.WorkDone || entry?.WorkDesc || entry?.Description || entry?.FaultDesc || '').trim(),
-                DetailedFaults: [],
-                DetailedParts: [],
-              };
-            }
-
-            try {
-              const detailResponse = await jobCardService.getWorkOrderById(dbName || 'MUTSPL_TEST', workOrderDocEntry);
-              const detailData = detailResponse?.Success ? detailResponse?.Data : null;
-
-              if (!detailData) {
-                return {
-                  ...entry,
-                  AssignedMechanics: String(entry?.MechName || '').trim(),
-                  MechanicStartDt: entry?.StartDt || null,
-                  MechanicStartTm: entry?.StartTm || null,
-                  MechanicsTotalHrs: entry?.TotalHrs ?? null,
-                  WorkDoneDetails: String(entry?.Remarks || entry?.WorkDone || entry?.WorkDesc || entry?.Description || entry?.FaultDesc || '').trim(),
-                  DetailedFaults: [],
-                  DetailedParts: [],
-                };
-              }
-
-              const mechanics = Array.isArray(detailData?.Mechanics) ? detailData.Mechanics : [];
-
-              const mechanicNames = mechanics
-                .map(mech => String(mech?.MechName || '').trim())
-                .filter(Boolean);
-
-              const firstMechanicWithStart = mechanics.find(mech => mech?.StartDt || mech?.StartTm);
-
-              const mechanicRemarks = mechanics
-                .map(mech => String(mech?.Remarks || '').trim())
-                .filter(Boolean);
-
-              const totalFromMechanics = mechanics.reduce((sum, mech) => sum + (Number(mech?.TotalHrs) || 0), 0);
-
-              return {
-                ...entry,
-                AssignedMechanics: mechanicNames.join(', ') || String(entry?.MechName || '').trim(),
-                MechanicStartDt: firstMechanicWithStart?.StartDt || detailData?.AssignDt || null,
-                MechanicStartTm: firstMechanicWithStart?.StartTm || null,
-                MechanicsTotalHrs: detailData?.TotalHrs ?? totalFromMechanics ?? null,
-                WorkDoneDetails: mechanicRemarks.join(', ') || String(entry?.Remarks || entry?.WorkDone || entry?.WorkDesc || entry?.Description || entry?.FaultDesc || '').trim(),
-                DetailedFaults: Array.isArray(detailData?.Faults) ? detailData.Faults : [],
-                DetailedParts: Array.isArray(detailData?.Parts) ? detailData.Parts : [],
-              };
-            } catch (detailError) {
-              console.error('Error fetching work order detail:', detailError);
-              return {
-                ...entry,
-                AssignedMechanics: String(entry?.MechName || '').trim(),
-                MechanicStartDt: entry?.StartDt || null,
-                MechanicStartTm: entry?.StartTm || null,
-                MechanicsTotalHrs: entry?.TotalHrs ?? null,
-                WorkDoneDetails: String(entry?.Remarks || entry?.WorkDone || entry?.WorkDesc || entry?.Description || entry?.FaultDesc || '').trim(),
-                DetailedFaults: [],
-                DetailedParts: [],
-              };
-            }
-          })
-        );
-
-        setWorkOrderEntries(enriched);
-        setWorkOrderExpandedMap((prev) => {
-          const next = { ...prev };
-          enriched.forEach((entry, index) => {
-            const key = String(entry?.DocEntry || entry?.DocNum || `entry-${index}`);
-            if (next[key] === undefined) {
-              next[key] = true;
-            }
-          });
-          return next;
-        });
-      } else {
+      const companyDb = dbName || 'MUTSPL_TEST';
+      const historyRows = Array.isArray(dashboardEntries) ? dashboardEntries : [];
+      if (historyRows.length === 0) {
         setWorkOrderEntries([]);
+        return [];
       }
+
+      const fullEntries = await Promise.all(
+        historyRows.map(async (row) => {
+          const workEntryId = asWorkEntryId(row);
+          if (!workEntryId) return row;
+          try {
+            const fullResponse = await workEntryService.getWorkEntry(companyDb, workEntryId);
+            const fullRecord = extractSingleRecord(fullResponse);
+            return fullRecord ? { ...row, ...fullRecord } : row;
+          } catch (entryError) {
+          console.log('GetWorkEntry enrichment skipped for entry:', workEntryId, entryError?.message || entryError);
+            return row;
+          }
+        })
+      );
+
+      const entries = fullEntries.map((entry, index) => mapWorkEntryForView(entry, index));
+
+      setWorkOrderEntries(entries);
+      setExpandedEntryKeys(entries);
+      return entries;
     } catch (error) {
       console.error('Error fetching related work orders:', error);
       setWorkOrderEntries([]);
+      return [];
     } finally {
       setLoadingWorkOrderEntries(false);
+    }
+  };
+
+  const fetchMechanicPartRequests = async (jobCardSnapshot = null, workEntriesSnapshot = []) => {
+    try {
+      setLoadingMechanicPartRequests(true);
+      const companyDb = dbName || 'MUTSPL_TEST';
+      const sourceJobCard = jobCardSnapshot || workOrder || {};
+
+      const jobCardRefs = new Set(
+        [
+          sourceJobCard?.DocEntry,
+          sourceJobCard?.JobCardDocEntry,
+          sourceJobCard?.JobCardNo,
+          docEntry,
+          jobCardNo,
+        ]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+      );
+
+      const workEntryRefs = new Set(
+        (Array.isArray(workEntriesSnapshot) ? workEntriesSnapshot : [])
+          .map((entry) => String(asWorkEntryId(entry) || '').trim())
+          .filter(Boolean)
+      );
+
+      const response = await storeService.getMechanicPartRequests(companyDb);
+      const rows = extractRows(response);
+
+      const related = rows
+        .filter((row) => {
+          const rowJobCard = String(row?.JobCardDocEntry || row?.JCDocEnt || '').trim();
+          const rowWorkEntry = String(row?.WorkEntryDocEntry || '').trim();
+          return (rowJobCard && jobCardRefs.has(rowJobCard)) || (rowWorkEntry && workEntryRefs.has(rowWorkEntry));
+        })
+        .map(normalizePartRequestRow);
+
+      setMechanicPartRequests(related);
+      return related;
+    } catch (error) {
+      console.log('Unable to load mechanic part requests for job card:', error?.message || error);
+      setMechanicPartRequests([]);
+      return [];
+    } finally {
+      setLoadingMechanicPartRequests(false);
     }
   };
 
@@ -444,35 +803,147 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const fetchWorkOrderDetails = async () => {
     try {
       setLoading(true);
-      const lookupDocEntry = docEntry || jobCardNo;
-      const response = await jobCardService.getJobCardDetail(dbName || 'MUTSPL_TEST', lookupDocEntry);
-      
-      if (response.Success && response.Data) {
-        const sourceData = response.Data;
-        const normalizedFaults = Array.isArray(sourceData?.Faults) ? sourceData.Faults : [];
+      const companyDb = dbName || 'MUTSPL_TEST';
+      const lookupCandidates = [docEntry, jobCardNo].map((value) => String(value || '').trim()).filter(Boolean);
+      let sourceData = null;
+
+      for (const candidate of lookupCandidates) {
+        try {
+          const detailResponse = await jobCardService.getJobCardDetail(companyDb, candidate);
+          sourceData = extractDataRecord(detailResponse);
+          if (sourceData) break;
+        } catch (detailError) {
+          console.log('GetJobCardDetail attempt failed:', candidate, detailError?.message || detailError);
+        }
+      }
+
+      if (!sourceData) {
+        const jobCardsResponse = await jobCardService.getJobCards(companyDb, null);
+        const listRows = extractRows(jobCardsResponse);
+        const matched = findJobCardInList(listRows, docEntry, jobCardNo);
+        if (matched?.DocEntry) {
+          try {
+            const detailResponse = await jobCardService.getJobCardDetail(companyDb, matched.DocEntry);
+            sourceData = extractDataRecord(detailResponse) || matched;
+          } catch (detailError) {
+            sourceData = matched;
+          }
+        } else {
+          sourceData = matched;
+        }
+      }
+
+      if (!sourceData) {
+        throw new Error('Job card details not found.');
+      }
+
+      let normalizedFaults = Array.isArray(sourceData?.Faults) ? sourceData.Faults : [];
+      const sourceDocEntry = sourceData?.DocEntry || sourceData?.JobCardDocEntry || docEntry;
+      if (normalizedFaults.length === 0 && sourceDocEntry) {
+        try {
+          const faultsResponse = await teamService.getJobCardFaults(companyDb, sourceDocEntry);
+          const faultRows = extractRows(faultsResponse);
+          if (faultRows.length > 0) {
+            normalizedFaults = faultRows;
+          }
+        } catch (faultError) {
+          console.log('GetJobCardFaults failed:', faultError?.message || faultError);
+        }
+      }
+
+      if (sourceData) {
         const fallbackFaultCode = String(normalizedFaults?.[0]?.FaultCode || normalizedFaults?.[0]?.Fault || 'FLT001');
+        const sourceWorkEntries = Array.isArray(sourceData?.WorkEntries) ? sourceData.WorkEntries : [];
         const normalizedParts = Array.isArray(sourceData?.Parts)
           ? sourceData.Parts.map((part) => normalizePartRow(part, fallbackFaultCode))
           : [];
 
+        const dashboardData = await hydrateFromMechanicDashboard(sourceData);
+        const dashboardParts = dashboardData.parts.map((part) => normalizePartRow(part, fallbackFaultCode));
+        const partMap = new Map();
+        [...normalizedParts, ...dashboardParts].forEach((part, index) => {
+          const key = [
+            part?.ItemCode || `part-${index}`,
+            part?.Fault || '',
+            part?.FaultLine || '',
+            part?.PartLine || '',
+            part?.Whs || '',
+            part?.ReqQty ?? '',
+            part?.IssQty ?? '',
+          ].map((value) => String(value || '').trim()).join('|');
+          partMap.set(key, { ...(partMap.get(key) || {}), ...part });
+        });
+        const mergedParts = Array.from(partMap.values());
+        const sourceMechanics = Array.isArray(sourceData?.Mechanics) ? sourceData.Mechanics : [];
+        const workEntryMechanics = sourceWorkEntries.map((entry) => ({
+          MechanicCode: entry?.MechanicCode || entry?.MechCode || entry?.UserCode || '',
+          MechanicName: entry?.MechanicName || entry?.MechName || entry?.AssignedMechanics || entry?.UserName || '',
+        }));
+        const mechanicMap = new Map();
+        [...sourceMechanics, ...dashboardData.mechanics, ...workEntryMechanics].forEach((mechanic, index) => {
+          const code = String(mechanic?.MechanicCode || mechanic?.MechCode || mechanic?.Code || mechanic?.UserCode || '').trim();
+          const name = String(mechanic?.MechanicName || mechanic?.MechName || mechanic?.Name || '').trim();
+          const key = `${name || 'mechanic'}-${code || index}`;
+          mechanicMap.set(key, { ...mechanic, MechanicCode: code, MechanicName: name || code || '-' });
+        });
+        const mergedMechanics = Array.from(mechanicMap.values());
+        const mergedFaults = [...normalizedFaults, ...dashboardData.faults];
+        const mergedOperations = [
+          ...(Array.isArray(sourceData?.Operations) ? sourceData.Operations : []),
+          ...sourceWorkEntries.flatMap((entry) => (Array.isArray(entry?.Details) ? entry.Details : [])),
+          ...dashboardData.operations,
+        ];
+
         setWorkOrder({
           ...sourceData,
-          Parts: normalizedParts,
-          Faults: normalizedFaults,
+          Mechanics: mergedMechanics,
+          Parts: mergedParts,
+          Faults: mergedFaults.filter((fault, index, arr) => {
+            const faultCode = String(fault?.FaultCode || fault?.Fault || '').trim();
+            const status = String(fault?.Status || '').trim();
+            return arr.findIndex((candidate) => (
+              String(candidate?.FaultCode || candidate?.Fault || '').trim() === faultCode
+              && String(candidate?.Status || '').trim() === status
+            )) === index;
+          }),
+          Operations: mergedOperations,
         });
+        let enrichedWorkEntries = await fetchRelatedWorkOrders({
+          ...sourceData,
+          Mechanics: mergedMechanics,
+          Parts: mergedParts,
+          Faults: mergedFaults,
+          Operations: mergedOperations,
+        }, [...sourceWorkEntries, ...dashboardData.workEntries]);
+
+        if ((!Array.isArray(enrichedWorkEntries) || enrichedWorkEntries.length === 0) && dashboardData.workEntries.length > 0) {
+          setWorkOrderEntries(dashboardData.workEntries);
+          setExpandedEntryKeys(dashboardData.workEntries);
+          enrichedWorkEntries = dashboardData.workEntries;
+        }
+
+        const relatedPartRequests = await fetchMechanicPartRequests({
+          ...sourceData,
+          Mechanics: mergedMechanics,
+          Parts: mergedParts,
+          Faults: mergedFaults,
+          Operations: mergedOperations,
+        }, enrichedWorkEntries);
+
+        if ((!Array.isArray(enrichedWorkEntries) || enrichedWorkEntries.length === 0) && Array.isArray(relatedPartRequests) && relatedPartRequests.length > 0) {
+          const fallbackIds = relatedPartRequests.map((row) => row.workEntryDocEntry).filter(Boolean);
+          const builtEntries = await buildWorkEntriesByIds(companyDb, fallbackIds);
+          if (builtEntries.length > 0) {
+            setWorkOrderEntries(builtEntries);
+            setExpandedEntryKeys(builtEntries);
+            enrichedWorkEntries = builtEntries;
+          }
+        }
         
         // Use API data for tasks/operations and parts if available
-        if (response.Data.Operations && Array.isArray(response.Data.Operations)) {
-          setTasks(response.Data.Operations);
-        } else {
-          setTasks([]);
-        }
+        setTasks(mergedOperations);
         
-        if (normalizedParts.length > 0) {
-          setParts(normalizedParts);
-        } else {
-          setParts([]);
-        }
+        setParts(mergedParts);
       }
     } catch (error) {
       console.error('Error fetching work order details:', error);
@@ -481,14 +952,147 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         text1: 'Failed to Load',
         text2: 'Unable to fetch work order details',
       });
+      setWorkOrderEntries([]);
+      setMechanicPartRequests([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const closeVerifiedJobCard = async (entries) => {
+    const allVerified = entries.length > 0 && entries.every(isSupervisorVerified);
+    if (!allVerified) return;
+
+    const companyDb = dbName || 'MUTSPL_TEST';
+    const jobCardDocEntry = workOrder?.DocEntry || workOrder?.JobCardDocEntry || docEntry;
+    const incidentDocEntry = workOrder?.ComplaintNo || workOrder?.CmplaintNo || complaintNo;
+    if (!jobCardDocEntry) return;
+
+    try {
+      setClosingJobCard(true);
+      const jobCardResponse = await jobCardService.closeJobCard(companyDb, jobCardDocEntry);
+      if (!isApiSuccess(jobCardResponse)) {
+        throw new Error(jobCardResponse?.Message || 'Could not close the job card.');
+      }
+
+      if (incidentDocEntry) {
+        const formType = String(routeComplaintType || workOrder?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
+        const incidentResponse = await complaintService.closeIncident(companyDb, incidentDocEntry, formType);
+        if (!isApiSuccess(incidentResponse)) {
+          throw new Error(incidentResponse?.Message || 'Job card closed, but the incident could not be closed.');
+        }
+      }
+
+      setWorkOrder((prev) => ({ ...(prev || {}), Status: 'C' }));
+      Toast.show({ type: 'success', text1: 'Job card and incident closed' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Closure failed', text2: error?.message || 'Unable to close the job card and incident.' });
+    } finally {
+      setClosingJobCard(false);
+    }
+  };
+
+  const handleVerifyWorkEntry = async (entry, status) => {
+    const workEntryDocEntry = asWorkEntryId(entry);
+    if (!workEntryDocEntry) {
+      Toast.show({ type: 'error', text1: 'Work entry unavailable' });
+      return;
+    }
+    try {
+      setVerifyingEntryId(String(workEntryDocEntry));
+      const response = await workEntryService.verifyWorkEntry({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: resolveUserCode(),
+        Status: status,
+        Remarks: status === 'RW' ? 'Returned to mechanic for rework.' : 'Verified by supervisor.',
+      });
+      if (!isApiSuccess(response)) {
+        throw new Error(response?.Message || 'Unable to verify work entry.');
+      }
+
+      const nextEntries = workOrderEntries.map((item) => (
+        String(asWorkEntryId(item)) === String(workEntryDocEntry) ? { ...item, Status: status } : item
+      ));
+      setWorkOrderEntries(nextEntries);
+      Toast.show({
+        type: 'success',
+        text1: status === 'SV' ? 'Work entry verified' : 'Sent back for rework',
+        text2: status === 'SV' ? 'The mechanic work is accepted.' : 'The mechanic can update the work entry again.',
+      });
+      if (status === 'SV') await closeVerifiedJobCard(nextEntries);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Verification failed', text2: error?.message || 'Unable to update work entry.' });
+    } finally {
+      setVerifyingEntryId(null);
     }
   };
 
   const getMechanicName = (mechanic) => (
     mechanic?.Mechanic || mechanic?.MechanicName || mechanic?.Name || mechanic?.Mech || '-'
   );
+
+  const getMechanicCode = (mechanic) => String(
+    mechanic?.MechanicCode
+    || mechanic?.MechCode
+    || mechanic?.UserCode
+    || mechanic?.Code
+    || ''
+  ).trim();
+
+  const getFaultLabel = (fault) => {
+    const faultCode = String(fault?.FaultCode || fault?.Fault || '').trim();
+    const faultDesc = getDisplayText(fault?.FaultDesc, fault?.Dscption, fault?.Description, fault?.FaultName);
+    if (faultCode && faultDesc) return `${faultCode} - ${faultDesc}`;
+    return faultCode || faultDesc || '-';
+  };
+
+  const getMechanicFaultLabels = (mechanic) => {
+    const mechanicName = String(getMechanicName(mechanic)).trim().toLowerCase();
+    const mechanicCode = String(getMechanicCode(mechanic)).trim().toLowerCase();
+    const labels = new Set();
+
+    const matchesMechanic = (value) => {
+      const code = String(
+        value?.MechanicCode
+        || value?.MechCode
+        || value?.UserCode
+        || value?.Code
+        || value?.AssignedTo
+        || value?.AssignedMechanic?.Code
+        || ''
+      ).trim().toLowerCase();
+      const name = String(
+        value?.MechanicName
+        || value?.MechName
+        || value?.Name
+        || value?.UserName
+        || value?.AssignedToName
+        || value?.AssignedMechanics
+        || value?.AssignedMechanic?.UserName
+        || ''
+      ).trim().toLowerCase();
+      return (mechanicCode && code && mechanicCode === code) || (mechanicName && name && mechanicName === name);
+    };
+
+    (Array.isArray(workOrder?.Faults) ? workOrder.Faults : []).forEach((fault) => {
+      if (matchesMechanic(fault)) labels.add(getFaultLabel(fault));
+    });
+
+    (Array.isArray(workOrderEntries) ? workOrderEntries : []).forEach((entry) => {
+      if (!matchesMechanic(entry)) return;
+      const entryFaults = Array.isArray(entry?.DetailedFaults) && entry.DetailedFaults.length > 0
+        ? entry.DetailedFaults
+        : [{ FaultCode: entry?.FaultCode || entry?.Fault, FaultDesc: entry?.FaultDesc || entry?.Description }];
+      entryFaults.forEach((fault) => labels.add(getFaultLabel(fault)));
+    });
+
+    if (labels.size === 0) {
+      getAvailableFaults().forEach((fault) => labels.add(getFaultLabel(fault)));
+    }
+
+    return Array.from(labels).filter((label) => label && label !== '-');
+  };
 
   const getAvailableFaults = () => {
     if (workOrder?.Faults && workOrder.Faults.length > 0) {
@@ -703,7 +1307,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         setMechanicWork(prev => [...newWorkEntries, ...prev]);
         setWorkEntry({ description: '', hours: '' });
         setSelectedMechanics([]);
-        await fetchRelatedWorkOrders();
+        await fetchWorkOrderDetails();
 
         if (complaintNo) {
           const incidentFormType = String(routeComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
@@ -870,6 +1474,27 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           </View>
         )}
 
+        {workOrder?.Operations && workOrder.Operations.length > 0 && (
+          <View style={styles.faultsSection}>
+            <Text style={[styles.detailLabel, { color: colors.gray, marginBottom: 8 }]}>Work Details:</Text>
+            {workOrder.Operations.map((operation, index) => (
+              <View key={`${operation?.WorkEntryDocEntry || 'work'}-${operation?.LineId || index}`} style={[styles.faultItem, { backgroundColor: colors.light, padding: SPACING.sm, borderRadius: BORDER_RADIUS.sm, marginBottom: SPACING.xs }]}>
+                <Text style={[styles.faultName, { color: colors.dark }]}>
+                  • {getDisplayText(operation?.WorkDone, operation?.Description, operation?.WorkCode, operation) || 'Work update'}
+                </Text>
+                <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
+                  Work Entry: {operation?.WorkEntryDocEntry || '-'} | Fault: {operation?.FaultCode || '-'}
+                </Text>
+                {operation?.Remarks ? (
+                  <Text style={[styles.faultMeta, { color: colors.gray, marginLeft: SPACING.md }]}>
+                    Remarks: {getDisplayText(operation?.Remarks)}
+                  </Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        )}
+
         {workOrder?.Parts && workOrder.Parts.length > 0 && (
           <View style={styles.faultsSection}>
             <Text style={[styles.detailLabel, { color: colors.gray, marginBottom: 8 }]}>Parts:</Text>
@@ -1008,15 +1633,49 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           ))}
         </View>
       )}
+
+      <View style={{ marginTop: SPACING.md }}>
+        <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: SPACING.xs }]}>Mechanic Part Requests</Text>
+        {loadingMechanicPartRequests ? (
+          <Text style={{ color: colors.gray }}>Loading part requests...</Text>
+        ) : mechanicPartRequests.length === 0 ? (
+          <Text style={{ color: colors.gray }}>No mechanic part requests found for this job card.</Text>
+        ) : (
+          mechanicPartRequests.map((request) => (
+            <View key={request.key} style={[styles.partListRow, { backgroundColor: colors.white, borderColor: colors.border || '#E0E0E0' }]}>
+              <View style={styles.partHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.partName, { color: colors.dark }]}>
+                    {request.itemName || request.itemCode || 'Part'}
+                  </Text>
+                  <Text style={[styles.partCode, { color: colors.gray }]}>Code: {request.itemCode || '-'}</Text>
+                </View>
+                <View style={[styles.priorityBadgeInline, { backgroundColor: getStatusColor(request.status || 'O') }]}>
+                  <Text style={styles.priorityTextInline}>{request.status || 'PENDING'}</Text>
+                </View>
+              </View>
+
+              <Text style={[styles.selectedCodeText, { color: colors.gray }]}>Request: {request.requestCode || '-'}</Text>
+              <Text style={[styles.selectedCodeText, { color: colors.gray }]}>Work Entry: {request.workEntryDocEntry || '-'}</Text>
+              <Text style={[styles.selectedCodeText, { color: colors.gray }]}>Job Card DocEntry: {request.jobCardDocEntry || '-'}</Text>
+              <Text style={[styles.selectedCodeText, { color: colors.gray }]}>Qty - Req: {request.reqQty} | Apr: {request.approvedQty} | Iss: {request.issuedQty} | Rec: {request.receivedQty}</Text>
+              <Text style={[styles.selectedCodeText, { color: colors.gray }]}>Warehouse: {request.warehouse || '-'}</Text>
+              {request.remarks ? (
+                <Text style={[styles.selectedCodeText, { color: colors.gray }]}>Remarks: {request.remarks}</Text>
+              ) : null}
+            </View>
+          ))
+        )}
+      </View>
     </View>
   );
 
   const renderMechanicsDetails = () => (
     <View style={styles.tabContent}>
-      <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: SPACING.xs }]}>Assigned Mechanics (tap to select)</Text>
-      {workOrder?.Mechanics && workOrder.Mechanics.length > 0 ? (
+      <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: SPACING.xs }]}>Assigned Mechanics</Text>
+      {mechanicsForDisplay.length > 0 ? (
         <View style={styles.mechanicsList}>
-          {workOrder.Mechanics.map((mechanic, index) => (
+          {mechanicsForDisplay.map((mechanic, index) => (
             <TouchableOpacity
               key={index}
               activeOpacity={isWorkOrderLocked ? 1 : 0.7}
@@ -1025,7 +1684,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               }}
               style={[
                 styles.mechanicCard,
-                workOrder?.Mechanics?.length === 1 && styles.singleMechanicCard,
+                mechanicsForDisplay.length === 1 && styles.singleMechanicCard,
                 { backgroundColor: colors.light, borderColor: colors.border || '#D0D0D0' },
                 selectedMechanics.includes(getMechanicName(mechanic)) && styles.selectedMechanicCard,
                 selectedMechanics.includes(getMechanicName(mechanic)) && { borderColor: colors.primary }
@@ -1053,71 +1712,43 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
       <View style={[styles.mappingSection, { backgroundColor: colors.light, borderColor: colors.border || '#E0E0E0' }]}>
         <Text style={[styles.label, { color: colors.dark }]}>Fault Mapping for Mechanics</Text>
-        {selectedMechanics.length > 0 ? (
-          selectedMechanics.map((mechanicName) => (
-            <View key={mechanicName} style={styles.mappingRow}>
-              <Text style={[styles.mappingMechanicName, { color: colors.dark }]} numberOfLines={1}>
-                {mechanicName}
-              </Text>
-              <TouchableOpacity
-                style={styles.mappingFaultSelector}
-                onPress={() => {
-                  if (!isWorkOrderLocked) openFaultSelector('mechanic', mechanicName);
-                }}
-                activeOpacity={isWorkOrderLocked ? 1 : 0.7}
-              >
-                <View pointerEvents="none">
-                  <PaperTextInput
-                    label="Fault"
-                    mode="outlined"
-                    value={getFaultDisplayLabel(mechanicFaultMap[mechanicName])}
-                    style={styles.partFieldInput}
-                    placeholder="Select fault"
-                    editable={false}
-                    right={<PaperTextInput.Icon icon="alert-circle-outline" />}
-                  />
-                </View>
-              </TouchableOpacity>
-            </View>
-          ))
+        {(selectedMechanics.length > 0
+          ? selectedMechanics.map((mechanicName, index) => (
+              mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
+              || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
+            ))
+          : mechanicsForDisplay
+        ).length > 0 ? (
+          (selectedMechanics.length > 0
+            ? selectedMechanics.map((mechanicName, index) => (
+                mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
+                || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
+              ))
+            : mechanicsForDisplay
+          ).map((mechanic, index) => {
+            const faultLabels = getMechanicFaultLabels(mechanic);
+            return (
+              <View key={`${getMechanicName(mechanic)}-${getMechanicCode(mechanic) || index}`} style={styles.mappingRow}>
+                <Text style={[styles.mappingMechanicName, { color: colors.dark }]} numberOfLines={1}>
+                  {getMechanicName(mechanic)}
+                </Text>
+                {faultLabels.length > 0 ? (
+                  <View style={styles.mappingFaultsWrap}>
+                    {faultLabels.map((faultLabel) => (
+                      <View key={`${getMechanicName(mechanic)}-${faultLabel}`} style={[styles.mappingFaultChip, { backgroundColor: colors.white, borderColor: colors.border || '#D0D0D0' }]}>
+                        <Text style={[styles.mappingFaultChipText, { color: colors.dark }]}>{faultLabel}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={[styles.mappingHintText, { color: colors.gray }]}>No faults mapped.</Text>
+                )}
+              </View>
+            );
+          })
         ) : (
           <Text style={[styles.mappingHintText, { color: colors.gray }]}>
-            Select one or more mechanics above to map faults.
-          </Text>
-        )}
-      </View>
-
-      <Divider style={{ marginVertical: SPACING.sm }} />
-
-      <View style={styles.workEntryForm}>
-        <View style={styles.formGroup}>
-          <Text style={[styles.label, { color: colors.dark }]}>Work Description:</Text>
-          <TextInput
-            style={[styles.textArea, { backgroundColor: colors.light, color: colors.dark }]}
-            value={workEntry.description}
-            onChangeText={(text) => setWorkEntry({ ...workEntry, description: text })}
-            placeholder="Describe the work performed..."
-            multiline
-            numberOfLines={3}
-            editable={!isWorkOrderLocked}
-          />
-        </View>
-
-        <View style={styles.formGroup}>
-          <Text style={[styles.label, { color: colors.dark }]}>Hours Worked:</Text>
-          <TextInput
-            style={[styles.input, { backgroundColor: colors.light, color: colors.dark }]}
-            value={workEntry.hours}
-            onChangeText={(text) => setWorkEntry({ ...workEntry, hours: text })}
-            placeholder="Enter hours (e.g., 2.5)"
-            keyboardType="decimal-pad"
-            editable={!isWorkOrderLocked}
-          />
-        </View>
-
-        {mechanicWork.length > 0 && (
-          <Text style={[styles.selectedMechanicsText, { color: colors.primary }]}>
-            Draft work entries created: {mechanicWork.length}
+            No mechanics available for fault mapping.
           </Text>
         )}
       </View>
@@ -1137,12 +1768,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       ) : (
         <View style={styles.workOrderListContainer}>
           {workOrderEntries.map((entry, index) => {
-            const entryKey = String(entry?.DocEntry || entry?.DocNum || `entry-${index}`);
+            const entryKey = String(entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.DocNum || `entry-${index}`);
             const isExpanded = workOrderExpandedMap[entryKey] !== false;
 
             return (
               <View
-                key={`${entry?.DocEntry || entry?.DocNum || index}`}
+                key={`${entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.DocNum || index}`}
                 style={[styles.workOrderEntryCard, { backgroundColor: colors.white, borderColor: colors.border || '#E0E0E0' }]}
               >
                 <View style={styles.workOrderEntryHeader}>
@@ -1191,7 +1822,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         style={[styles.workOrderEntryValue, { color: colors.dark, flex: 1, textAlign: 'right' }]}
                         numberOfLines={2}
                       >
-                        {entry?.WorkDoneDetails || entry?.WorkDone || entry?.WorkDesc || entry?.Remarks || entry?.Description || entry?.FaultDesc || '-'}
+                        {getDisplayText(entry?.WorkDoneDetails, entry?.WorkDone, entry?.WorkDesc, entry?.Remarks, entry?.Description, entry?.FaultDesc) || '-'}
                       </Text>
                     </View>
 
@@ -1201,7 +1832,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         {entry.DetailedFaults.map((fault, faultIndex) => (
                           <View key={`${entry?.DocEntry || index}-fault-${faultIndex}`} style={[styles.entryDetailsCard, { backgroundColor: colors.light }]}> 
                             <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>• {fault?.FaultCode || fault?.Fault || '-'}</Text>
-                            <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>{fault?.FaultDesc || fault?.Dscption || '-'}</Text>
+                            <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>{getDisplayText(fault?.FaultDesc, fault?.Dscption) || '-'}</Text>
                             <Text style={[styles.entryDetailsMeta, { color: colors.gray }]}>Status: {fault?.Status || '-'} | TotalHrs: {fault?.TotalHrs ?? '-'}</Text>
                           </View>
                         ))}
@@ -1219,6 +1850,30 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                           </View>
                         ))}
                       </View>
+                    )}
+
+                    {supervisorUser && isAwaitingSupervisorVerification(entry) && (
+                      <View style={{ flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.md }}>
+                        <TouchableOpacity
+                          style={[styles.smallBtn, { flex: 1, backgroundColor: '#2B7D2B' }]}
+                          onPress={() => handleVerifyWorkEntry(entry, 'SV')}
+                          disabled={Boolean(verifyingEntryId) || closingJobCard}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.smallBtnText}>{verifyingEntryId === String(asWorkEntryId(entry)) ? 'Verifying…' : 'Verify Work'}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.smallBtn, { flex: 1, backgroundColor: '#B45309' }]}
+                          onPress={() => handleVerifyWorkEntry(entry, 'RW')}
+                          disabled={Boolean(verifyingEntryId) || closingJobCard}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.smallBtnText}>Send for Rework</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    {supervisorUser && isSupervisorVerified(entry) && (
+                      <Text style={{ color: '#2B7D2B', fontSize: 12, fontWeight: '700', marginTop: SPACING.sm }}>Verified by supervisor</Text>
                     )}
                   </>
                 )}
@@ -1310,6 +1965,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
           <Text style={[styles.summaryValue, { color: colors.dark }]}>{workOrderEntries.length}</Text>
           <Text style={[styles.summaryLabel, { color: colors.gray }]}>Work Entries</Text>
+        </View>
+        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
+          <Text style={[styles.summaryValue, { color: colors.dark }]}>{mechanicPartRequests.length}</Text>
+          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Part Requests</Text>
         </View>
       </View>
 
@@ -1905,6 +2564,21 @@ const styles = StyleSheet.create({
   mappingFaultSelector: {
     width: '100%',
   },
+  mappingFaultsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: SPACING.xs,
+  },
+  mappingFaultChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 6,
+  },
+  mappingFaultChipText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
   mappingHintText: {
     fontSize: 12,
     marginTop: SPACING.xs,
@@ -2041,4 +2715,3 @@ const styles = StyleSheet.create({
 });
 
 export default WorkOrderDetailScreen;
-

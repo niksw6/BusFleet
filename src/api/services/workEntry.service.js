@@ -1,4 +1,11 @@
 import { get, post, handleApiError } from '../client';
+import { API_BASE_URL } from '../../constants/config';
+import { getDBName, getSessionCookie } from '../../utils/storage';
+
+const extractXmlValue = (xml, tagName) => {
+  const match = String(xml || '').match(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i'));
+  return match?.[1]?.trim() || '';
+};
 
 /**
  * Work Entry Service
@@ -9,6 +16,64 @@ import { get, post, handleApiError } from '../client';
  *   SAP STORE issues → Mechanic clicks "Part Received" → Mechanic completes work
  */
 export const workEntryService = {
+  getWorkEntry: async (companyDB, workEntryDocEntry) => {
+    try {
+      const response = await get(
+        `GetWorkEntry?CompanyDB=${companyDB}&WorkEntryDocEntry=${workEntryDocEntry}`,
+        { suppressErrorLog: true }
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Supervisor verifies or sends a work entry for rework.
+   * Status values include: SV (Supervisor Verified), RW (Rework).
+   * @param {Object} payload
+   * @param {string} payload.CompanyDB
+   * @param {number|string} payload.WorkEntryDocEntry
+   * @param {string} payload.UserCode
+   * @param {string} payload.Status
+   * @param {string} payload.Remarks
+   */
+  verifyWorkEntry: async (payload) => {
+    try {
+      const rawStatus = String(payload?.Status || '').trim().toUpperCase();
+      const statusMap = {
+        A: 'SV',
+        APPROVE: 'SV',
+        APPROVED: 'SV',
+        ACCEPT: 'SV',
+        ACCEPTED: 'SV',
+        SV: 'SV',
+        R: 'RW',
+        RW: 'RW',
+        REWORK: 'RW',
+        REJECT: 'RW',
+        REJECTED: 'RW',
+        DENY: 'RW',
+        DENIED: 'RW',
+      };
+      const normalizedStatus = statusMap[rawStatus] || rawStatus;
+
+      if (!['SV', 'RW'].includes(normalizedStatus)) {
+        throw new Error(`VerifyWorkEntry status '${rawStatus || '(empty)'}' is invalid. Use SV (approve) or RW (rework).`);
+      }
+
+      const normalizedPayload = {
+        ...payload,
+        Status: normalizedStatus,
+      };
+      console.log('VerifyWorkEntry payload:', JSON.stringify(normalizedPayload));
+      const response = await post('VerifyWorkEntry', normalizedPayload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   getWorkHistory: async (companyDB, jobCardNo) => {
     try {
       const response = await get(`GetWorkHistory?CompanyDB=${companyDB}&JobCardNo=${jobCardNo}`, { suppressErrorLog: true });
@@ -157,6 +222,96 @@ export const workEntryService = {
       const response = await get(
         `GetIssuedItems?CompanyDB=${companyDB}&JobCardNo=${jobCardNo}`
       );
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Upload up to 2 images via multipart/form-data.
+   * API: POST UploadImage (form field name: Image)
+   * Returns XML with FileName list.
+   */
+  uploadImages: async (images = []) => {
+    try {
+      const files = Array.isArray(images) ? images.filter(Boolean) : [];
+      if (files.length === 0) {
+        throw new Error('Select at least one image to upload.');
+      }
+
+      const dbName = await getDBName();
+      const sessionCookie = await getSessionCookie();
+      const headers = {
+        Accept: 'application/xml,text/xml,*/*',
+      };
+      if (dbName) headers.DBName = dbName;
+      if (sessionCookie) headers.Cookie = sessionCookie;
+
+      const formData = new FormData();
+      files.forEach((image, index) => {
+        const uri = image?.uri || image?.fileUri;
+        if (!uri) return;
+        const inferredName = image?.name || image?.fileName || `work-entry-${Date.now()}-${index + 1}.jpg`;
+        const inferredType = image?.mimeType || image?.type || 'image/jpeg';
+        formData.append('Image', {
+          uri,
+          name: inferredName,
+          type: inferredType,
+        });
+      });
+
+      const response = await fetch(`${API_BASE_URL}UploadImage`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+
+      const responseText = await response.text();
+      if (!response.ok) {
+        throw new Error(`UploadImage failed (${response.status})`);
+      }
+
+      const success = /^true$/i.test(extractXmlValue(responseText, 'Success'));
+      const fileNameCsv = extractXmlValue(responseText, 'FileName');
+      const message = extractXmlValue(responseText, 'Message');
+      const filePath = extractXmlValue(responseText, 'FilePath');
+      const fileNames = fileNameCsv
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+      return {
+        Success: success,
+        Status: success,
+        Message: message,
+        FileName: fileNameCsv,
+        FileNames: fileNames,
+        FilePath: filePath,
+      };
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Save one uploaded image metadata against a work entry + fault line.
+   */
+  saveWorkEntryImage: async (payload) => {
+    try {
+      const response = await post('SaveWorkEntryImage', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get image content as base64 by uploaded file name.
+   */
+  getWorkEntryImageBase64: async (fileName) => {
+    try {
+      const response = await get(`GetWorkEntryImageBase64?fileName=${encodeURIComponent(fileName)}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));

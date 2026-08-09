@@ -14,6 +14,7 @@ export { default as TeamApprovalsScreen } from './screens/TeamApprovalsScreen';
 export { default as MechanicDashboardScreen } from './screens/MechanicDashboardScreen';
 export { default as FaultWorkScreen } from './screens/FaultWorkScreen';
 export { default as PartsApprovalScreen } from './screens/PartsApprovalScreen';
+export { default as ReviewWorkEntriesScreen } from './screens/ReviewWorkEntriesScreen';
 
 // Components
 export { default as FaultMechanicPartsSection } from './components/FaultMechanicPartsSection';

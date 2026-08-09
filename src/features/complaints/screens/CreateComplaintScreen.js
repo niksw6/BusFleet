@@ -203,7 +203,7 @@ const CreateComplaintScreen = ({ navigation }) => {
       console.log('Faults array:', JSON.stringify(complaintData.Faults, null, 2));
       
       // Generate curl command for testing
-      const curlCommand = `curl -X POST "http://88.99.68.90:85/BMSSystem/CreateDriverComplaint" \\
+      const curlCommand = `curl -X POST "http://116.202.223.120:6069/BMSSystem/CreateDriverComplaint" \\
   -H "Content-Type: application/json" \\
   -H "Accept: application/json" \\
   -H "DBName: ${complaintData.CompanyDB}" \\
@@ -818,4 +818,3 @@ const styles = StyleSheet.create({
 });
 
 export default CreateComplaintScreen;
-

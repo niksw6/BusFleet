@@ -1,4 +1,4 @@
-export const API_BASE_URL = 'http://88.99.68.90:85/BMSSystem/';
+export const API_BASE_URL = 'http://116.202.223.120:6069/BMSSystem/';
 
 export const API_ENDPOINTS = {
   GET_COMPANY_LISTS: 'MGetCompanyLists',
@@ -63,9 +63,13 @@ export const API_ENDPOINTS = {
   REQUEST_JOB_CARD_PARTS: 'RequestJobCardParts',
   GET_APPROVED_JOB_CARD_PARTS: 'GetApprovedJobCardParts',
   RECEIVE_JOB_CARD_PARTS: 'ReceiveJobCardParts',
+  RECEIVE_WORK_ENTRY_PARTS: 'ReceiveWorkEntryParts',
   REQUEST_WORK_ENTRY_PARTS: 'RequestWorkEntryParts',
   GET_MECHANIC_PART_REQUESTS: 'GetMechanicPartRequests',
   APPROVE_MECHANIC_PART_REQUEST: 'ApproveMechanicPartRequest',
+  REQUEST_SPECIAL_TOOL: 'RequestSpecialTool',
+  GET_SPECIAL_TOOLS: 'GetSpecialTools',
+  APPROVE_SPECIAL_TOOL_REQUEST: 'ApproveSpecialToolRequest',
 };
 
 export const STORAGE_KEYS = {
@@ -134,12 +138,25 @@ export const JOB_TYPES = {
 };
 
 export const PART_REQUEST_STATUS = {
-  PENDING: 'P',       // Mechanic requested
-  APPROVED: 'A',      // Supervisor approved
-  ISSUED: 'I',        // Store issued
-  RECEIVED: 'R',      // Mechanic received
-  REJECTED: 'X',      // Supervisor rejected
+  REQUESTED: 'RQ',
+  APPROVED: 'AP',
+  PARTIALLY_ISSUED: 'PS',
+  FULLY_ISSUED: 'IS',
+  FULLY_RECEIVED: 'RC',
+  PARTIAL_RECEIVED: 'PR',
+  REJECTED: 'RJ',
+  // Backward-compatible aliases used by older payloads/UI code.
+  PENDING: 'P',
+  ISSUED: 'I',
+  RECEIVED: 'R',
   NAMES: {
+    RQ: 'Requested',
+    AP: 'Approved',
+    PS: 'Partially Issued',
+    IS: 'Fully Issued',
+    RC: 'Fully Received',
+    PR: 'Partial Received',
+    RJ: 'Rejected',
     P: 'Pending Approval',
     A: 'Approved',
     I: 'Issued by Store',

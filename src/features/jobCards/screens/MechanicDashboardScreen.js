@@ -40,7 +40,7 @@ const deriveBucket = (item) => {
   const raw = String(
     item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? ''
   ).trim().toUpperCase();
-  if (['COMPLETED', 'COMPLETE', 'C', 'CM'].includes(raw)) return BUCKET.COMPLETED;
+  if (['COMPLETED', 'COMPLETE', 'C', 'CM', 'SV', 'CL', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(raw)) return BUCKET.COMPLETED;
   // WC is the backend's mechanic-complete state: work is finished but must
   // remain in progress until the Supervisor verifies/closes the job card.
   if (['ACCEPTED', 'A', 'IN PROGRESS', 'INPROGRESS', 'STARTED', 'I', 'IP', 'WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw)) return BUCKET.IN_PROGRESS;
@@ -50,6 +50,24 @@ const deriveBucket = (item) => {
 const isAwaitingVerification = (item) => ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(
   String(item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? '').trim().toUpperCase()
 );
+
+const getMechanicStatusLabel = (item, bucket, awaitingVerification) => {
+  const raw = String(item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? '').trim().toUpperCase();
+
+  if (bucket === BUCKET.COMPLETED) {
+    if (raw === 'SV' || raw === 'SUPERVISOR VERIFIED') return 'Supervisor Verified';
+    if (raw === 'CL' || raw === 'CLOSED') return 'Closed';
+    return 'Completed';
+  }
+
+  if (awaitingVerification) return 'Awaiting Verification';
+  if (raw === 'PR' || raw === 'PARTS RECEIVED') return 'Parts Received';
+  if (raw === 'PI' || raw === 'PARTS ISSUED') return 'Parts Issued';
+  if (raw === 'PP' || raw === 'PART APPROVAL PENDING') return 'Part Approval Pending';
+  if (raw === 'IP' || raw === 'IN PROGRESS' || raw === 'INPROGRESS') return 'In Progress';
+  if (raw === 'A' || raw === 'ACCEPTED') return 'Accepted';
+  return bucket === BUCKET.IN_PROGRESS ? 'In Progress' : 'New';
+};
 
 const extractItems = (data) => {
   if (Array.isArray(data)) return data;
@@ -69,7 +87,7 @@ const getFaultLine = (item) => item?.FaultLine ?? item?.Line ?? item?.LineNum ??
 const itemKey = (item) => `${getDocEntry(item)}-${getFaultLine(item)}`;
 const getActiveWorkEntry = (item) => {
   const entries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
-  return entries.find(entry => !['C', 'CM', 'COMPLETED', 'COMPLETE'].includes(String(entry?.Status || '').trim().toUpperCase()))
+  return entries.find(entry => !['C', 'CM', 'SV', 'CL', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(String(entry?.Status || '').trim().toUpperCase()))
     || entries[0]
     || null;
 };
@@ -195,6 +213,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
       : bucket === BUCKET.IN_PROGRESS ? colors.statusInProgress
       : colors.primary;
     const awaitingVerification = isAwaitingVerification(item);
+    const statusLabel = getMechanicStatusLabel(item, bucket, awaitingVerification);
 
     return (
       <TouchableOpacity
@@ -230,7 +249,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
           <View style={styles.rowBetween}>
             <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}>
               <Text style={[styles.statusPillText, { color: statusColor }]}>
-                {bucket === BUCKET.COMPLETED ? 'Completed' : awaitingVerification ? 'Awaiting Verification' : 'In Progress'}
+                {statusLabel}
               </Text>
             </View>
             <MaterialIcons name="chevron-right" size={22} color={colors.gray} />

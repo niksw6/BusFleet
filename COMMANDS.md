@@ -237,10 +237,10 @@ npm update
 ### Set Environment Variable (optional)
 ```bash
 # Windows
-set EXPO_PUBLIC_API_URL=http://88.99.68.90:85/BMSSystem/
+set EXPO_PUBLIC_API_URL=http://116.202.223.120:6069/BMSSystem/
 
 # Linux/Mac
-export EXPO_PUBLIC_API_URL=http://88.99.68.90:85/BMSSystem/
+export EXPO_PUBLIC_API_URL=http://116.202.223.120:6069/BMSSystem/
 ```
 
 ---
