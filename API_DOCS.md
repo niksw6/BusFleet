@@ -160,42 +160,185 @@ http://116.202.223.120:6069/BMSSystem/
 
 ## Line Breakdowns
 
-### Create Breakdown
-**Endpoint:** `CreateLineBreakdown`  
-**Method:** `POST`  
-**Headers:** `DBName`, `Authorization`
+This section documents the mobile Line Breakdown flow and related endpoints used by drivers, supervisors and breakdown teams.
 
-**Request Body:**
+1) Create Incident (Line Breakdown)
+
+### Create Incident
+**Endpoint:** `CreateIncidents`  
+**Method:** `POST`  
+**Headers:** `DBName`, `ASP.NET_SessionId` (cookie stored/returned by first requests)
+
+**Description:** Driver or Supervisor creates the Line Breakdown incident. The payload follows the same shape as other incidents (see CreateDriverComplaint) but should include location/route and breakdown-specific fields.
+
+**Example Request Body:**
 ```json
 {
-  "vehicleNumber": "MH12AB1234",
-  "routeNumber": "101",
-  "breakdownLocation": "Pune Station Road",
-  "breakdownDate": "13/02/2026",
-  "breakdownTime": "14:30",
-  "priority": "High",
-  "description": "Vehicle stopped suddenly on route",
-  "faults": [
-    {
-      "faultType": "Electrical",
-      "faultDescription": "Complete electrical failure"
-    }
-  ]
+  "CompanyDB": "YOUR_DB",
+  "JobType": "Breakdown",
+  "RegNo": "KL-07-AB-1234",
+  "DrvCode": "DRV1001",
+  "RegDate": "2026-08-17",
+  "RegTime": "14:30",
+  "Dscrpton": "Vehicle stopped on route, engine stalls",
+  "Priority": "High",
+  "BreakdownLocation": "Near Main Station",
+  "RouteNumber": "101",
+  "Faults": [ { "Fault": "Engine", "Dscption": "Stalls intermittently" } ]
 }
 ```
 
 **Response:**
 ```json
 {
-  "success": true,
-  "message": "Breakdown reported successfully",
-  "data": {
-    "id": 456,
-    "breakdownNumber": "BRK-2026-456",
-    "status": "In Progress",
-    "estimatedRepairTime": 120
+  "Success": true,
+  "Message": "Incident created successfully",
+  "Data": { "DocEntry": 25, "BreakdownNumber": "BRK-2026-025" }
+}
+```
+
+---
+
+2) Get Breakdown Details
+
+### Get Line Breakdown Detail
+**Endpoint:** `GetLineBreakdownDetail`  
+**Method:** `GET`  
+**Query:** `?CompanyDB={CompanyDB}&DocEntry={DocEntry}`
+
+**Description:** Returns breakdown header and associated faults for the provided DocEntry (incident id).
+
+**Response (example):**
+```json
+{
+  "Success": true,
+  "Data": {
+    "DocEntry": 25,
+    "RegNo": "KL-07-AB-1234",
+    "BreakdownLocation": "Near Main Station",
+    "Faults": [ { "FaultLine": 1, "Fault": "Engine", "Dscption": "Stalls" } ]
   }
 }
+```
+
+---
+
+3) Get Available Breakdown Teams
+
+### Get Breakdown Teams
+**Endpoint:** `GetBreakdownTeams`  
+**Method:** `GET`  
+**Query:** `?CompanyDB={CompanyDB}&DocEntry={DocEntry}`
+
+**Description:** Supervisor retrieves available breakdown teams (QBS_BRKTEAM) with fields: Code, Name, Phone, Location, Active, Availability.
+
+**Response (example):**
+```json
+{
+  "Success": true,
+  "Data": [ { "Code":"TEAM01","Name":"Team A","Phone":"+91...","Location":"North" } ]
+}
+```
+
+---
+
+4) Create Line Breakdown Work Entry (Start Work / Assign Team)
+
+### Create Line Breakdown Work Entry
+**Endpoint:** `CreateLineBreakdownWorkEntry`  
+**Method:** `POST`
+
+**Description:** Called by the team/mechanic to record repairs performed at the breakdown location. `RepairType` = `P` (Permanent) or `T` (Temporary).
+
+**Example Request:**
+```json
+{
+  "CompanyDB": "YOUR_DB",
+  "JobCardDocEntry": 25,
+  "FaultLine": 1,
+  "UserCode": "100",
+  "RepairType": "P",
+  "FinalRemarks": "",
+  "Details": [
+    { "WorkCode": "REP001", "WorkDone": "Brake repaired", "OtherDescription": "", "Remarks": "" }
+  ]
+}
+```
+
+**Response:**
+```json
+{ "Success": true, "Data": { "WorkEntryDocEntry": 15 } }
+```
+
+---
+
+5) Complete Line Breakdown Work Entry
+
+### Complete Line Breakdown Work Entry
+**Endpoint:** `CompleteLineBreakdownWorkEntry`  
+**Method:** `POST`
+
+**Request (example):**
+```json
+{
+  "CompanyDB": "YOUR_DB",
+  "WorkEntryDocEntry": 15,
+  "FinalRemarks": "Repair completed."
+}
+```
+
+**Behavior:** The API checks `RepairType` on the work entry:
+- If `P` (Permanent): Work entry is completed → Supervisor + Team Leader notified → triggers inspection flow.
+- If `T` (Temporary): Work entry is completed → Supervisor notified → bus routed to depot for permanent repair.
+
+**Response:**
+```json
+{ "Success": true, "Message": "Work entry completed" }
+```
+
+---
+
+6) Upload Work Entry Images
+
+### Upload Image
+**Endpoint:** `UploadImage`  
+**Method:** `POST`
+
+**Then:** `SaveWorkEntryImage` to attach the uploaded image to the work entry (same flow as other work-entry images in the app).
+
+---
+
+7) Verify Line Breakdown Work Entry
+
+### Verify Line Breakdown Work Entry
+**Endpoint:** `VerifyLineBreakdownWorkEntry`  
+**Method:** `POST`
+
+**Approve Example:**
+```json
+{
+  "CompanyDB": "YOUR_DB",
+  "WorkEntryDocEntry": 15,
+  "UserCode": "SUPERVISOR01",
+  "Status": "SV",
+  "Remarks": "Repair verified."
+}
+```
+
+**Rework Example:**
+```json
+{
+  "CompanyDB": "YOUR_DB",
+  "WorkEntryDocEntry": 15,
+  "UserCode": "SUPERVISOR01",
+  "Status": "RW",
+  "Remarks": "Issue still exists."
+}
+```
+
+**Response:**
+```json
+{ "Success": true, "Message": "Verification recorded" }
 ```
 
 ---

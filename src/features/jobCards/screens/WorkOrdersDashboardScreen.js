@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { Text, Button, DataTable } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import StandardListCard from '../../../shared/components/StandardListCard';

@@ -1,6 +1,6 @@
 import React from 'react';
 import { TouchableOpacity, StyleSheet } from 'react-native';
-import MaterialIcons from '../../components/AppIcon.js';
+import MaterialIcons from './AppIcon.js';
 import { useSelector } from 'react-redux';
 import { COLORS, DARK_COLORS, SHADOWS } from '../../constants/theme';
 

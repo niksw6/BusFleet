@@ -1,10 +1,14 @@
-import React, { useState, useEffect, useCallback } from 'react';
+﻿﻿﻿﻿﻿import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
   FlatList,
+  Modal,
+  Image,
+  RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { Text, Divider, TextInput as PaperTextInput } from 'react-native-paper';
 import { useSelector } from 'react-redux';
@@ -18,6 +22,7 @@ import { complaintService, jobCardService, masterService, workEntryService, stor
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
 import { isFieldStaffUser, isSupervisorUser } from '../../../utils/roleAccess';
+import { renderTabContent as renderRichTabContent, buildTheme as buildRichTheme } from './WorkOrderRenderers.js';
 
 /**
  * Work Order Detail Screen
@@ -68,18 +73,29 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [submittingWorkOrder, setSubmittingWorkOrder] = useState(false);
   const [workOrderEntries, setWorkOrderEntries] = useState([]);
   const [loadingWorkOrderEntries, setLoadingWorkOrderEntries] = useState(false);
+  const [historyRows, setHistoryRows] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [workOrderExpandedMap, setWorkOrderExpandedMap] = useState({});
   const [mechanicPartRequests, setMechanicPartRequests] = useState([]);
   const [loadingMechanicPartRequests, setLoadingMechanicPartRequests] = useState(false);
   const [verifyingEntryId, setVerifyingEntryId] = useState(null);
   const [closingJobCard, setClosingJobCard] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedMechanicDetail, setSelectedMechanicDetail] = useState(null);
+  const [mechanicDetailVisible, setMechanicDetailVisible] = useState(false);
+  const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
+  const [previewImageUri, setPreviewImageUri] = useState(null);
+  const [previewImageTitle, setPreviewImageTitle] = useState('');
 
   const tabs = [
-    'Mechanics',
-    'PartDetails',
-    'WorkEntry',
-    'Details',
+    { key: 'Details',     label: 'Details',      shortLabel: 'Info' },
+    { key: 'Mechanics',   label: 'Mechanics',    shortLabel: 'Mechs' },
+    { key: 'PartDetails', label: 'Part Details', shortLabel: 'Parts' },
+    { key: 'WorkEntry',   label: 'Work Entry',   shortLabel: 'Entries' },
+    { key: 'History',     label: 'History',      shortLabel: 'Log' },
   ];
+
+  const getTabConfig = (key) => tabs.find((t) => t.key === key);
 
   const extractRows = (response) => {
     const data = response?.Data ?? response?.data ?? response;
@@ -232,7 +248,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   });
 
   const isApiSuccess = (response) => response?.Success !== false && response?.Status !== false;
-  const getEntryStatus = (entry) => String(entry?.Status ?? entry?.WorkStatus ?? entry?.FaultStatus ?? '').trim().toUpperCase();
+  const getEntryStatus = (entry) => {
+    const raw = entry?.Status ?? entry?.WorkStatus ?? entry?.FaultStatus ?? '';
+    if (raw === null || raw === undefined || typeof raw === 'boolean' || raw === '') return '';
+    return String(raw).trim().toUpperCase();
+  };
   const isAwaitingSupervisorVerification = (entry) => ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(getEntryStatus(entry));
   const isSupervisorVerified = (entry) => ['SV', 'C', 'CM', 'COMPLETED', 'COMPLETE'].includes(getEntryStatus(entry));
 
@@ -800,6 +820,67 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     }
   };
 
+ const getInitials = (name) => {
+    const s = String(name || '').trim();
+    if (!s) return '?';
+    const parts = s.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+  const AVATAR_PALETTE = ['#1D4ED8', '#0E7490', '#7C3AED', '#B45309', '#2B7D2B', '#BE185D', '#A16207', '#0F766E'];
+  const getAvatarColor = (name) => {
+    const s = String(name || '').trim();
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffffffff;
+    return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
+  };
+  const getMechanicStats = (mechanicName) => {
+    const name = String(mechanicName || '').trim().toLowerCase();
+    let entries = 0, verified = 0, awaitingVerification = 0, inProgress = 0, totalHours = 0, partRequests = 0;
+    workOrderEntries.forEach((entry) => {
+      const assigned = String(entry?.AssignedMechanics || '').trim().toLowerCase();
+      if (assigned === name || assigned.includes(name) || name.includes(assigned)) {
+        entries++;
+        const st = getEntryStatus(entry);
+        if (['CM', 'C', 'COMPLETED', 'COMPLETE', 'SV'].includes(st)) verified++;
+        if (['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(st)) awaitingVerification++;
+        if (['I', 'IN PROGRESS', 'IP'].includes(st)) inProgress++;
+        totalHours += (Number(entry?.MechanicsTotalHrs ?? entry?.LabourHours ?? entry?.TotalHrs ?? 0) || 0);
+      }
+    });
+    mechanicPartRequests.forEach((req) => {
+      const mech = String(req?.mechanicName || '').trim().toLowerCase();
+      if (mech === name || mech.includes(name) || name.includes(mech)) partRequests++;
+    });
+    return { entries, verified, awaitingVerification, inProgress, totalHours, partRequests };
+  };
+  const getWorkEntryImages = (entry) => {
+    const images = Array.isArray(entry?.Images) ? entry.Images : [];
+    return images.map((img, idx) => {
+      const rawUrl = img?.ImageUrl || img?.Url || img?.Path || img?.URL || img?.imageUrl || img?.url || img?.path || '';
+      const side = String(img?.Side || img?.Type || img?.Label || '').trim().toUpperCase();
+      const label = /^(before|after|b\/a|post|pre)$/i.test(side)
+        ? side[0].toUpperCase() + side.substring(1).toLowerCase()
+        : (idx === 0 ? 'Before' : 'After');
+      return { id: `${entry?.WorkEntryDocEntry || idx}-${idx}`, uri: String(rawUrl), label, caption: img?.Caption || img?.Description || '' };
+    }).filter((x) => x.uri);
+  };
+  const getTabCounts = () => {
+    const parts = (Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0) + mechanicPartRequests.length;
+    return { Mechanics: mechanicsForDisplay.length, PartDetails: parts, WorkEntry: workOrderEntries.length, History: historyRows.length, Details: 0 };
+  };
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try { await fetchWorkOrderDetails(); }
+    catch (e) { console.log('refresh failed:', e?.message || e); }
+    finally { setRefreshing(false); }
+  };
+  const openImagePreview = (uri, title) => {
+    setPreviewImageUri(uri);
+    setPreviewImageTitle(title || 'Image');
+    setImagePreviewVisible(true);
+  };
+
   const fetchWorkOrderDetails = async () => {
     try {
       setLoading(true);
@@ -1320,10 +1401,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             );
 
             if (!statusSyncResponse?.Success || !statusSyncResponse?.Synced) {
-              console.log('ℹ️ Incident status sync skipped:', statusSyncResponse?.Message || 'UpdateComplaintStatus API not available');
+              console.log('[sync] Incident status sync skipped:', statusSyncResponse?.Message || 'UpdateComplaintStatus API not available');
             }
           } catch (incidentStatusError) {
-            console.log('ℹ️ Incident status sync skipped:', incidentStatusError?.message || incidentStatusError);
+            console.log('[sync] Incident status sync skipped:', incidentStatusError?.message || incidentStatusError);
           }
         }
 
@@ -1461,7 +1542,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             {workOrder.Faults.map((fault, index) => (
               <View key={index} style={[styles.faultItem, { backgroundColor: colors.light, padding: SPACING.sm, borderRadius: BORDER_RADIUS.sm, marginBottom: SPACING.xs }]}>
                 <Text style={[styles.faultName, { color: colors.dark }]}>
-                  • {fault?.FaultCode || fault?.Fault || '-'}
+                  > � {fault?.FaultCode || fault?.Fault || '-'}
                 </Text>
                 <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
                   {fault?.FaultDesc || fault?.Dscption || '-'}
@@ -1480,7 +1561,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             {workOrder.Operations.map((operation, index) => (
               <View key={`${operation?.WorkEntryDocEntry || 'work'}-${operation?.LineId || index}`} style={[styles.faultItem, { backgroundColor: colors.light, padding: SPACING.sm, borderRadius: BORDER_RADIUS.sm, marginBottom: SPACING.xs }]}>
                 <Text style={[styles.faultName, { color: colors.dark }]}>
-                  • {getDisplayText(operation?.WorkDone, operation?.Description, operation?.WorkCode, operation) || 'Work update'}
+                  > � {getDisplayText(operation?.WorkDone, operation?.Description, operation?.WorkCode, operation) || 'Work update'}
                 </Text>
                 <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
                   Work Entry: {operation?.WorkEntryDocEntry || '-'} | Fault: {operation?.FaultCode || '-'}
@@ -1501,7 +1582,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             {workOrder.Parts.map((part, index) => (
               <View key={index} style={[styles.faultItem, { backgroundColor: colors.light, padding: SPACING.sm, borderRadius: BORDER_RADIUS.sm, marginBottom: SPACING.xs }]}>
                 <Text style={[styles.faultName, { color: colors.dark }]}>
-                  • {part?.ItemCode || '-'} - {part?.ItemName || '-'}
+                  > � {part?.ItemCode || '-'} - {part?.ItemName || '-'}
                 </Text>
                 <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
                   ReqQty: {part?.ReqQty ?? '-'} | IssQty: {part?.IssQty ?? '-'} | AddQty: {part?.AddQty ?? '-'}
@@ -1620,7 +1701,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                       style={styles.partFieldInput}
                       placeholder="Tap to select warehouse"
                       editable={false}
-                      right={<PaperTextInput.Icon icon="warehouse" />}
+                      right={<PaperTextInput.Icon icon="store" />}
                     />
                   </View>
                 </TouchableOpacity>
@@ -1831,7 +1912,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         <Text style={[styles.entryDetailsTitle, { color: colors.gray }]}>Faults:</Text>
                         {entry.DetailedFaults.map((fault, faultIndex) => (
                           <View key={`${entry?.DocEntry || index}-fault-${faultIndex}`} style={[styles.entryDetailsCard, { backgroundColor: colors.light }]}> 
-                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>• {fault?.FaultCode || fault?.Fault || '-'}</Text>
+                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>> � {fault?.FaultCode || fault?.Fault || '-'}</Text>
                             <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>{getDisplayText(fault?.FaultDesc, fault?.Dscption) || '-'}</Text>
                             <Text style={[styles.entryDetailsMeta, { color: colors.gray }]}>Status: {fault?.Status || '-'} | TotalHrs: {fault?.TotalHrs ?? '-'}</Text>
                           </View>
@@ -1844,7 +1925,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         <Text style={[styles.entryDetailsTitle, { color: colors.gray }]}>Parts:</Text>
                         {entry.DetailedParts.map((part, partIndex) => (
                           <View key={`${entry?.DocEntry || index}-part-${partIndex}`} style={[styles.entryDetailsCard, { backgroundColor: colors.light }]}> 
-                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>• {part?.ItemCode || '-'} - {part?.ItemName || '-'}</Text>
+                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>> � {part?.ItemCode || '-'} - {part?.ItemName || '-'}</Text>
                             <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>ReqQty: {part?.ReqQty ?? '-'} | IssQty: {part?.IssQty ?? '-'} | AddQty: {part?.AddQty ?? '-'}</Text>
                             <Text style={[styles.entryDetailsMeta, { color: colors.gray }]}>Whs: {part?.Whs || '-'} | Fault: {part?.Fault || '-'} | Status: {part?.Status || '-'}</Text>
                           </View>
@@ -1860,7 +1941,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                           disabled={Boolean(verifyingEntryId) || closingJobCard}
                           activeOpacity={0.8}
                         >
-                          <Text style={styles.smallBtnText}>{verifyingEntryId === String(asWorkEntryId(entry)) ? 'Verifying…' : 'Verify Work'}</Text>
+                          <Text style={styles.smallBtnText}>{verifyingEntryId === String(asWorkEntryId(entry)) ? 'Verifying...' : 'Verify Work'}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={[styles.smallBtn, { flex: 1, backgroundColor: '#B45309' }]}
@@ -1886,18 +1967,63 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   );
 
   const renderTabContent = () => {
-    switch (activeTab) {
-      case 'Details':
-        return renderWODetails();
-      case 'PartDetails':
-        return renderPartsDetails();
-      case 'Mechanics':
-        return renderMechanicsDetails();
-      case 'WorkEntry':
-        return renderWorkOrderEntries();
-      default:
-        return null;
+    const richTheme = buildRichTheme(isDarkMode);
+    // Mechanics tab uses the local multi-select creation flow, not the rich renderer.
+    if (activeTab === 'Mechanics') {
+      return renderMechanicsDetails();
     }
+    const mechanicsList = (() => {
+      const woMechs = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics : [];
+      const taskMechs = mechanicWork || [];
+      return [...woMechs, ...taskMechs];
+    })();
+    const partsList = (() => {
+      const woParts = Array.isArray(workOrder?.Parts) ? workOrder.Parts : [];
+      const taskParts = (tasks || []).flatMap((t) => Array.isArray(t?.Parts) ? t.Parts : []);
+      return [...woParts, ...taskParts];
+    })();
+    return renderRichTabContent(activeTab, {
+      theme: richTheme,
+      workOrder,
+      mechanics: mechanicsList,
+      parts: partsList,
+      mechanicPartRequests,
+      workOrderEntries,
+      history: historyRows,
+      historyLoading,
+      onRefreshHistory: () => fetchJobCardHistory(),
+    });
+  };
+
+  const fetchJobCardHistory = async () => {
+    try {
+      setHistoryLoading(true);
+      const companyDb = dbName || 'MUTSPL_TEST';
+      const candidates = [workOrder?.JobCardNo, workOrder?.DocEntry, workOrder?.JobCardDocEntry, jobCardNo, docEntry]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean);
+      let rows = [];
+      for (const cand of candidates) {
+        try {
+          const resp = await jobCardService.getJobCardHistory(companyDb, cand);
+          rows = extractRows(resp);
+          if (rows.length > 0) break;
+        } catch (e) {
+          // try next candidate
+        }
+      }
+      setHistoryRows(rows);
+    } catch (e) {
+      setHistoryRows([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };;
+
+  const renderTabCount = (key) => {
+    const counts = getTabCounts();
+    const n = counts?.[key] ?? 0;
+    return n > 0 ? String(n) : '0';
   };
 
   if (loading) {
@@ -1975,25 +2101,62 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
       {/* Tabs */}
       <View style={[styles.tabsContainer, { backgroundColor: colors.white, borderBottomColor: inputBorderColor }]}>
-        {tabs.map((tab) => (
-          <TouchableOpacity
-            key={tab}
-            style={[
-              styles.tab,
-              activeTab === tab && styles.activeTab,
-              activeTab === tab && { borderBottomColor: colors.primary }
-            ]}
-            onPress={() => setActiveTab(tab)}
-          >
-            <Text style={[
-              styles.tabText,
-              { color: colors.gray },
-              activeTab === tab && { color: colors.primary, fontWeight: 'bold' }
-            ]} numberOfLines={2}>
-              {tab}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {tabs.map((tab) => {
+          const isActive = activeTab === tab.key;
+          const count = renderTabCount(tab.key);
+          const activeColor = colors.primary;
+          const inactiveColor = colors.gray;
+          const tabColor = isActive ? activeColor : inactiveColor;
+          const badgeBg = isActive ? activeColor : (isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)');
+          const badgeFg = isActive ? '#FFFFFF' : colors.dark;
+          return (
+            <TouchableOpacity
+              key={tab.key}
+              activeOpacity={0.7}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: isActive }}
+              accessibilityLabel={`${tab.label} tab, ${count} items`}
+              style={[
+                styles.tab,
+                isActive && styles.activeTab,
+                isActive && {
+                  borderBottomColor: activeColor,
+                  backgroundColor: isDarkMode ? 'rgba(29,78,216,0.10)' : 'rgba(29,78,216,0.06)',
+                },
+              ]}
+              onPress={() => setActiveTab(tab.key)}
+            >
+              <View style={styles.tabInnerRow}>
+                <Text
+                  style={[
+                    styles.tabText,
+                    { color: tabColor },
+                    isActive && { color: activeColor, fontWeight: '700' },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {tab.label}
+                </Text>
+                <View
+                  style={[
+                    styles.tabBadge,
+                    { backgroundColor: badgeBg, borderColor: isActive ? activeColor : 'transparent' },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.tabBadgeText,
+                      { color: badgeFg },
+                      isActive && { color: '#FFFFFF' },
+                    ]}
+                  >
+                    {count}
+                  </Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       {/* Tab Content */}
@@ -2186,24 +2349,58 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
+    paddingHorizontal: 4,
+    paddingTop: 4,
   },
   tab: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: SPACING.xs,
-    paddingVertical: 8,
-    minHeight: 52,
+    paddingHorizontal: 4,
+    paddingVertical: 10,
+    minHeight: 60,
     borderBottomWidth: 3,
     borderBottomColor: 'transparent',
+    borderTopLeftRadius: BORDER_RADIUS.sm,
+    borderTopRightRadius: BORDER_RADIUS.sm,
   },
   activeTab: {
     borderBottomWidth: 3,
   },
+  tabInnerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 2,
+  },
+  tabIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 2,
+  },
   tabText: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '600',
     textAlign: 'center',
+  },
+  tabBadge: {
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 4,
+  },
+  tabBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 14,
   },
   contentContainer: {
     flex: 1,

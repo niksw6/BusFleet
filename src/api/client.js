@@ -49,15 +49,22 @@ const request = async (url, options = {}) => {
     }
     
     const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
+    const method = options.method || 'GET';
     
-    // Log requests
-    if (options.method && options.method !== 'GET') {
-      console.log(`🌐 API Request: ${options.method} ${fullUrl}`);
-      console.log(`🌐 Request Headers:`, headers);
-      if (options.body) {
-        console.log(`🌐 Request Body Length:`, options.body.length, 'characters');
+    // Log all requests with full URL and method
+    console.log(`\n📡 API ${method} REQUEST`);
+    console.log(`   🔗 URL: ${fullUrl}`);
+    if (method !== 'GET' && options.body) {
+      try {
+        const bodyObj = JSON.parse(options.body);
+        console.log(`   📦 Payload:`, JSON.stringify(bodyObj, null, 2));
+      } catch (e) {
+        console.log(`   📦 Payload: ${options.body}`);
       }
+    } else if (method === 'GET') {
+      console.log(`   📦 Query: GET request (no body)`);
     }
+    console.log(`   🔐 Headers:`, { DBName: headers.DBName, ContentType: headers['Content-Type'], HasCookie: !!headers.Cookie });
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), options.timeout || 60000);
@@ -91,19 +98,28 @@ const request = async (url, options = {}) => {
     
     if (!response.ok) {
       if (!options.suppressErrorLog) {
-        console.error(`❌ API Response Error: ${response.status}`, data);
+        console.error(`\n❌ API ${method} RESPONSE ERROR`);
+        console.error(`   🔗 URL: ${fullUrl}`);
+        console.error(`   ⚠️  Status: ${response.status}`);
+        console.error(`   📄 Response:`, data);
       }
       throw new Error(data.Message || data.message || 'Request failed');
     }
     
-    if (options.method && options.method !== 'GET') {
-      console.log(`✅ API Response: ${fullUrl}`, response.status);
-    }
+    console.log(`\n✅ API ${method} RESPONSE SUCCESS`);
+    console.log(`   🔗 URL: ${fullUrl}`);
+    console.log(`   📊 Status: ${response.status}`);
+    console.log(`   📄 Response:`, JSON.stringify(data, null, 2));
     
     return { data, status: response.status, ok: response.ok };
   } catch (error) {
     if (!options.suppressErrorLog) {
-      console.error(`❌ API Request Failed for ${url}:`, error.message);
+      console.error(`\n❌ API REQUEST FAILED`);
+      console.error(`   🔗 URL: ${url}`);
+      console.error(`   💥 Error: ${error.message}`);
+      if (error.name === 'AbortError') {
+        console.error(`   ⏱️  Reason: Request timeout (60s exceeded)`);
+      }
     }
     if (error.name === 'AbortError') {
       throw new Error('Request timeout');

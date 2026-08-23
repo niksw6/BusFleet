@@ -134,7 +134,6 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
           PartLine: Number(part?.PartLine) || 0,
           ApprovedQty: approve ? (Number(part?.ReqQty) || 0) : 0,
           Approved: approve,
-          StoreWarehouse: String(part?.Warehouse || '').trim(),
           StoreItemStatus: 'Direct',
           Remarks: String(part?.Remarks || '').trim(),
         })),
@@ -242,6 +241,8 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
                     dbName: dbName || 'MUTSPL_TEST',
                     jobCardNo: workOrderDetail?.JCDocNum || jobCardNo,
                     jobCardDocEntry: workOrderDetail?.JCDocEnt || workOrderDetail?.JobCardDocEntry || workOrderDocEntry,
+                    complaintType: workOrderDetail?.ComplaintType || workOrderDetail?.Complaint || '',
+                    depot: workOrderDetail?.Depot || workOrderDetail?.DepotName || ''
                   })}
                   style={[styles.actionBtn, { backgroundColor: '#0070F2', marginTop: 8 }]}
                   contentStyle={{ paddingVertical: 6 }}>

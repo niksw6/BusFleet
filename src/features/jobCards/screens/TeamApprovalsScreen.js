@@ -10,7 +10,7 @@ import {
 import { Text, TextInput } from 'react-native-paper';
 import { useSelector } from 'react-redux';
 import Toast from 'react-native-toast-message';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';

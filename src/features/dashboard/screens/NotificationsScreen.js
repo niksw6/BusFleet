@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+﻿import React, { useState, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Text, IconButton } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 import { getLogs, clearLogs } from '../../../utils/logger';
 
@@ -779,7 +779,7 @@ const NotificationsScreen = ({ navigation }) => {
       case 'P':
         return 'inventory';
       case 'V':
-        return 'task-alt';
+        return 'check-circle';
       default:
         return 'notifications';
     }
@@ -853,7 +853,7 @@ const NotificationsScreen = ({ navigation }) => {
               style={[styles.quickActionBtn, { borderColor: '#6D28D9' }]}
               activeOpacity={0.8}
             >
-              <MaterialIcons name="task-alt" size={14} color="#6D28D9" />
+              <MaterialIcons name="check-circle" size={14} color="#6D28D9" />
               <Text style={styles.quickActionText}>Verify Now</Text>
             </TouchableOpacity>
           )}

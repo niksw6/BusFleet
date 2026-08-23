@@ -487,4 +487,37 @@ navigation.navigate('WorkOrder', { jobCardNo: 'JC001' })
 ---
 
 **Last Updated:** February 22, 2026
+## Line Breakdown — Mobile API Flow
+
+This flow documents the mobile endpoints used for Line Breakdowns (driver reports, supervisor assignment, team work entries and verification).
+
+1. Create Incident
+- POST /CreateIncidents
+- Driver or Supervisor creates the Line Breakdown incident (includes route, location, faults). Returns DocEntry for the incident.
+
+2. Get Breakdown Details
+- GET /GetLineBreakdownDetail?CompanyDB={CompanyDB}&DocEntry={DocEntry}
+- Returns breakdown header + fault lines.
+
+3. Get Available Breakdown Teams
+- GET /GetBreakdownTeams?CompanyDB={CompanyDB}&DocEntry={DocEntry}
+- Supervisor checks QBS_BRKTEAM list (Code, Name, Phone, Location, Active, Availability) and selects a team.
+
+4. Assign Breakdown Team / Start Work
+- Team/mechanic goes to location and creates Line Breakdown Work Entry:
+  POST /CreateLineBreakdownWorkEntry
+  Payload includes JobCardDocEntry, FaultLine, UserCode, RepairType (P/T), Details[]
+
+5. Complete Line Breakdown Work Entry
+- POST /CompleteLineBreakdownWorkEntry { CompanyDB, WorkEntryDocEntry, FinalRemarks }
+- API inspects RepairType:
+  - Permanent (P): complete → notify Supervisor + Team Leader → trigger inspection
+  - Temporary (T): complete → notify Supervisor → bus to depot
+
+6. Upload Work Entry Images
+- Use existing POST /UploadImage then POST /SaveWorkEntryImage
+
+7. Verify Line Breakdown Work Entry
+- Supervisor/Team Leader calls POST /VerifyLineBreakdownWorkEntry with Status `SV` (approved) or `RW` (rework)
+
 **Version:** 2.0.0 (HVI-Style Implementation)

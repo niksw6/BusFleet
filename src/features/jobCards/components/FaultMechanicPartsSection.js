@@ -6,7 +6,7 @@ import {
   TextInput as RNTextInput,
 } from 'react-native';
 import { Text, Chip, TextInput } from 'react-native-paper';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 

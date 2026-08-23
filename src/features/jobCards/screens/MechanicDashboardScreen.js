@@ -4,7 +4,7 @@ import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
 import { useFocusEffect } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
@@ -84,7 +84,31 @@ const extractItems = (data) => {
 
 const getDocEntry = (item) => item?.DocEntry ?? item?.JobCardDocEntry ?? item?.JobCardNo ?? '';
 const getFaultLine = (item) => item?.FaultLine ?? item?.Line ?? item?.LineNum ?? 0;
+const getBreakdownComplaintNo = (item) => String(
+  item?.ComplaintNo
+  ?? item?.CmplaintNo
+  ?? item?.BreakdownNo
+  ?? item?.BreakdownDocEntry
+  ?? item?.BreakdownId
+  ?? item?.DocEntry
+  ?? item?.JobCardDocEntry
+  ?? ''
+).trim();
+const getBreakdownJobCardDocEntry = (item) => Number(
+  item?.JobCardDocEntry
+  ?? item?.DocEntry
+  ?? item?.JobCardNo
+  ?? 0
+) || 0;
 const itemKey = (item) => `${getDocEntry(item)}-${getFaultLine(item)}`;
+const isBreakdownAssignment = (item) => {
+  const complaintType = String(item?.ComplaintType ?? item?.IncidentType ?? item?.FormType ?? item?.Type ?? '').trim().toUpperCase();
+  const description = String(item?.Description ?? item?.Fault ?? item?.FaultName ?? '').trim().toLowerCase();
+  return complaintType.includes('BREAKDOWN')
+    || complaintType === 'B'
+    || description.includes('breakdown')
+    || Boolean(item?.BreakdownDocEntry || item?.BreakdownNo || item?.BreakdownId || item?.ComplaintNo || item?.CmplaintNo);
+};
 const getActiveWorkEntry = (item) => {
   const entries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
   return entries.find(entry => !['C', 'CM', 'SV', 'CL', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(String(entry?.Status || '').trim().toUpperCase()))
@@ -113,7 +137,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const userCode = user?.Code || user?.code || user?.User || user?.user || user?.name || '';
+  const userCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || user?.name || '';
   const assigneeName = user?.FirstName || user?.Name || user?.name || userCode || 'You';
   const roleLabel = getUserRole(user) === 'Electrician' ? 'Electrician' : 'Mechanic';
 
@@ -200,10 +224,22 @@ const MechanicDashboardScreen = ({ navigation }) => {
     });
   };
 
+  const openBreakdownWorkEntry = (item) => {
+    navigation.navigate('LineBreakdownWorkEntry', {
+      complaintNo: getBreakdownComplaintNo(item),
+      jobCardDocEntry: getBreakdownJobCardDocEntry(item),
+      faultLine: getFaultLine(item) || 1,
+      busNo: getBusLabel(item),
+      depot: item?.Depot || item?.BranchNm || item?.Branch || item?.Location || '',
+      dbName: dbName || 'MUTSPL_TEST',
+    });
+  };
+
   const renderItem = (item) => {
     const key = itemKey(item);
     const bucket = deriveBucket(item);
-    const faultName = item?.Fault || item?.FaultName || item?.Description || 'Fault';
+    const breakdownAssignment = isBreakdownAssignment(item);
+    const faultName = item?.Fault || item?.FaultName || item?.Description || (breakdownAssignment ? 'Line Breakdown' : 'Fault');
     const busNo = getBusLabel(item);
     const displayNo = item?.JobCardNo || item?.DocNum || getDocEntry(item);
     const assignedName = item?.AssignedMechanic?.UserName || item?.MechanicName || item?.AssignedToName || item?.EmployeeName || item?.EmpName || assigneeName;
@@ -220,7 +256,16 @@ const MechanicDashboardScreen = ({ navigation }) => {
         key={key}
         style={[styles.card, { backgroundColor: colors.white, borderColor: colors.border || '#E0E0E0' }]}
         activeOpacity={0.7}
-        onPress={() => (bucket === BUCKET.TO_ACCEPT ? null : openFault(item))}
+        onPress={() => {
+          if (breakdownAssignment) {
+            openBreakdownWorkEntry(item);
+            return;
+          }
+          if (bucket === BUCKET.TO_ACCEPT) {
+            return;
+          }
+          openFault(item);
+        }}
       >
         <View style={styles.cardTop}>
           <View style={[styles.faultIcon, { backgroundColor: `${statusColor}20` }]}>
@@ -235,7 +280,16 @@ const MechanicDashboardScreen = ({ navigation }) => {
           </View>
         </View>
 
-        {bucket === BUCKET.TO_ACCEPT ? (
+        {breakdownAssignment ? (
+          <View style={styles.rowBetween}>
+            <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}> 
+              <Text style={[styles.statusPillText, { color: statusColor }]}>
+                {statusLabel}
+              </Text>
+            </View>
+            <Text style={[styles.openLabel, { color: colors.primary }]}>Open work entry</Text>
+          </View>
+        ) : bucket === BUCKET.TO_ACCEPT ? (
           <TouchableOpacity
             style={[styles.acceptBtn, { backgroundColor: colors.primary }]}
             onPress={() => handleAccept(item)}

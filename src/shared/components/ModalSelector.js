@@ -8,7 +8,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { Text, TextInput, Button, Divider, ActivityIndicator } from 'react-native-paper';
-import MaterialIcons from '../../components/AppIcon.js';
+import MaterialIcons from './AppIcon.js';
 import { useSelector } from 'react-redux';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 

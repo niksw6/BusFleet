@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+﻿import React, { useState, useEffect, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput as RNTextInput, Modal as RNModal, Image } from 'react-native';
 import { Text, TextInput, Chip } from 'react-native-paper';
 import { useSelector } from 'react-redux';
@@ -134,7 +134,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
 
   const [workList, setWorkList] = useState([]);
   const [spareParts, setSpareParts] = useState([]);
-  const [warehouses, setWarehouses] = useState([]);
   const [approvedParts, setApprovedParts] = useState([]);
   const [resolvedFaultCode, setResolvedFaultCode] = useState('');
 
@@ -160,8 +159,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const [showToolsModal, setShowToolsModal] = useState(false);
   const [specialToolRemarks, setSpecialToolRemarks] = useState('');
   const [showPartsModal, setShowPartsModal] = useState(false);
-  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
-  const [warehouseTargetCode, setWarehouseTargetCode] = useState(null);
   const [receiveTarget, setReceiveTarget] = useState(null);
   const [receivedQty, setReceivedQty] = useState('');
   // Return parts
@@ -270,11 +267,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [faultDetailsResult, sparePartsResult, warehousesResult, approvedResults, jobCardResult] = await Promise.all([
+      const [faultDetailsResult, sparePartsResult, approvedResults, jobCardResult] = await Promise.all([
         Promise.allSettled([
         masterService.getFaultDetails(companyDb),
         masterService.getSpareParts(companyDb),
-        masterService.getWarehouses(companyDb),
         ]),
         Promise.allSettled(partIdentityCandidates.map(identity => storeService.getApprovedJobCardParts(companyDb, identity))),
         Promise.allSettled([
@@ -298,12 +294,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
       }
       const workItems = faultWorkItems;
       const partItems = sparePartsResult.status === 'fulfilled' ? normalizeParts(extractRows(sparePartsResult.value)) : [];
-      const warehouseRows = warehousesResult.status === 'fulfilled' ? extractRows(warehousesResult.value) : [];
-      setWarehouses(warehouseRows.map((row) => ({
-        ...row,
-        WarehouseCode: String(row?.WarehouseCode || row?.WhsCode || row?.Code || '').trim(),
-        WarehouseName: String(row?.WarehouseName || row?.WhsName || row?.Name || row?.WarehouseCode || row?.WhsCode || '').trim(),
-      })).filter(row => row.WarehouseCode || row.WarehouseName));
       setWorkList([...workItems, { Code: 'OTHER', Name: 'Other work (enter manually)' }]);
       setSpareParts([...partItems, { ItemCode: 'OTHER', ItemName: 'Other part (enter manually)' }]);
 
@@ -893,7 +883,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
       ItemCode: item.ItemCode || item.Code || '',
       ItemName: item.ItemName || item.Name || '',
       ReqQty: '1',
-      Warehouse: '',
       Remarks: '',
     }]);
     setShowPartsModal(false);
@@ -931,7 +920,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
           ItemCode: p.ItemCode,
           ItemName: p.ItemName,
           ReqQty: parseFloat(p.ReqQty) || 1,
-          Warehouse: p.Warehouse || '',
           Remarks: p.Remarks || '',
         })),
       });
@@ -1258,7 +1246,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
           </Text>
           {awaitingVerification && (
             <View style={[styles.awaitingStatusPill, { backgroundColor: '#6D28D915' }]}>
-              <MaterialIcons name="task-alt" size={14} color="#6D28D9" />
+              <MaterialIcons name="check-circle" size={14} color="#6D28D9" />
               <Text style={{ color: '#6D28D9', fontWeight: '700', fontSize: 12 }}>
                 Awaiting Verification
               </Text>
@@ -1470,10 +1458,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
                         keyboardType="numeric"
                         style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
                       />
-                      <TouchableOpacity onPress={() => { setWarehouseTargetCode(p.ItemCode); setShowWarehouseModal(true); }} style={[styles.warehousePicker, { borderColor: colors.border || '#CCC' }]}>
-                        <Text numberOfLines={1} style={{ color: p.Warehouse ? colors.dark : colors.gray, fontSize: 13 }}>{p.Warehouse || 'Select warehouse'}</Text>
-                        <MaterialIcons name="arrow-drop-down" size={18} color={colors.gray} />
-                      </TouchableOpacity>
                     </View>
                   </View>
                   <TouchableOpacity onPress={() => removePartDraft(p.ItemCode)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -1831,7 +1815,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
                     <View style={{ flex: 1 }}>
                       <Text style={{ color: colors.gray, fontSize: 11, marginBottom: 2 }}>Reason</Text>
                       <TouchableOpacity
-                        style={[styles.warehousePicker, { borderColor: colors.border || '#CCC' }]}
+                        style={[styles.dropdownPicker, { borderColor: colors.border || '#CCC' }]}
                         onPress={() => {
                           const reasons = ['Unused Parts', 'Wrong Issue', 'Excess Quantity', 'Defective Part'];
                           const next = reasons[(reasons.indexOf(d.ReturnReason) + 1) % reasons.length];
@@ -1979,22 +1963,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
         searchKeys={['ToolName', 'ToolCode']}
       />
 
-      <ModalSelector
-        visible={showWarehouseModal}
-        onClose={() => { setShowWarehouseModal(false); setWarehouseTargetCode(null); }}
-        onSelect={(value, item) => {
-          if (warehouseTargetCode !== null) updatePartDraftField(warehouseTargetCode, 'Warehouse', item?.WarehouseCode || value);
-          setShowWarehouseModal(false);
-          setWarehouseTargetCode(null);
-        }}
-        title="Select Warehouse"
-        data={warehouses}
-        loading={false}
-        searchPlaceholder="Search warehouses..."
-        displayKey="WarehouseName"
-        valueKey="WarehouseCode"
-        searchKeys={['WarehouseName', 'WarehouseCode']}
-      />
 
       <Loader visible={submitting} text="Please wait..." />
     </View>
@@ -2046,7 +2014,6 @@ const styles = StyleSheet.create({
     width: 50,
     textAlign: 'center',
   },
-  warehousePicker: { flex: 1, minHeight: 36, borderWidth: 1, borderRadius: 4, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   addLineBtn: {
     flexDirection: 'row',
     alignItems: 'center',

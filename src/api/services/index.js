@@ -16,3 +16,4 @@ export { workEntryService } from './workEntry.service';
 export { teamService } from './team.service';
 export { mechanicService } from './mechanic.service';
 export { storeService } from './store.service';
+export { lineBreakdownService } from './lineBreakdown.service';

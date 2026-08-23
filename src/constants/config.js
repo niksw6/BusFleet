@@ -42,6 +42,11 @@ export const API_ENDPOINTS = {
   // Line Breakdown dispatch (API 23-25)
   GET_AVAILABLE_TEAMS: 'GetAvailableTeams',
   ASSIGN_BREAKDOWN_TEAM: 'AssignBreakdownTeam',
+  GET_BREAKDOWN_TEAMS: 'GetBreakdownTeams',
+  GET_MECHANICS_BY_BREAKDOWN: 'GetMechanicsByBreakdown',
+  RESPOND_BREAKDOWN_TEAM_ASSIGNMENT: 'RespondBreakdownTeamAssignment',
+  GET_DEPOTS: 'GetDepots',
+  GET_SUPERVISORS_BY_DEPOT: 'GetSupervisorsByDepot',
   CLOSE_BREAKDOWN: 'CloseBreakdown',
   GET_FAULT_MASTER: 'GetFaultMaster',
 

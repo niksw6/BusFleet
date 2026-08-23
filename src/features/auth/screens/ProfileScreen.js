@@ -2,7 +2,7 @@ import React from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { Text, List, Divider, Switch } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import { logout } from '../../../store/slices/authSlice';

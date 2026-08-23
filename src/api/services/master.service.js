@@ -1,4 +1,4 @@
-import { get, handleApiError } from '../client';
+import { get, post, handleApiError } from '../client';
 
 /**
  * Master Data Service
@@ -220,6 +220,76 @@ export const masterService = {
   getTeamMembers: async (companyDB, teamCode) => {
     try {
       const response = await get(`GetTeamMembers?CompanyDB=${companyDB}&TeamCode=${teamCode}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get breakdown teams for a specific line breakdown entry
+   * API: GET GetBreakdownTeams?CompanyDB=...&DocEntry=...
+   */
+  getBreakdownTeams: async (companyDB, docEntry) => {
+    try {
+      const url = `GetBreakdownTeams?CompanyDB=${companyDB}&DocEntry=${encodeURIComponent(docEntry)}`;
+      const response = await get(url);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get mechanics available / mapped to a breakdown entry.
+   * API: GET GetMechanicsByBreakdown?CompanyDB=...&DocEntry=...
+   */
+  getMechanicsByBreakdown: async (companyDB, docEntry) => {
+    try {
+      const url = `GetMechanicsByBreakdown?CompanyDB=${companyDB}&DocEntry=${encodeURIComponent(docEntry)}`;
+      const response = await get(url);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Respond to a breakdown team assignment (Accept/Reject)
+   * POST RespondBreakdownTeamAssignment { CompanyDB, BreakdownNo, TeamCode, EmpCode, Decision, Remarks }
+   */
+  respondBreakdownTeamAssignment: async (companyDB, payload) => {
+    try {
+      const body = {
+        CompanyDB: companyDB,
+        ...payload,
+      };
+      console.log('📤 RespondBreakdownTeamAssignment payload:', JSON.stringify(body, null, 2));
+      const response = await post('RespondBreakdownTeamAssignment', body);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get depots list
+   */
+  getDepots: async (companyDB) => {
+    try {
+      const response = await get(`GetDepots?CompanyDB=${companyDB}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Get supervisors mapped to a depot
+   */
+  getSupervisorsByDepot: async (companyDB, depot) => {
+    try {
+      const response = await get(`GetSupervisorsByDepot?CompanyDB=${companyDB}&Depot=${encodeURIComponent(depot)}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));

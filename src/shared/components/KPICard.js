@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
-import MaterialIcons from '../../components/AppIcon.js';
+import MaterialIcons from './AppIcon.js';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../constants/theme';
 
 /**

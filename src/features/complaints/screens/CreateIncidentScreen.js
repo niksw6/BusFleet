@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿﻿﻿﻿﻿﻿﻿import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -11,7 +11,7 @@ import { Text, TextInput, Button } from 'react-native-paper';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
 import { useSelector } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
@@ -38,18 +38,34 @@ const validationSchema = Yup.object().shape({
     otherwise: (schema) => schema,
   }),
   odometer: Yup.string().required('Odometer reading is required'),
+  driverCode: Yup.string().when('incidentType', {
+    is: (val) => !isPreventiveMaintenanceType(val),
+    then: (schema) => schema.trim().required('Driver is required for non-preventive incidents'),
+    otherwise: (schema) => schema,
+  }),
+  faults: Yup.array().when('incidentType', {
+    is: (val) => !isPreventiveMaintenanceType(val),
+    then: (schema) => schema.min(1, 'At least one fault is required'),
+    otherwise: (schema) => schema,
+  }),
   priority: Yup.string().when('incidentType', {
     is: (val) => !isPreventiveMaintenanceType(val),
     then: (schema) => schema.required('Priority is required'),
     otherwise: (schema) => schema,
   }),
+  // New Shift field (UDF) - required for breakdown incidents
+  shift: Yup.string().when('incidentType', {
+    is: (val) => isBreakdownIncidentType(val),
+    then: (schema) => schema.required('Shift is required for breakdown'),
+    otherwise: (schema) => schema,
+  }),
   location: Yup.string().when('incidentType', {
-    is: (val) => val?.toLowerCase().includes('breakdown'),
+    is: (val) => isBreakdownIncidentType(val),
     then: (schema) => schema.required('Location is required for breakdown'),
     otherwise: (schema) => schema,
   }),
   routeNo: Yup.string().when('incidentType', {
-    is: (val) => val?.toLowerCase().includes('breakdown'),
+    is: (val) => isBreakdownIncidentType(val),
     then: (schema) => schema.required('Route number is required for breakdown'),
     otherwise: (schema) => schema,
   }),
@@ -105,6 +121,11 @@ const normalizeIncidentComplaintType = (value) => {
 
   return 'Driver Complaints';
 };
+
+function isBreakdownIncidentType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'b' || normalized.includes('breakdown') || normalized.includes('line breakdown');
+}
 
 function isPreventiveMaintenanceType(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -409,6 +430,7 @@ const mapTaskConfigsToModalSelectedItems = (taskConfigs = []) => {
 };
 
 const INCIDENT_FAULT_CACHE_KEY = '@fleet_incident_fault_cache';
+const INCIDENT_RECENT_KEY = '@fleet_incident_recent';
 
 const CreateIncidentScreen = ({ route, navigation }) => {
   const incidentTypeParam = route.params?.type || 'complaint';
@@ -419,6 +441,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const supervisorUser = isSupervisorUser(user);
   const mechanicUser = isFieldStaffUser(user);
   const driverUser = isDriverUser(user);
+  const canCreateIncident = supervisorUser || driverUser;
   const resolvedDriverCode = user?.Code || user?.code || user?.User || user?.user || '';
   const resolvedDriverName = user?.Name || user?.name || user?.FirstName || resolvedDriverCode || 'Driver';
   const inputOutlineColor = colors.border || (isDarkMode ? colors.grayLight : '#D9DCDD');
@@ -449,6 +472,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const [showPreventiveTypeModal, setShowPreventiveTypeModal] = useState(false);
   const [showPreventiveTaskModal, setShowPreventiveTaskModal] = useState(false);
   const [showRepeatTypeModal, setShowRepeatTypeModal] = useState(false);
+  const [showShiftModal, setShowShiftModal] = useState(false);
   const [tempSelectedPreventiveTaskConfigs, setTempSelectedPreventiveTaskConfigs] = useState([]);
   const [activePreventiveTaskIndex, setActivePreventiveTaskIndex] = useState(-1);
 
@@ -472,18 +496,39 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     { Code: 'KM', Name: 'KM' },
   ];
 
+  // Shift options for Breakdown incidents
+  const shiftOptions = [
+    { Code: 'Morning', Name: 'Morning' },
+    { Code: 'Evening', Name: 'Evening' },
+    { Code: 'Night', Name: 'Night' },
+  ];
+
   useEffect(() => {
+    if (!canCreateIncident) {
+      Toast.show({
+        type: 'error',
+        text1: 'Access denied',
+        text2: 'Only supervisors and drivers can create incidents.',
+      });
+      navigation.goBack();
+      return;
+    }
+
     fetchData();
-  }, []);
+  }, [canCreateIncident, navigation]);
 
   const fetchData = async () => {
     try {
       setLoadingData(true);
       console.log('🔍 Fetching CreateIncident data...');
+      const driverFetch = driverUser
+        ? Promise.resolve({ Success: true, Data: [] })
+        : complaintService.getDrivers(dbName || 'MUTSPL_TEST');
+
       const [busesResponse, jobTypesResponse, driversResponse, routesResponse, faultsResponse] = await Promise.all([
         complaintService.getActiveBuses(dbName || 'MUTSPL_TEST'),
         complaintService.getJobTypes(dbName || 'MUTSPL_TEST'),
-        complaintService.getDrivers(dbName || 'MUTSPL_TEST'),
+        driverFetch,
         complaintService.getRoutes(dbName || 'MUTSPL_TEST'),
         complaintService.getFaultMaster(dbName || 'MUTSPL_TEST'),
       ]);
@@ -506,20 +551,18 @@ const CreateIncidentScreen = ({ route, navigation }) => {
       if (jobTypesResponse.Success) {
         console.log('✅ Setting incident types:', jobTypesResponse.Data?.length || 0, 'items');
         const allTypes = jobTypesResponse.Data || [];
-        // Mechanic can only report Line Breakdown — filter to breakdown types only
-        const filteredTypes = mechanicUser
+        const isRoleRestrictedToBreakdown = mechanicUser || driverUser;
+        const filteredTypes = isRoleRestrictedToBreakdown
           ? allTypes.filter(t =>
               normalizeIncidentComplaintType(t.Code) === 'Breakdown' ||
               normalizeIncidentComplaintType(t.Name) === 'Breakdown'
             )
           : allTypes;
-        // Fallback: if no breakdown type found from API, add one
+        const fallbackTypes = isRoleRestrictedToBreakdown ? [{ Code: 'B', Name: 'Line Breakdown' }] : allTypes;
         setIncidentTypes(
           filteredTypes.length > 0
             ? filteredTypes
-            : mechanicUser
-            ? [{ Code: 'B', Name: 'Line Breakdown' }]
-            : allTypes
+            : fallbackTypes
         );
       }
       if (driversResponse.Success) {
@@ -559,8 +602,44 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const handleSubmit = async (values) => {
     try {
       setLoading(true);
+      if (!canCreateIncident) {
+        setLoading(false);
+        Toast.show({
+          type: 'error',
+          text1: 'Access denied',
+          text2: 'Only supervisors and drivers can create incidents.',
+        });
+        return;
+      }
+
       const complaintTypeForApi = normalizeIncidentComplaintType(values.incidentType);
       const isPreventiveMaintenance = isPreventiveMaintenanceType(values.incidentType);
+
+      if (driverUser && complaintTypeForApi !== 'Breakdown') {
+        setLoading(false);
+        Toast.show({
+          type: 'error',
+          text1: 'Breakdown only',
+          text2: 'Drivers can create breakdown incidents only.',
+        });
+        return;
+      }
+
+      // Hard guard: Driver + at least one Fault are mandatory for non-Preventive incidents.
+      // Yup enforces this too, but selectedFaults lives in component state, so re-check here.
+      if (!isPreventiveMaintenance) {
+        const driverCodeRaw = String(values.driverCode || '').trim();
+        if (!driverCodeRaw) {
+          setLoading(false);
+          Toast.show({ type: 'error', text1: 'Driver is required', text2: 'Please select the driver for this incident.' });
+          return;
+        }
+        if (selectedFaults.length === 0) {
+          setLoading(false);
+          Toast.show({ type: 'error', text1: 'At least one fault is required', text2: 'Please describe what is wrong with the vehicle.' });
+          return;
+        }
+      }
 
       // Format date as YYYY-MM-DD (as per CreateIncidents payload contract)
       const formattedDate = formatDateYMD(values.incidentDate);
@@ -606,13 +685,20 @@ const CreateIncidentScreen = ({ route, navigation }) => {
         ? faultsData.map(f => f.Fault).join(', ')
         : '';
 
-      // Unified payload for both Breakdown and Driver Complaints
-      // Only RouteNo and BrkPlace are included for breakdown type.
+      // Unified payload for both Breakdown and Driver Complaints.
+      // Driver-created breakdowns must not be tagged as the driver being the supervisor.
+      const currentSupervisorCode = String(
+        user?.UserCode || user?.code || user?.Code || user?.User || user?.user || ''
+      ).trim();
+      const currentSupervisorName = String(
+        user?.Name || user?.name || user?.FirstName || user?.User || user?.user || ''
+      ).trim();
+
       const incidentData = {
         CompanyDB: dbName || 'MUTSPL_TEST',
         ComplaintType: complaintTypeForApi,
-        Supervisr: user?.UserCode || user?.Code || 'SUP001',
-        SprvsrNm: user?.Name || user?.name || 'Supervisor',
+        Supervisr: driverUser ? '' : currentSupervisorCode || 'SUP001',
+        SprvsrNm: driverUser ? '' : currentSupervisorName || 'Supervisor',
         Depot: selectedBus?.AssignedDepot || selectedBus?.Depot || 'Central Depot',
         BusNo: resolvedBusNo,
         DrvCode: values.driverCode || '',
@@ -623,11 +709,13 @@ const CreateIncidentScreen = ({ route, navigation }) => {
         RegDate: formattedDate,
         RegTime: formattedTime,
         ComplaintTime: formattedTime,
+        Shift: values.shift || '',
         Dscrpton: generalDescription,
         Faults: faultsData,
         ...(isBreakdown ? {
           RouteNo: values.routeNo || '',
           BrkPlace: values.location || '',
+          Shift: values.shift || '',
         } : {}),
       };
 
@@ -702,12 +790,42 @@ const CreateIncidentScreen = ({ route, navigation }) => {
           }
         }
 
+        // Persist a 'most recently created incident' pointer for cross-session use.
+        try {
+          await storeData(INCIDENT_RECENT_KEY, {
+            docEntry: createdDocEntry,
+            complaintType: complaintTypeForApi,
+            dbName: dbName || 'MUTSPL_TEST',
+            busNo: resolvedBusNo,
+            priority: values.priority,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (recentCacheError) {
+          console.warn('Unable to cache recent incident pointer:', recentCacheError?.message || recentCacheError);
+        }
+
         Toast.show({
           type: 'success',
           text1: 'Success',
           text2: `${isBreakdown ? 'Breakdown' : 'Incident'} reported successfully`,
         });
-        navigation.goBack();
+
+        // Auto-navigate to the freshly created incident detail.
+        if (createdDocEntry > 0) {
+          navigation.replace('ComplaintDetail', {
+            complaintNo: createdDocEntry,
+            dbName: dbName || 'MUTSPL_TEST',
+            complaintType: complaintTypeForApi,
+            jobCardNo: '',
+            source: 'incident',
+            busNo: resolvedBusNo,
+            lastSrvDt: '',
+            lastSrvKM: 0,
+            active: 'Y',
+          });
+        } else {
+          navigation.goBack();
+        }
       } else {
         throw new Error(response.Message || 'Failed to create incident');
       }
@@ -723,9 +841,9 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     }
   };
 
-  // For mechanics: auto-select the first (and only) breakdown type
+  // Drivers are forced to breakdown-only flow. Mechanics are blocked entirely.
   const defaultBreakdownType =
-    mechanicUser
+    driverUser
       ? incidentTypes.find(
           t =>
             normalizeIncidentComplaintType(t.Code) === 'Breakdown' ||
@@ -735,7 +853,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
 
   const initialValues = {
     vehicleNumber: '',
-    incidentType: mechanicUser ? (defaultBreakdownType?.Code || 'B') : '',
+    incidentType: driverUser ? (defaultBreakdownType?.Code || 'B') : '',
     driverCode: driverUser ? String(resolvedDriverCode) : '',
     driverName: driverUser ? String(resolvedDriverName) : '',
     odometer: '',
@@ -743,11 +861,13 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     incidentTime: formatTime(new Date()),
     priority: 'Medium',
     reportedBy: user?.Name || user?.name || '',
+    shift: '',
     location: '',
     routeNo: '',
     routeName: '',
     preventiveCategory: '',
     preventiveTaskConfigs: [],
+    faults: [],
   };
 
   const handleUseCurrentLocation = () => {
@@ -808,23 +928,23 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                   </Text>
                   {/* Mechanics are locked to Line Breakdown only */}
                   <TouchableOpacity
-                    onPress={() => !mechanicUser && setShowIncidentTypeModal(true)}
-                    disabled={mechanicUser}
-                    activeOpacity={mechanicUser ? 1 : 0.7}
+                    onPress={() => !(driverUser || mechanicUser) && setShowIncidentTypeModal(true)}
+                    disabled={driverUser || mechanicUser}
+                    activeOpacity={(driverUser || mechanicUser) ? 1 : 0.7}
                   >
                     <View pointerEvents="none">
                       <TextInput
                         mode="outlined"
                         value={
-                          mechanicUser
+                          driverUser
                             ? (defaultBreakdownType?.Name || 'Line Breakdown')
                             : values.incidentType
                         }
                         error={errors.incidentType && touched.incidentType}
-                        style={[styles.input, mechanicUser && { opacity: 0.7 }]}
+                        style={[styles.input, (driverUser || mechanicUser) && { opacity: 0.7 }]}
                         placeholder="Select incident type"
                         right={
-                          mechanicUser
+                          driverUser || mechanicUser
                             ? <TextInput.Icon icon="lock" />
                             : <TextInput.Icon icon="chevron-down" />
                         }
@@ -838,7 +958,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                 </View>
 
                 {/* Conditional: Route Number (Only for Breakdown) */}
-                {values.incidentType?.toLowerCase().includes('breakdown') && (
+                {isBreakdownIncidentType(values.incidentType) && (
                   <View style={styles.formGroup}>
                     <Text style={[styles.label, { color: colors.dark }]}>
                       <Text style={styles.required}>* </Text>Route Number:
@@ -862,36 +982,72 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                   </View>
                 )}
 
-                {/* Conditional: Location (Only for Breakdown) */}
-                {values.incidentType?.toLowerCase().includes('breakdown') && (
-                  <View style={styles.formGroup}>
-                    <Text style={[styles.label, { color: colors.dark }]}>
-                      <Text style={styles.required}>* </Text>Location:
-                    </Text>
-                    <TextInput
-                      mode="outlined"
-                      value={values.location}
-                      onChangeText={handleChange('location')}
-                      onBlur={handleBlur('location')}
-                      error={errors.location && touched.location}
-                      style={styles.input}
-                      placeholder="Enter breakdown location"
-                      outlineColor={inputOutlineColor}
-                    />
-                    <TouchableOpacity
-                      style={[styles.locationButton, { borderColor: colors.primary, backgroundColor: `${colors.primary}12` }]}
-                      onPress={handleUseCurrentLocation}
-                      activeOpacity={0.8}
-                    >
-                      <MaterialIcons name="my-location" size={16} color={colors.primary} />
-                      <Text style={[styles.locationButtonText, { color: colors.primary }]}>
-                        Use Current Location
+                {/* Conditional: Location + Shift (Only for Breakdown) */}
+                {isBreakdownIncidentType(values.incidentType) && (
+                  <>
+                    <View style={styles.formGroup}>
+                      <Text style={[styles.label, { color: colors.dark }]}>
+                        <Text style={styles.required}>* </Text>Location:
                       </Text>
-                    </TouchableOpacity>
-                    {errors.location && touched.location && (
-                      <Text style={styles.errorText}>{errors.location}</Text>
-                    )}
-                  </View>
+                      <TextInput
+                        mode="outlined"
+                        value={values.location}
+                        onChangeText={handleChange('location')}
+                        onBlur={handleBlur('location')}
+                        error={errors.location && touched.location}
+                        style={styles.input}
+                        placeholder="Enter breakdown location"
+                        outlineColor={inputOutlineColor}
+                      />
+                      <TouchableOpacity
+                        style={[styles.locationButton, { borderColor: colors.primary, backgroundColor: `${colors.primary}12` }]}
+                        onPress={handleUseCurrentLocation}
+                        activeOpacity={0.8}
+                      >
+                        <MaterialIcons name="my-location" size={16} color={colors.primary} />
+                        <Text style={[styles.locationButtonText, { color: colors.primary }]}>
+                          Use Current Location
+                        </Text>
+                      </TouchableOpacity>
+                      {errors.location && touched.location && (
+                        <Text style={styles.errorText}>{errors.location}</Text>
+                      )}
+                    </View>
+
+                    <View style={styles.formGroup}>
+                      <Text style={[styles.label, { color: colors.dark }]}>
+                        <Text style={styles.required}>* </Text>Shift:
+                      </Text>
+                      <TouchableOpacity onPress={() => setShowShiftModal(true)}>
+                        <View pointerEvents="none">
+                          <TextInput
+                            mode="outlined"
+                            value={values.shift}
+                            error={errors.shift && touched.shift}
+                            style={styles.input}
+                            placeholder="Select shift"
+                            right={<TextInput.Icon icon="chevron-down" />}
+                            outlineColor={inputOutlineColor}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                      <ModalSelector
+                        visible={showShiftModal}
+                        onClose={() => setShowShiftModal(false)}
+                        onSelect={(value, item) => { setFieldValue('shift', item?.Code || value); setShowShiftModal(false); }}
+                        title="Select Shift"
+                        data={shiftOptions}
+                        loading={false}
+                        searchPlaceholder="Search shifts..."
+                        displayKey="Name"
+                        valueKey="Code"
+                        searchKeys={[ 'Name', 'Code' ]}
+                      />
+                      {errors.shift && touched.shift && (
+                        <Text style={styles.errorText}>{errors.shift}</Text>
+                      )}
+                    </View>
+                  </>
                 )}
 
                 {/* Conditional: Preventive Maintenance Type */}
@@ -1080,7 +1236,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                 {/* Driver */}
                 {!isPreventiveMaintenanceType(values.incidentType) && (
                   <View style={styles.formGroup}>
-                    <Text style={[styles.label, { color: colors.dark }]}>Driver{driverUser ? ':' : ' (Optional):'}</Text>
+                    <Text style={[styles.label, { color: colors.dark }]}><Text style={styles.required}>* </Text>Driver{driverUser ? ':' : ':'}</Text>
                     {driverUser ? (
                       <TextInput
                         mode="outlined"
@@ -1102,6 +1258,9 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                           />
                         </View>
                       </TouchableOpacity>
+                    )}
+                    {errors.driverCode && touched.driverCode && (
+                      <Text style={styles.errorText}>{errors.driverCode}</Text>
                     )}
                   </View>
                 )}
@@ -1201,7 +1360,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                 {/* Faults (Multi-select) */}
                 {!isPreventiveMaintenanceType(values.incidentType) && (
                   <View style={styles.formGroup}>
-                    <Text style={[styles.label, { color: colors.dark }]}>Faults (Optional):</Text>
+                    <Text style={[styles.label, { color: colors.dark }]}><Text style={styles.required}>* </Text>Faults:</Text>
                     <TouchableOpacity onPress={() => {
                       // Initialize temp selected faults from current selection
                       setTempSelectedFaults(selectedFaults);
@@ -1218,6 +1377,9 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                         />
                       </View>
                     </TouchableOpacity>
+                    {errors.faults && touched.faults && (
+                      <Text style={styles.errorText}>{Array.isArray(errors.faults) ? errors.faults[0] : errors.faults}</Text>
+                    )}
                     {selectedFaults.length > 0 && (
                       <View style={{ marginTop: 8, gap: 12 }}>
                         {selectedFaults.map((fault, index) => {
@@ -1239,7 +1401,9 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                                 {fault.Fault}
                               </Text>
                               <TouchableOpacity onPress={() => {
-                                setSelectedFaults(selectedFaults.filter((_, i) => i !== index));
+                                const next = selectedFaults.filter((_, i) => i !== index);
+                                setSelectedFaults(next);
+                                setFieldValue('faults', next);
                               }}>
                                 <MaterialIcons name="close" size={20} color={accentColor} />
                               </TouchableOpacity>
@@ -1278,6 +1442,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                                 const updated = [...selectedFaults];
                                 updated[index] = { ...updated[index], Description: text };
                                 setSelectedFaults(updated);
+                                setFieldValue('faults', updated);
                               }}
                               placeholder="Additional notes..."
                               multiline
@@ -1289,8 +1454,8 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                               outlineColor={inputOutlineColor}
                             />
                           </View>
-                          );
-                        })}
+                        )}
+                        )}
                       </View>
                     )}
                   </View>
@@ -1558,6 +1723,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               onClose={() => {
                 // Apply temp selection when modal closes
                 setSelectedFaults(tempSelectedFaults);
+                setFieldValue('faults', tempSelectedFaults);
                 setShowFaultModal(false);
               }}
               title="Select Faults"

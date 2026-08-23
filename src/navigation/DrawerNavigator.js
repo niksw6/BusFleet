@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image } from 'react-native';
 import { createDrawerNavigator, DrawerContentScrollView } from '@react-navigation/drawer';
 import MaterialIcons from '../components/AppIcon.js';
@@ -83,7 +83,7 @@ const CustomDrawerContent = (props) => {
     {
       name: 'ReviewWorkEntries',
       label: 'Review Work Entries',
-      icon: 'task-alt',
+      icon: 'check-circle',
       color: '#6D28D9',
       gradient: ['#6D28D9', '#5B21B6'],
       supervisorOnly: true,

@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import { ListSkeleton } from '../../../shared/components/SkeletonLoader';
@@ -17,7 +17,7 @@ import { StatusBadge } from '../../../shared/components/Badge';
 import FAB from '../../../shared/components/FAB';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { complaintService, jobCardService, maintenanceService, teamService } from '../../../api/services';
+import { complaintService, jobCardService, maintenanceService, teamService, mechanicService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
 import { isMechanicUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
 
@@ -112,6 +112,74 @@ const isAwaitingVerificationStatus = (statusValue) => {
   return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION', 'V', 'VERIFY'].includes(status);
 };
 
+const extractArrayItems = (data) => {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+
+  const candidateKeys = ['Jobs', 'JobCards', 'Items', 'List', 'Rows', 'Data', 'Result'];
+  for (const key of candidateKeys) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+
+  for (const value of Object.values(data)) {
+    if (Array.isArray(value)) return value;
+  }
+
+  return [];
+};
+
+const isBreakdownAssignmentItem = (item) => {
+  if (!item || typeof item !== 'object') return false;
+  const complaintType = String(
+    item?.ComplaintType
+    ?? item?.IncidentType
+    ?? item?.FormType
+    ?? item?.Type
+    ?? item?.JobCardType
+    ?? item?.BreakdownType
+    ?? ''
+  ).trim().toUpperCase();
+  const description = String(item?.Description ?? item?.Fault ?? item?.FaultName ?? item?.JobDescription ?? '').trim().toLowerCase();
+  return complaintType.includes('BREAKDOWN')
+    || complaintType === 'B'
+    || description.includes('breakdown')
+    || Boolean(
+      item?.BreakdownDocEntry
+      || item?.BreakdownNo
+      || item?.BreakdownId
+      || item?.ComplaintNo
+      || item?.CmplaintNo
+      || item?.JobCardNo
+    );
+};
+
+const getBreakdownTarget = (item) => {
+  const complaintNo = String(
+    item?.ComplaintNo
+    ?? item?.CmplaintNo
+    ?? item?.BreakdownNo
+    ?? item?.BreakdownDocEntry
+    ?? item?.BreakdownId
+    ?? item?.DocEntry
+    ?? item?.JobCardDocEntry
+    ?? ''
+  ).trim();
+
+  const jobCardDocEntry = Number(
+    item?.JobCardDocEntry
+    ?? item?.DocEntry
+    ?? item?.JobCardNo
+    ?? 0
+  ) || 0;
+
+  return {
+    complaintNo,
+    jobCardDocEntry,
+    busNo: String(item?.BusNo || item?.Vehicle || item?.BusCode || '').trim() || 'Bus',
+    depot: String(item?.Depot || item?.BranchNm || item?.Branch || item?.Location || '').trim(),
+  };
+};
+
 /**
  * Work Dashboard Screen - Professional Incident Management
  * Shows KPIs, recent incidents, and quick actions
@@ -157,6 +225,7 @@ const DashboardScreen = ({ navigation }) => {
   const [overdueIncidents, setOverdueIncidents] = useState([]);
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [pendingVerificationCount, setPendingVerificationCount] = useState(0);
+  const [breakdownWorkItems, setBreakdownWorkItems] = useState([]);
   
   const [stats, setStats] = useState({
     total: 0,
@@ -241,8 +310,30 @@ const DashboardScreen = ({ navigation }) => {
       }
 
       if (showMechanicDashboard) {
-        const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
-        const jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
+        let jobCards = [];
+        let breakdownJobs = [];
+
+        try {
+          const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
+          jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
+        } catch (jobCardsError) {
+          console.warn('Mechanic dashboard job-cards fetch failed:', jobCardsError?.message || jobCardsError);
+          jobCards = [];
+        }
+
+        try {
+          const mechanicUserCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || '';
+          if (mechanicUserCode) {
+            const mechanicJobsResponse = await mechanicService.getMyJobs(dbName || 'MUTSPL_TEST', mechanicUserCode);
+            const mechanicJobs = extractArrayItems(mechanicJobsResponse?.Data ?? mechanicJobsResponse ?? []);
+            breakdownJobs = mechanicJobs.filter(isBreakdownAssignmentItem);
+          }
+        } catch (mechanicJobsError) {
+          console.info('Mechanic dashboard assignment fallback used; no assignment rows returned.', mechanicJobsError?.message || mechanicJobsError);
+          breakdownJobs = [];
+        }
+
+        setBreakdownWorkItems(breakdownJobs);
 
         const openCount = jobCards.filter((card) => {
           const status = String(card?.Status || '').trim().toUpperCase();
@@ -601,6 +692,37 @@ const DashboardScreen = ({ navigation }) => {
                     Accept faults, log work entries, request parts
                   </Text>
                 </View>
+
+                {breakdownWorkItems.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#EA580C40' }]}
+                    onPress={() => {
+                      const firstBreakdown = breakdownWorkItems[0];
+                      const { complaintNo, jobCardDocEntry, busNo, depot } = getBreakdownTarget(firstBreakdown);
+                      navigation.navigate('LineBreakdownWorkEntry', {
+                        complaintNo,
+                        jobCardDocEntry,
+                        faultLine: 1,
+                        busNo,
+                        depot,
+                        dbName: dbName || 'MUTSPL_TEST',
+                      });
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.overdueLeft}>
+                      <View style={[styles.overdueDot, { backgroundColor: '#EA580C' }]} />
+                      <View>
+                        <Text style={[styles.overdueTitle, { color: colors.dark }]}>Open Breakdown Job Card</Text>
+                        <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                          {breakdownWorkItems.length} assigned breakdown task(s) are ready
+                        </Text>
+                      </View>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                  </TouchableOpacity>
+                )}
+
                 <TouchableOpacity
                   style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#0EA5E940' }]}
                   onPress={() => navigation.navigate('MechanicDashboard')}
@@ -786,16 +908,10 @@ const DashboardScreen = ({ navigation }) => {
           onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
         />
       )}
-      {showMechanicDashboard && (
-        <FAB
-          icon="add"
-          onPress={() => navigation.navigate('CreateIncident', { type: 'breakdown' })}
-        />
-      )}
       {driverUser && (
         <FAB
           icon="add"
-          onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
+          onPress={() => navigation.navigate('CreateIncident', { type: 'breakdown' })}
         />
       )}
     </View>

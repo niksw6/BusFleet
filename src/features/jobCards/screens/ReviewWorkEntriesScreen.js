@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+﻿import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -1186,7 +1186,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         >
           {(Array.isArray(reviewCards) ? reviewCards : []).length === 0 ? (
             <View style={styles.emptyState}>
-              <MaterialIcons name="task-alt" size={42} color={colors.gray} />
+              <MaterialIcons name="check-circle" size={42} color={colors.gray} />
               <Text style={[styles.emptyText, { color: colors.gray }]}>No work entries are pending verification.</Text>
             </View>
           ) : (

@@ -10,7 +10,7 @@ import {
 import { Text, TextInput, Button, Divider } from 'react-native-paper';
 import { Formik } from 'formik';
 import { useSelector, useDispatch } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 import DateTimePicker from '@react-native-community/datetimepicker';
 

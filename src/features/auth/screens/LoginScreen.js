@@ -10,7 +10,7 @@ import {
 import { Text, TextInput, Button } from 'react-native-paper';
 import { Formik } from 'formik';
 import { useDispatch, useSelector } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 import { Picker } from '@react-native-picker/picker';
 import Toast from 'react-native-toast-message';
 
@@ -90,9 +90,16 @@ const LoginScreen = ({ navigation }) => {
           userFromApi?.role ||
           userFromApi?.Role ||
           mapUsertypeToRole(response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype);
+        const mechanicCode = userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || userFromApi?.UserCode || userFromApi?.User || values.username;
         const user = {
           ...userFromApi,
-          User: userFromApi?.User || values.username,
+          User: userFromApi?.User || userFromApi?.user || values.username,
+          username: userFromApi?.username || userFromApi?.User || userFromApi?.user || values.username,
+          Code: mechanicCode,
+          code: mechanicCode,
+          UserCode: userFromApi?.UserCode || userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || mechanicCode,
+          EmpCode: userFromApi?.EmpCode || userFromApi?.Code || userFromApi?.code || userFromApi?.UserCode || mechanicCode,
+          id: userFromApi?.id || userFromApi?.ID || userFromApi?.EmpID || null,
           Usertype: response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype || null,
           role: detectedRole || userFromApi?.role || userFromApi?.Role || 'Supervisor',
           // Maintenance team mapping — foundation of Team Leader accept/reject routing (SOP §1.3)

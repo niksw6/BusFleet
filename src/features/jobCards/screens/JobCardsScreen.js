@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Text, Searchbar, Chip } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 
 import ScreenHeader from '../../../components/ScreenHeader';
 import StandardListCard from '../../../shared/components/StandardListCard';

@@ -262,17 +262,68 @@ export const complaintService = {
    * @param {string} supervisorCode
    * @param {string} teamCode
    */
-  assignBreakdownTeam: async (companyDB, breakdownNo, supervisorCode, teamCode) => {
+  assignBreakdownTeam: async (companyDB, breakdownDocEntry, teamCodeOrSupervisorCode, remarksOrTeamCode, maybeRemarks) => {
     try {
+      const docEntry = Number(breakdownDocEntry) || breakdownDocEntry;
+      let teamCode = '';
+      let remarks = '';
+
+      if (typeof remarksOrTeamCode === 'string' && remarksOrTeamCode && !maybeRemarks) {
+        teamCode = remarksOrTeamCode;
+      } else if (typeof teamCodeOrSupervisorCode === 'string' && teamCodeOrSupervisorCode && !maybeRemarks) {
+        teamCode = teamCodeOrSupervisorCode;
+      } else {
+        teamCode = remarksOrTeamCode || teamCodeOrSupervisorCode || '';
+        remarks = maybeRemarks || '';
+      }
+
+      if (typeof remarksOrTeamCode !== 'string' && typeof teamCodeOrSupervisorCode !== 'string') {
+        teamCode = teamCodeOrSupervisorCode || remarksOrTeamCode || '';
+        remarks = maybeRemarks || '';
+      }
+
       const payload = {
         CompanyDB: companyDB,
-        BreakdownNo: Number(breakdownNo) || breakdownNo,
-        Supervisor: supervisorCode,
+        BreakdownDocEntry: docEntry,
         TeamCode: teamCode,
+        Remarks: remarks || 'Please attend the breakdown immediately.',
       };
       console.log('📤 Assigning breakdown team:', JSON.stringify(payload, null, 2));
       const response = await post('AssignBreakdownTeam', payload);
       return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Send a flexible supervisor notification. Backend mapping service may not be available,
+   * so this helper attempts to use AssignBreakdownTeam as a transport when a supervisorId is provided,
+   * and falls back to returning a local structured payload so the UI can display/send an in-app notification.
+   * @param {string} companyDB
+   * @param {string|number} docEntry
+   * @param {string} supervisorId
+   * @param {string} message
+   */
+  notifySupervisor: async (companyDB, docEntry, supervisorId, message) => {
+    try {
+      const payload = {
+        CompanyDB: companyDB,
+        BreakdownNo: Number(docEntry) || docEntry,
+        Supervisor: supervisorId || '',
+        TeamCode: '',
+        Message: message || '',
+      };
+      console.log('🔔 notifySupervisor payload:', JSON.stringify(payload, null, 2));
+      // Try AssignBreakdownTeam as a notification transport if available
+      try {
+        const response = await post('AssignBreakdownTeam', payload);
+        return response.data;
+      } catch (e) {
+        console.warn('AssignBreakdownTeam used as notification failed:', e?.message || e);
+        // Return payload to UI layer so it can show in-app notification
+        return { Success: false, Message: 'Notification API not available; returned payload for local handling', Data: payload };
+      }
     } catch (error) {
       throw new Error(handleApiError(error));
     }

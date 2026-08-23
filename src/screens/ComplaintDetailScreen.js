@@ -525,10 +525,11 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       const extractFaultRowsFromRecord = (record) => {
         if (!record || typeof record !== 'object') return [];
 
+        // 1) Preferred: explicit Faults array
         const inlineRows = Array.isArray(record?.Faults) ? record.Faults : [];
         const meaningfulInline = inlineRows.filter((faultRow) => {
-          const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || '').trim();
-          const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || '').trim();
+          const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || faultRow?.fault || faultRow?.faultName || '').trim();
+          const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || faultRow?.description || '').trim();
           return Boolean(faultName || faultDesc);
         });
 
@@ -536,13 +537,30 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           return meaningfulInline;
         }
 
-        const topFaultName = String(record?.FaultName || record?.Fault || record?.FaultCode || '').trim();
-        const topFaultDesc = String(record?.FaultDescription || record?.Description || record?.Dscption || '').trim();
+        // 2) Heuristic: scan other array properties that may contain fault rows
+        for (const key of Object.keys(record || {})) {
+          const val = record[key];
+          if (!Array.isArray(val) || val.length === 0) continue;
+          // consider arrays of objects
+          if (!val.every(item => item && typeof item === 'object')) continue;
+
+          const candidate = val.filter((faultRow) => {
+            const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || faultRow?.fault || faultRow?.faultName || '').trim();
+            const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || faultRow?.description || '').trim();
+            return Boolean(faultName || faultDesc);
+          });
+
+          if (candidate.length > 0) return candidate;
+        }
+
+        // 3) Fallback: top-level fault fields
+        const topFaultName = String(record?.FaultName || record?.Fault || record?.FaultCode || record?.fault || '').trim();
+        const topFaultDesc = String(record?.FaultDescription || record?.Description || record?.Dscption || record?.description || '').trim();
         if (!topFaultName && !topFaultDesc) return [];
 
         return [{
           Fault: topFaultName,
-          FaultCode: String(record?.FaultCode || '').trim(),
+          FaultCode: String(record?.FaultCode || record?.FaultCode || '').trim(),
           Description: topFaultDesc,
         }];
       };

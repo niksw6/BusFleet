@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WorkEntryScreen
  *
  * Mechanic-facing screen to:
@@ -71,7 +71,6 @@ const normalizeApprovedItems = (rows = [], jobCardDocEntry) => {
       ApprovedQty: Number(item?.ApprovedQty ?? 0) || 0,
       IssuedQty: Number(item?.IssuedQty ?? item?.IssueQty ?? 0) || 0,
       ReceivedQty: Number(item?.ReceivedQty ?? 0) || 0,
-      Warehouse: String(item?.Warehouse || item?.StoreWarehouse || '').trim(),
       Status: String(item?.Status || '').trim().toUpperCase(),
     }))
     .filter((item) => {
@@ -119,7 +118,7 @@ const groupPartRequestsByWorkEntry = (rawItems = [], jobCardDocEntry) => {
 };
 
 const WorkEntryScreen = ({ route, navigation }) => {
-  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, faultLine: routeFaultLine = 0 } = route.params || {};
+  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', depot: routeDepot = '' } = route.params || {};
   const dispatch = useDispatch();
 
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
@@ -157,6 +156,13 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [entryParts, setEntryParts] = useState([]);
   const [showEntryPartsSelector, setShowEntryPartsSelector] = useState(false);
 
+  // Line Breakdown specific states
+  const [canRepairOnSite, setCanRepairOnSite] = useState(true);
+  const [towDepotMode, setTowDepotMode] = useState('default'); // 'default' or 'other'
+  const [selectedTowDepot, setSelectedTowDepot] = useState(routeDepot || '');
+  const [depotsList, setDepotsList] = useState([]);
+  const [showDepotsModal, setShowDepotsModal] = useState(false);
+
   // Issued Items (from SAP Store)
   const [issuedItems, setIssuedItems] = useState([]);
 
@@ -173,11 +179,12 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [workListRes, sparePartsRes, approvedRes, requestsRes] = await Promise.all([
+      const [workListRes, sparePartsRes, approvedRes, requestsRes, depotsRes] = await Promise.all([
         masterService.getWorkList(dbName || 'MUTSPL_TEST'),
         masterService.getSpareParts(dbName || 'MUTSPL_TEST'),
         storeService.getApprovedJobCardParts(companyDb, mechanicCode),
         storeService.getMechanicPartRequests(companyDb),
+        masterService.getDepots(dbName || 'MUTSPL_TEST'),
       ]);
 
       if (isApiSuccess(workListRes)) {
@@ -194,6 +201,18 @@ const WorkEntryScreen = ({ route, navigation }) => {
         const requestRows = extractApiRows(requestsRes);
         const groupedRequests = groupPartRequestsByWorkEntry(requestRows, resolvedJobCardDocEntry);
         dispatch(setPartsRequests({ docEntry: workOrderDocEntry, requests: groupedRequests }));
+      }
+
+      // Depots
+      if (isApiSuccess(depotsRes)) {
+        const depotRows = extractApiRows(depotsRes);
+        setDepotsList(depotRows || []);
+        if (!selectedTowDepot && (routeDepot || (Array.isArray(depotRows) && depotRows.length > 0))) {
+          // Prefer routeDepot if provided, otherwise pick first depot's identifier
+          const first = depotRows[0];
+          const candidate = routeDepot || first?.Depot || first?.Name || first?.DepotName || '';
+          setSelectedTowDepot(candidate);
+        }
       }
     } catch (err) {
       console.error('WorkEntryScreen loadData error:', err);
@@ -259,6 +278,8 @@ const WorkEntryScreen = ({ route, navigation }) => {
           Warehouse: p.Warehouse || '',
           Remarks: p.Remarks || '',
         })),
+        // Mark source type so Line Breakdown entries remain distinct
+        ComplaintType: (String(routeComplaintType || '')).includes('Breakdown') || (String(routeComplaintType || '').toLowerCase().includes('breakdown')) ? 'Breakdown' : undefined,
       };
 
       const res = await mechanicService.createWorkEntry(payload);
@@ -268,6 +289,74 @@ const WorkEntryScreen = ({ route, navigation }) => {
         resetEntryForm();
       } else {
         Toast.show({ type: 'error', text1: res?.Message || 'Failed to add work entry' });
+      }
+    } catch (err) {
+      Toast.show({ type: 'error', text1: err.message || 'Error' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Handle tow request when on-site repair is not possible
+  const handleRequestTow = async () => {
+    if (workEntryLocked) {
+      Toast.show({ type: 'info', text1: 'Work already completed', text2: 'Action not available.' });
+      return;
+    }
+    if (!selectedTowDepot) {
+      Toast.show({ type: 'error', text1: 'Please select a depot for the tow' });
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      const payload = {
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
+        FaultLine: Number(routeFaultLine) || 0,
+        UserCode: mechanicCode,
+        FinalRemarks: entryRemarks || 'Tow requested',
+        Details: [
+          {
+            WorkCode: 'TOW_REQUEST',
+            WorkDone: 'Tow requested - vehicle to be moved to depot',
+            OtherDescription: '',
+            Remarks: entryRemarks || '',
+          },
+        ],
+        TowRequested: true,
+        TowDepot: selectedTowDepot,
+        CanRepairOnSite: false,
+        ComplaintType: (String(routeComplaintType || '')).toLowerCase().includes('breakdown') ? 'Breakdown' : undefined,
+      };
+
+      const res = await mechanicService.createWorkEntry(payload);
+      if (res?.Success) {
+        // attempt to complete the work entry (closure after tow request)
+        const created = res.Data || {};
+        const workEntryDocEntry = created?.WorkEntryDocEntry || created?.DocEntry || created?.Code || null;
+        if (workEntryDocEntry) {
+          const completeRes = await mechanicService.completeWork({
+            CompanyDB: dbName || 'MUTSPL_TEST',
+            WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+            UserCode: mechanicCode,
+            FinalRemarks: 'Tow requested and vehicle moved',
+          });
+          if (completeRes?.Success) {
+            dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: created }));
+            Toast.show({ type: 'success', text1: 'Tow requested and work entry closed' });
+            setAwaitingVerification(true);
+            resetEntryForm();
+            return;
+          }
+        }
+
+        // If completion not possible, still add entry and notify
+        dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: res.Data || payload }));
+        Toast.show({ type: 'success', text1: 'Tow requested — awaiting supervisor actions' });
+        resetEntryForm();
+      } else {
+        Toast.show({ type: 'error', text1: res?.Message || 'Failed to request tow' });
       }
     } catch (err) {
       Toast.show({ type: 'error', text1: err.message || 'Error' });
@@ -426,11 +515,50 @@ const WorkEntryScreen = ({ route, navigation }) => {
           </Text>
           {(awaitingVerification || storeEntries.some(entry => isAwaitingVerificationStatus(entry?.Status || entry?.WorkStatus || entry?.FaultStatus))) && (
             <View style={styles.awaitingPill}>
-              <MaterialIcons name="task-alt" size={14} color="#6D28D9" />
+              <MaterialIcons name="check-circle" size={14} color="#6D28D9" />
               <Text style={styles.awaitingPillText}>Awaiting Verification</Text>
             </View>
           )}
         </View>
+
+        {/* Line Breakdown: On-site repair decision */}
+        {String(routeComplaintType || '').toLowerCase().includes('breakdown') && (
+          <View style={[styles.card, { backgroundColor: colors.white }]}>
+            <Text style={[styles.sectionTitle, { color: colors.dark }]}>Line Breakdown — Can repair on site?</Text>
+            <View style={{ flexDirection: 'row', marginTop: 8 }}>
+              <Button mode={canRepairOnSite ? 'contained' : 'outlined'} onPress={() => setCanRepairOnSite(true)} compact>
+                Yes
+              </Button>
+              <Button mode={!canRepairOnSite ? 'contained' : 'outlined'} onPress={() => setCanRepairOnSite(false)} compact style={{ marginLeft: 8 }}>
+                No
+              </Button>
+            </View>
+
+            {!canRepairOnSite && (
+              <View style={{ marginTop: 12 }}>
+                <Text style={{ color: colors.gray, marginBottom: 6 }}>Select depot for tow</Text>
+                <View style={{ flexDirection: 'row' }}>
+                  <Button mode={towDepotMode === 'default' ? 'contained' : 'outlined'} onPress={() => { setTowDepotMode('default'); setSelectedTowDepot(routeDepot || selectedTowDepot); }} compact>
+                    Default depot
+                  </Button>
+                  <Button mode={towDepotMode === 'other' ? 'contained' : 'outlined'} onPress={() => setTowDepotMode('other')} compact style={{ marginLeft: 8 }}>
+                    Other depot
+                  </Button>
+                </View>
+
+                {towDepotMode === 'other' && (
+                  <TouchableOpacity style={[styles.addLineBtn, { marginTop: 8 }]} onPress={() => setShowDepotsModal(true)}>
+                    <Text style={{ color: colors.primary }}>{selectedTowDepot || 'Select depot'}</Text>
+                  </TouchableOpacity>
+                )}
+
+                <Button mode="contained" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={{ marginTop: 12 }}>
+                  Request Tow & Close Work Entry
+                </Button>
+              </View>
+            )}
+          </View>
+        )}
 
         {/* ── Work Entries ── */}
         <View style={[styles.card, { backgroundColor: colors.white }]}>
@@ -881,6 +1009,20 @@ const WorkEntryScreen = ({ route, navigation }) => {
             </Text>
           </View>
         )}
+      />
+
+      {/* Depot selector for tow requests (Line Breakdown flow) */}
+      <ModalSelector
+        visible={showDepotsModal}
+        onClose={() => setShowDepotsModal(false)}
+        onSelect={(value, item) => { setSelectedTowDepot(item?.Depot || item?.Name || item?.DepotName || value); setShowDepotsModal(false); }}
+        title="Select Depot"
+        data={depotsList}
+        loading={false}
+        searchPlaceholder="Search depots..."
+        displayKey={depotsList && depotsList.length && Object.prototype.hasOwnProperty.call(depotsList[0], 'Depot') ? 'Depot' : 'Name'}
+        valueKey={depotsList && depotsList.length && Object.prototype.hasOwnProperty.call(depotsList[0], 'Depot') ? 'Depot' : 'Name'}
+        searchKeys={[ 'Depot', 'Name', 'DepotName' ]}
       />
 
       {/* Complete Work confirmation */}

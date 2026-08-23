@@ -8,7 +8,11 @@ import { useSelector, useDispatch } from 'react-redux';
 import { LoginScreen } from '../features/auth';
 import { CreateFuelLogScreen, CreateScheduleScreen } from '../features/maintenance';
 import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen } from '../features/jobCards';
+import LineBreakdownWorkEntryScreen from '../features/jobCards/screens/LineBreakdownWorkEntryScreen';
+import LineBreakdownWorkDetailScreen from '../features/jobCards/screens/LineBreakdownWorkDetailScreen';
 import { CreateIncidentScreen } from '../features/complaints';
+import BreakdownTeamsListScreen from '../features/breakdownTeams/screens/BreakdownTeamsListScreen';
+import BreakdownTeamPortalScreen from '../features/breakdownTeams/screens/BreakdownTeamPortalScreen';
 import DrawerNavigator from './DrawerNavigator';
 
 // Legacy screens (to be refactored)
@@ -274,6 +278,44 @@ const AppNavigator = () => {
                 }}
               />
             )}
+            {(fieldStaffUser || supervisorUser) && (
+              <Stack.Screen
+                name="LineBreakdownWorkEntry"
+                component={LineBreakdownWorkEntryScreen}
+                options={{
+                  title: 'Line Breakdown Work Entry',
+                  presentation: 'modal',
+                }}
+              />
+            )}
+            {fieldStaffUser && (
+              <Stack.Screen
+                name="LineBreakdownWorkDetail"
+                component={LineBreakdownWorkDetailScreen}
+                options={{
+                  title: 'Work Entry Details',
+                  presentation: 'modal',
+                }}
+              />
+            )}
+                        {supervisorUser && (
+                          <Stack.Screen
+                            name="BreakdownTeams"
+                            component={BreakdownTeamsListScreen}
+                            options={{
+                              title: 'Breakdown Teams',
+                            }}
+                          />
+                        )}
+                        {fieldStaffUser && (
+                          <Stack.Screen
+                            name="BreakdownPortal"
+                            component={BreakdownTeamPortalScreen}
+                            options={{
+                              title: 'Breakdown Portal',
+                            }}
+                          />
+                        )}
             {teamLeaderUser && (
               <Stack.Screen
                 name="TeamApprovals"

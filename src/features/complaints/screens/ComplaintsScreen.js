@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Text, Searchbar, Chip, Menu } from 'react-native-paper';
 import { useSelector } from 'react-redux';
-import MaterialIcons from '../../../components/AppIcon.js';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 
 import { PriorityBadge } from '../../../shared/components/Badge';
 import FAB from '../../../shared/components/FAB';
@@ -36,6 +36,42 @@ const normalizeDataType = (type) => {
 };
 
 const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
+
+const getSortableIncidentTimestamp = (item) => {
+  const dateCandidates = [
+    item?.IncidentDate,
+    item?.ComplaintDate,
+    item?.RegDate,
+    item?.Date,
+    item?.CreatedDate,
+  ];
+  const timeCandidates = [
+    item?.IncidentTime,
+    item?.ComplaintTime,
+    item?.RegTime,
+    item?.Time,
+    item?.CreatedTime,
+  ];
+
+  const rawDate = String(dateCandidates.find(Boolean) || '').trim();
+  const rawTime = String(timeCandidates.find(Boolean) || '').trim();
+
+  if (!rawDate) return 0;
+
+  const cleanedDate = rawDate.replace(/\//g, '-');
+  const match = cleanedDate.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!match) return 0;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const digitsOnly = String(rawTime).replace(/\D/g, '');
+  const hour = Number(digitsOnly.slice(0, 2) || '0');
+  const minute = Number(digitsOnly.slice(2, 4) || '0');
+
+  const ts = Date.UTC(year, month - 1, day, hour, minute, 0);
+  return Number.isFinite(ts) ? ts : 0;
+};
 
 const matchesDriverIncident = (incident, driverIdentity, driverDisplayName) => {
   const codeCandidates = [
@@ -156,6 +192,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
   const fetchComplaints = async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
+      const shouldFetchSchedulers = !driverUser;
 
       const [incidentsResponse, serviceSchedulersResponse] = await Promise.all([
         complaintService.getIncidents(
@@ -163,7 +200,9 @@ const ComplaintsScreen = ({ navigation, route }) => {
           null,
           null,
         ),
-        maintenanceService.getServiceSchedulers(companyDb),
+        shouldFetchSchedulers
+          ? maintenanceService.getServiceSchedulers(companyDb)
+          : Promise.resolve({ Success: true, Data: [] }),
       ]);
 
       console.log('📋 Incidents API Response:', incidentsResponse);
@@ -224,22 +263,16 @@ const ComplaintsScreen = ({ navigation, route }) => {
     let filtered = [];
 
     if (driverUser) {
-      // Driver scope is incident-only; preventive scheduler rows are team/supervisor context.
       filtered = [...complaints];
+      filtered = filtered.filter((c) => matchesDriverIncident(c, driverIdentity, driverDisplayName));
     } else {
       filtered = dataType === 'preventive'
         ? [...preventiveMaintenances]
         : [...complaints, ...preventiveMaintenances];
     }
 
-    // Driver: never show the fleet-wide list — only incidents they personally reported.
-    if (driverUser) {
-      filtered = filtered.filter((c) => matchesDriverIncident(c, driverIdentity, driverDisplayName));
-    }
-
-    // Filter by type (breakdowns or complaints)
     if (dataType === 'breakdowns') {
-      filtered = filtered.filter(c => c.ComplaintType === 'Breakdown');
+      filtered = filtered.filter(c => String(c.ComplaintType || '').toLowerCase().includes('breakdown'));
     } else if (dataType === 'preventive') {
       filtered = filtered.filter(c => String(c.ComplaintType || '').toLowerCase().includes('preventive'));
     } else if (dataType === 'complaints') {
@@ -248,9 +281,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
         return complaintType === 'driver complaints' || complaintType.includes('driver complaint');
       });
     }
-    // If dataType is 'all' or unset, show everything
 
-    // Filter by status
     if (selectedFilter !== 'All') {
       if (selectedFilter === 'CM') {
         filtered = filtered.filter(c => c.Status === 'CM' || c.Status === 'C');
@@ -259,7 +290,6 @@ const ComplaintsScreen = ({ navigation, route }) => {
       }
     }
 
-    // Filter by search query
     if (searchQuery) {
       filtered = filtered.filter(c =>
         c.BusNo?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -269,6 +299,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
       );
     }
 
+    filtered.sort((a, b) => getSortableIncidentTimestamp(b) - getSortableIncidentTimestamp(a));
     setFilteredComplaints(filtered);
   };
 
@@ -482,7 +513,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
       {driverUser && (
         <FAB
           icon="add"
-          onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
+          onPress={() => navigation.navigate('CreateIncident', { type: 'breakdown' })}
         />
       )}
     </View>
