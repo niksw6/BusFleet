@@ -20,7 +20,7 @@ export const complaintService = {
         DocEntry: Number(docEntry) || docEntry,
         FormType: formType,
       };
-      console.log('📤 Closing incident:', JSON.stringify(payload, null, 2));
+      console.log('📤 Closing incident:', JSON.stringify(payload));
       const response = await post('CloseIncident', payload);
       console.log('📥 Close incident response:', response.data);
       return response.data;
@@ -37,7 +37,7 @@ export const complaintService = {
    */
   createIncident: async (incidentData) => {
     try {
-      console.log('📤 Creating incident - Full Payload:', JSON.stringify(incidentData, null, 2));
+      console.log('📤 Creating incident - Full Payload:', JSON.stringify(incidentData));
       console.log('📤 Payload Keys:', Object.keys(incidentData));
       
       // Log different fields based on incident type
@@ -86,7 +86,7 @@ export const complaintService = {
    */
   createComplaint: async (complaintData) => {
     try {
-      console.log('📤 Creating complaint:', JSON.stringify(complaintData, null, 2));
+      console.log('📤 Creating complaint:', JSON.stringify(complaintData));
       const response = await post('CreateDriverComplaint', complaintData);
       console.log('📥 Complaint created:', response.data);
       return response.data;
@@ -154,7 +154,7 @@ export const complaintService = {
    */
   createBreakdown: async (breakdownData) => {
     try {
-      console.log('📤 Creating breakdown:', JSON.stringify(breakdownData, null, 2));
+      console.log('📤 Creating breakdown:', JSON.stringify(breakdownData));
       const response = await post('CreateLineBreakdown', breakdownData);
       console.log('📥 Breakdown created:', response.data);
       return response.data;
@@ -288,7 +288,7 @@ export const complaintService = {
         TeamCode: teamCode,
         Remarks: remarks || 'Please attend the breakdown immediately.',
       };
-      console.log('📤 Assigning breakdown team:', JSON.stringify(payload, null, 2));
+      console.log('📤 Assigning breakdown team:', JSON.stringify(payload));
       const response = await post('AssignBreakdownTeam', payload);
       return response.data;
     } catch (error) {
@@ -314,7 +314,7 @@ export const complaintService = {
         TeamCode: '',
         Message: message || '',
       };
-      console.log('🔔 notifySupervisor payload:', JSON.stringify(payload, null, 2));
+      console.log('🔔 notifySupervisor payload:', JSON.stringify(payload));
       // Try AssignBreakdownTeam as a notification transport if available
       try {
         const response = await post('AssignBreakdownTeam', payload);

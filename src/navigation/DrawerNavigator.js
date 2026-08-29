@@ -83,7 +83,7 @@ const CustomDrawerContent = (props) => {
     {
       name: 'ReviewWorkEntries',
       label: 'Review Work Entries',
-      icon: 'check-circle',
+      icon: 'assignment-turned-in',
       color: '#6D28D9',
       gradient: ['#6D28D9', '#5B21B6'],
       supervisorOnly: true,

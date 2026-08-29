@@ -16,18 +16,18 @@ import Toast from 'react-native-toast-message';
 import { getLogs, clearLogs } from '../../../utils/logger';
 
 import { setNotifications, setUnreadCount, markAsRead, markAllAsRead } from '../../../store/slices/notificationSlice';
-import { dashboardService, complaintService, teamService, mechanicService, jobCardService } from '../../../api/services';
+import { dashboardService, complaintService } from '../../../api/services';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDateTime } from '../../../utils/helpers';
-import { isTeamLeaderUser, isSupervisorUser, isFieldStaffUser } from '../../../utils/roleAccess';
+import { isTeamLeaderUser, isMechanicUser, isFieldStaffUser, isSupervisorUser } from '../../../utils/roleAccess';
 import { useFocusEffect } from '@react-navigation/native';
-import { storeService } from '../../../api/services';
 
 const NotificationsScreen = ({ navigation }) => {
   const dispatch = useDispatch();
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const dbName = useSelector(state => state.auth.dbName);
   const user = useSelector(state => state.auth.user);
+  const supervisorUser = isSupervisorUser(user);
   const { notifications, unreadCount } = useSelector(state => state.notification);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
 
@@ -73,6 +73,9 @@ const NotificationsScreen = ({ navigation }) => {
 
     const typeCode = String(item?.type || item?.Type || '').trim().toUpperCase();
     if (typeCode === 'B') return 'B';
+    if (typeCode === 'JB') return 'B';
+    if (typeCode === 'JCT') return 'B';
+    if (typeCode === 'JCA') return 'B';
     if (typeCode === 'M') return 'M';
     if (typeCode === 'D') return 'D';
 
@@ -224,6 +227,9 @@ const NotificationsScreen = ({ navigation }) => {
 
     const typeCode = String(item?.type || item?.Type || '').trim().toUpperCase();
     if (typeCode === 'B') return 'Breakdown';
+    if (typeCode === 'JB') return 'Breakdown';
+    if (typeCode === 'JCT') return 'Breakdown';
+    if (typeCode === 'JCA') return 'Breakdown';
     if (typeCode === 'D') return 'Driver Complaint';
 
     const text = `${item?.title || ''} ${item?.message || ''}`.toLowerCase();
@@ -231,348 +237,27 @@ const NotificationsScreen = ({ navigation }) => {
     return 'Driver Complaint';
   };
 
-  const extractTeamLeaderJobCards = (dashboardData) => {
-    const source = dashboardData?.Data ?? dashboardData;
-    return Array.isArray(source)
-      ? source
-      : (Array.isArray(source?.JobCards)
-        ? source.JobCards
-        : Array.isArray(source?.Jobs)
-          ? source.Jobs
-          : []);
-  };
-
-  const deriveTeamLeaderStatus = (job) => {
-    const teamStatus = String(job?.TeamStatus ?? job?.Status ?? job?.AcceptStatus ?? job?.ApprovalStatus ?? '').trim().toUpperCase();
-    if (['A', 'ACCEPTED', 'ACCEPT'].includes(teamStatus)) return 'ACCEPTED';
-    if (['R', 'REJECTED', 'REJECT'].includes(teamStatus)) return 'REJECTED';
-    return 'PENDING';
-  };
-
-  const isSupervisorVerificationPending = (entity) => {
-    const raw = String(entity?.Status ?? entity?.WorkStatus ?? entity?.FaultStatus ?? '').trim().toUpperCase();
-    return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw);
-  };
-
-  const isPendingPartApproval = (part) => {
-    const status = String(part?.Status ?? part?.ApprovalStatus ?? '').trim().toUpperCase();
-    return !status || ['P', 'PENDING', 'RQ', 'REQUESTED'].includes(status);
-  };
-
-  const buildWorkflowNotifications = async (companyDb, identityCandidates) => {
-    const primaryIdentity = identityCandidates[0] || '';
-    const nowIso = new Date().toISOString();
-    const workflowNotifications = [];
-
-    if (isSupervisorUser(user)) {
-      const incidentsRes = await complaintService.getIncidents(companyDb, null, null);
-      const incidents = Array.isArray(incidentsRes?.Data) ? incidentsRes.Data : [];
-      const jobCardsRes = await jobCardService.getJobCards(companyDb);
-      const jobCards = Array.isArray(jobCardsRes?.Data) ? jobCardsRes.Data : [];
-      const incidentsByDocEntry = new Map(
-        incidents
-          .filter((item) => item?.DocEntry !== undefined && item?.DocEntry !== null && String(item.DocEntry).trim())
-          .map((item) => [String(item.DocEntry), item])
-      );
-      const incidentsWithJobCards = new Set(
-        jobCards
-          .map(card => card?.ComplaintNo ?? card?.IncidentNo ?? card?.ComplaintDocEntry ?? card?.IncidentDocEntry ?? card?.SourceDocEntry)
-          .filter(value => value !== undefined && value !== null && String(value).trim())
-          .map(String)
-      );
-      const pendingReview = incidents
-        .filter((item) => {
-          const status = String(item?.Status || '').trim().toUpperCase();
-          const jobCardNo = String(item?.JobcardNo || item?.JobCardNo || '').trim();
-          return status === 'O' && !jobCardNo && !incidentsWithJobCards.has(String(item?.DocEntry));
-        })
-        .sort((a, b) => Number(b?.DocEntry || 0) - Number(a?.DocEntry || 0));
-
-      if (pendingReview.length > 0) {
-        workflowNotifications.push(...pendingReview.map((item) => ({
-          id: `workflow-supervisor-${item?.DocEntry}`,
-          code: `workflow-supervisor-${item?.DocEntry}`,
-          title: `Incident #${String(item?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D'}-${item?.DocEntry || '-'} requires supervisor action`,
-          message: `Create job card and route this ${String(item?.ComplaintType || 'incident').toLowerCase()} to a team.`,
-          creatorName: String(item?.DrvName || item?.DriverName || item?.CreatedBy || 'Driver'),
-          significance: String(item?.Priority || 'Medium'),
-          priority: String(item?.Priority || 'Medium'),
-          busNo: String(item?.BusNo || item?.Vehicle || item?.RegNo || '').trim(),
-          detailDocEntry: item?.DocEntry,
-          docEntry: item?.DocEntry,
-          read: false,
-          type: String(item?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D',
-          complaintType: item?.ComplaintType,
-          timestamp: item?.IncidentDate || item?.RegDate || nowIso,
-          workflowDerived: true,
-        })));
-      }
-
-      const verificationPending = jobCards
-        .filter(isSupervisorVerificationPending)
-        .sort((a, b) => Number(b?.DocEntry || b?.JobCardDocEntry || b?.JobCardNo || 0) - Number(a?.DocEntry || a?.JobCardDocEntry || a?.JobCardNo || 0));
-
-      workflowNotifications.push(...verificationPending.map((card, index) => {
-        const jobCardDocEntry = card?.DocEntry ?? card?.JobCardDocEntry ?? card?.JCDocEnt ?? card?.JobCardNo ?? `${index + 1}`;
-        const jobCardNo = card?.JobCardNo || card?.DocNum || jobCardDocEntry;
-        const linkedIncidentDocEntry = String(
-          card?.ComplaintNo
-          ?? card?.IncidentNo
-          ?? card?.ComplaintDocEntry
-          ?? card?.IncidentDocEntry
-          ?? ''
-        ).trim();
-        const linkedIncident = linkedIncidentDocEntry ? incidentsByDocEntry.get(linkedIncidentDocEntry) : null;
-
-        return {
-          id: `workflow-verify-${jobCardDocEntry}`,
-          code: `workflow-verify-${jobCardDocEntry}`,
-          title: `Verification pending for Job Card #${jobCardNo}`,
-          message: 'Mechanic marked work complete. Verify the updates and close the incident.',
-          creatorName: String(card?.MechName || card?.MechanicName || card?.AssignedTo || 'Mechanic'),
-          significance: String(card?.Priority || 'High'),
-          priority: String(card?.Priority || 'High'),
-          busNo: String(card?.Vehicle || card?.BusNo || card?.RegNo || '').trim(),
-          detailDocEntry: linkedIncidentDocEntry || jobCardDocEntry,
-          docEntry: linkedIncidentDocEntry || jobCardDocEntry,
-          complaintNo: linkedIncident?.ComplaintNo || linkedIncident?.DocEntry || linkedIncidentDocEntry || null,
-          complaintType: linkedIncident?.ComplaintType || null,
-          jobCardDocEntry,
-          jobCardNo,
-          read: false,
-          type: 'V',
-          timestamp: card?.UpdateDate || card?.ModDate || card?.AssignDt || nowIso,
-          workflowDerived: true,
-        };
-      }));
-
-      const partsRes = await storeService.getMechanicPartRequests(companyDb);
-      const partRows = (Array.isArray(partsRes?.Data) ? partsRes.Data : (Array.isArray(partsRes?.data) ? partsRes.data : []))
-        .filter(isPendingPartApproval);
-      const requestsByWorkEntry = new Map();
-      partRows.forEach((part) => {
-        const workEntry = part?.WorkEntryDocEntry ?? part?.WorkEntryNo ?? part?.DocEntry;
-        if (workEntry !== undefined && workEntry !== null && String(workEntry).trim()) {
-          requestsByWorkEntry.set(String(workEntry), part);
-        }
-      });
-      workflowNotifications.push(...Array.from(requestsByWorkEntry.values()).map((part) => {
-        const workEntry = part?.WorkEntryDocEntry ?? part?.WorkEntryNo ?? part?.DocEntry;
-        const jobCard = part?.JobCardDocEntry ?? part?.JobCardNo ?? '';
-        return {
-          id: `workflow-parts-${workEntry}`,
-          code: `workflow-parts-${workEntry}`,
-          title: `Parts request awaiting approval${jobCard ? ` for Job Card #${jobCard}` : ''}`,
-          message: `${String(part?.MechanicName || part?.UserName || part?.UserCode || 'A mechanic')} requested ${String(part?.ItemName || part?.ItemCode || 'parts')}.`,
-          creatorName: String(part?.MechanicName || part?.UserName || part?.UserCode || 'Mechanic'),
-          significance: 'High',
-          priority: 'High',
-          busNo: String(part?.Vehicle || part?.BusNo || part?.RegNo || '').trim(),
-          detailDocEntry: jobCard || workEntry,
-          docEntry: jobCard || workEntry,
-          read: false,
-          type: 'P',
-          timestamp: part?.RequestDate || part?.CreatedDate || nowIso,
-          workflowDerived: true,
-        };
-      }));
-    }
-
-    if (isTeamLeaderUser(user) && primaryIdentity) {
-      const teamRes = await teamService.getMechanicalDashboard(companyDb, primaryIdentity);
-      const teamCards = extractTeamLeaderJobCards(teamRes);
-      const pendingCards = teamCards
-        .filter(card => deriveTeamLeaderStatus(card) === 'PENDING')
-        .sort((a, b) => Number(b?.DocEntry || b?.JobCardDocEntry || b?.JobCardNo || 0) - Number(a?.DocEntry || a?.JobCardDocEntry || a?.JobCardNo || 0));
-
-      if (pendingCards.length > 0) {
-        workflowNotifications.push(...pendingCards.map((card, index) => {
-          const docEntry = card?.DocEntry ?? card?.JobCardDocEntry ?? card?.JobCardNo ?? `${index + 1}`;
-          const busNo = String(card?.BusNo || card?.Vehicle || card?.BusCode || card?.BusRegistrationNo || card?.RegNo || '').trim();
-          const priority = String(card?.Priority || 'Medium').trim();
-          const createdAt = card?.RegDate || card?.CreatedDate || card?.JobCardDate || nowIso;
-          return {
-            id: `workflow-team-${primaryIdentity}-${docEntry}`,
-            code: `workflow-team-${primaryIdentity}-${docEntry}`,
-            title: `Job Card #${card?.JobCardNo || card?.DocNum || docEntry}`,
-            message: `${busNo || 'Bus -'} · ${priority} priority · accept or reject this job card.`,
-            creatorName: String(card?.SprvsrNm || card?.SupervisorName || card?.AssignBy || 'Supervisor'),
-            significance: priority,
-            priority,
-            busNo,
-            detailDocEntry: docEntry,
-            docEntry,
-            read: false,
-            type: 'T',
-            timestamp: createdAt,
-            workflowDerived: true,
-          };
-        }));
-      }
-    }
-
-    if (isFieldStaffUser(user) && primaryIdentity) {
-      // GetMyJobs is an assignment-scoped queue. The legacy dashboard is used
-      // only while a server deployment is still being upgraded.
-      let mechanicRes;
-      try {
-        mechanicRes = await mechanicService.getMyJobs(companyDb, primaryIdentity);
-      } catch (queueError) {
-        mechanicRes = await mechanicService.getMechanicDashboard(companyDb, primaryIdentity);
-      }
-      const source = mechanicRes?.Data ?? mechanicRes;
-      const list = Array.isArray(source)
-        ? source
-        : (['Faults', 'Jobs', 'List', 'Items', 'Data']
-          .map(key => source?.[key])
-          .find(Array.isArray)
-          || Object.values(source || {}).find(Array.isArray)
-          || []);
-
-      const pendingItems = list.filter((item) => {
-        const status = String(item?.Status ?? item?.FaultStatus ?? '').trim().toUpperCase();
-        return !['A', 'ACCEPTED', 'STARTED', 'IN PROGRESS', 'INPROGRESS', 'C', 'CM', 'COMPLETED'].includes(status);
-      });
-
-      if (pendingItems.length > 0) {
-        workflowNotifications.push(...pendingItems.map((item, idx) => ({
-          id: `workflow-mechanic-${primaryIdentity}-${item?.DocEntry || idx}`,
-          code: `workflow-mechanic-${primaryIdentity}-${item?.DocEntry || idx}`,
-          title: `Your fault on Job Card #${item?.JobCardNo || item?.DocNum || item?.DocEntry || '-'}`,
-          message: `${String(item?.FaultName || item?.FaultCode || item?.Fault || 'Fault').trim()} is assigned to you. Accept it, then add your work entry.`,
-          creatorName: String(item?.AssignBy || item?.SprvsrNm || 'Supervisor'),
-          significance: String(item?.Priority || 'High'),
-          priority: String(item?.Priority || 'High'),
-          busNo: String(item?.Vehicle || item?.BusNo || item?.RegNo || '').trim(),
-          detailDocEntry: item?.DocEntry,
-          docEntry: item?.DocEntry,
-          read: false,
-          type: 'W',
-          timestamp: item?.AcceptDate || item?.AssignDt || nowIso,
-          workflowDerived: true,
-        })));
-      }
-
-      // A Supervisor approval is an actionable mechanic update: parts can now
-      // be collected and used against the matching Job Card fault.
-      try {
-        const approvedRes = await storeService.getApprovedJobCardParts(companyDb, primaryIdentity);
-        const approvedParts = Array.isArray(approvedRes?.Data) ? approvedRes.Data : (Array.isArray(approvedRes?.data) ? approvedRes.data : []);
-        const pendingCollection = approvedParts.filter(part => !part?.Received && String(part?.Status || part?.ApprovalStatus || 'A').trim().toUpperCase() !== 'R');
-        const byJobCard = new Map();
-        pendingCollection.forEach(part => {
-          const jobCard = part?.JobCardDocEntry ?? part?.JobCardNo ?? part?.DocEntry;
-          if (jobCard !== undefined && jobCard !== null && String(jobCard).trim()) byJobCard.set(String(jobCard), part);
-        });
-        workflowNotifications.push(...Array.from(byJobCard.entries()).map(([jobCard, part]) => ({
-          id: `workflow-approved-parts-${primaryIdentity}-${jobCard}`,
-          code: `workflow-approved-parts-${primaryIdentity}-${jobCard}`,
-          title: `Parts approved for Job Card #${jobCard}`,
-          message: `${String(part?.ItemName || part?.ItemCode || 'Requested parts')} are approved and ready to collect.`,
-          creatorName: 'Supervisor',
-          significance: 'High',
-          priority: 'High',
-          busNo: String(part?.Vehicle || part?.BusNo || part?.RegNo || '').trim(),
-          detailDocEntry: jobCard,
-          docEntry: jobCard,
-          read: false,
-          type: 'W',
-          timestamp: part?.ApprovedDate || part?.RequestDate || nowIso,
-          workflowDerived: true,
-        })));
-      } catch (approvedPartsError) {
-        // Some server versions do not yet expose this queue; My Work remains available.
-      }
-    }
-
-    return workflowNotifications;
-  };
 
   async function fetchNotifications() {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
       const identityCandidates = resolveUserIdCandidates();
+      const primaryIdentity = identityCandidates[0] || '';
 
-      const probeResults = await Promise.all(
-        identityCandidates.map(async (identity) => {
-          try {
-            const [notificationsResponse, countResponse] = await Promise.all([
-              dashboardService.getNotifications(companyDb, identity),
-              dashboardService.getNotificationCount(companyDb, identity),
-            ]);
+      const notificationsResponse = await dashboardService.getNotifications(companyDb, primaryIdentity || user?.User || user?.user || user?.username || user?.Code || user?.code || '');
+      const notificationData = Array.isArray(notificationsResponse?.Data)
+        ? notificationsResponse.Data
+        : (Array.isArray(notificationsResponse?.data) ? notificationsResponse.data : []);
 
-            const notificationData = Array.isArray(notificationsResponse?.Data)
-              ? notificationsResponse.Data
-              : (Array.isArray(notificationsResponse?.data) ? notificationsResponse.data : []);
-
-            return {
-              identity,
-              notifications: notificationData,
-              unreadCount: Number(countResponse?.Data) || 0,
-              success: true,
-            };
-          } catch (probeError) {
-            return {
-              identity,
-              notifications: [],
-              unreadCount: 0,
-              success: false,
-              error: probeError,
-            };
-          }
-        })
-      );
-
-      if (probeResults.length > 0 && probeResults.every(result => !result.success)) {
-        throw probeResults[0].error || new Error('Unable to fetch notifications from backend');
-      }
-
-      const bestProbe = probeResults.sort((a, b) => {
-        if (b.notifications.length !== a.notifications.length) {
-          return b.notifications.length - a.notifications.length;
-        }
-        return b.unreadCount - a.unreadCount;
-      })[0] || { notifications: [], unreadCount: 0 };
-
-      let mappedNotifications = bestProbe.notifications.map(mapNotificationItem);
-      let effectiveUnreadCount = Number(bestProbe.unreadCount) || 0;
-      try {
-        const workflowNotifications = await buildWorkflowNotifications(companyDb, identityCandidates);
-        const existingCodes = new Set(mappedNotifications.map(item => String(item.code || item.id || '')));
-        mappedNotifications = [...workflowNotifications.filter(item => !existingCodes.has(String(item.code || item.id || ''))), ...mappedNotifications];
-        effectiveUnreadCount += workflowNotifications.length;
-      } catch (workflowError) {
-        console.warn('Workflow notification derivation failed:', workflowError?.message || workflowError);
-      }
+      let mappedNotifications = notificationData.map(mapNotificationItem);
 
       mappedNotifications.sort((a, b) => getNotificationSortMs(b) - getNotificationSortMs(a));
-
-      // Some live deployments return only an unread count for mechanics. Keep
-      // each update actionable instead of compressing several updates into one card.
-      if (isFieldStaffUser(user) && mappedNotifications.length === 0 && effectiveUnreadCount > 0) {
-        mappedNotifications = Array.from({ length: effectiveUnreadCount }, (_, index) => ({
-          id: `workflow-mechanic-update-${bestProbe.identity || 'me'}-${index + 1}`,
-          code: `workflow-mechanic-update-${bestProbe.identity || 'me'}-${index + 1}`,
-          title: 'Work update waiting',
-          message: 'A fault assigned to you needs attention. Open My Work to view and add your work entry.',
-          creatorName: 'System',
-          significance: 'High',
-          priority: 'High',
-          read: false,
-          type: 'W',
-          timestamp: new Date().toISOString(),
-          workflowDerived: true,
-        }));
-      }
-
       mappedNotifications = ensureUniqueNotificationKeys(mappedNotifications);
-
-      const mismatch = mappedNotifications.length === 0 && effectiveUnreadCount > 0;
-      setHasBackendCountMismatch(mismatch);
 
       dispatch(setNotifications(mappedNotifications));
       const unreadFromList = mappedNotifications.filter(item => !item.read).length;
-      dispatch(setUnreadCount(Math.max(unreadFromList, effectiveUnreadCount)));
+      dispatch(setUnreadCount(unreadFromList));
+      setHasBackendCountMismatch(false);
     } catch (error) {
       setHasBackendCountMismatch(false);
       console.error('Error fetching notifications:', error.message || error);
@@ -669,15 +354,122 @@ const NotificationsScreen = ({ navigation }) => {
   const handleNotificationPress = async (item) => {
     const notificationCode = item.code || item.id || item.Code;
     if (!item.read && notificationCode) {
-      if (item.workflowDerived) {
-        dispatch(markAsRead(notificationCode));
-      } else {
-        await handleMarkAsRead(notificationCode, item);
-      }
+      await handleMarkAsRead(notificationCode, item);
     }
 
     const type = String(item.type || item.Type || '').trim().toUpperCase();
     const docEntry = item.detailDocEntry || item.docEntry || item.DocEntry;
+    const notificationText = String(item?.Message || item?.message || item?.Title || item?.title || '').toLowerCase();
+    const isJobCardTransferNotification = notificationText.includes('transfer')
+      || notificationText.includes('transferred')
+      || ['TRANSFER', 'JOB_CARD_TRANSFER', 'JOBCARDTRANSFER', 'JT', 'JCT'].includes(type)
+      || Boolean(item?.TransferJobCard || item?.TransferStatus || item?.ToSupervisorCode || item?.TrnSupCode);
+    const requiresSupervisorVerification = notificationText.includes('work entry') && (
+      notificationText.includes('supervisor inspection')
+      || notificationText.includes('inspection is required')
+    );
+    const isBreakdownNotification = () => {
+      const scanValues = (value, results = []) => {
+        if (!value || typeof value === 'function') return results;
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+          results.push(String(value));
+          return results;
+        }
+        if (Array.isArray(value)) {
+          value.forEach((entry) => scanValues(entry, results));
+          return results;
+        }
+        if (typeof value === 'object') {
+          Object.keys(value).forEach((key) => {
+            const lowerKey = String(key || '').toLowerCase();
+            if (['formtype', 'complainttype', 'jobtype', 'jobcardtype', 'type', 'title', 'message', 'description', 'reason', 'fault', 'faultname'].includes(lowerKey)) {
+              results.push(String(value[key] ?? ''));
+            }
+            scanValues(value[key], results);
+          });
+        }
+        return results;
+      };
+
+      const allValues = scanValues(item).filter(Boolean);
+      const combined = allValues.join(' ').toUpperCase();
+      const normalized = String(combined || '').trim();
+      return (
+        normalized.includes('BREAKDOWN')
+        || normalized.includes('LINE BREAKDOWN')
+        || normalized.includes('BREAKDOWN ALERT')
+        || normalized.includes('BREAKDOWN ASSIGNED')
+        || normalized === 'B'
+        || normalized === 'JB'
+        || type === 'JCT'
+        || type === 'JCA'
+        || String(item?.FormType || item?.formType || item?.ComplaintType || item?.complaintType || item?.JobType || item?.jobType || '').trim().toUpperCase() === 'B'
+        || ['B', 'JB', 'JCT', 'JCA'].includes(String(item?.Type || item?.type || '').trim().toUpperCase())
+      );
+    };
+
+    const shouldOpenBreakdownWorkEntryForMechanic =
+      (isMechanicUser(user) || isFieldStaffUser(user)) && (
+        isBreakdownNotification()
+        || type === 'J'
+        || type === 'B'
+        || type === 'JB'
+        || type === 'JCT'
+        || type === 'JCA'
+        || Boolean(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.ComplaintNo || item?.complaintNo || item?.BreakdownNo || item?.BreakdownDocEntry || item?.BreakdownId)
+      );
+
+    if (supervisorUser && isJobCardTransferNotification) {
+      navigation.navigate('JobCardDetail', {
+        jobCardNo: item?.JobCardNo || item?.jobCardNo || '',
+        docEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.DocEntry || item?.docEntry || docEntry || '',
+        complaintNo: item?.ComplaintNo || item?.complaintNo || '',
+        complaintType: item?.ComplaintType || item?.complaintType || 'Breakdown',
+        dbName: dbName || 'MUTSPL_TEST',
+        focusTransfer: true,
+      });
+      return;
+    }
+
+    if (supervisorUser && requiresSupervisorVerification) {
+      navigation.navigate('ReviewWorkEntries', {
+        focusWorkEntryDocEntry: item?.WorkEntryDocEntry || docEntry,
+        focusJobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || '',
+      });
+      return;
+    }
+
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && type === 'JCA') {
+      navigation.navigate('MechanicDashboard');
+      return;
+    }
+
+    if (shouldOpenBreakdownWorkEntryForMechanic) {
+      const breakdownComplaintNo = String(
+        item?.ComplaintNo
+        || item?.complaintNo
+        || item?.BreakdownNo
+        || item?.BreakdownDocEntry
+        || item?.BreakdownId
+        || item?.IncidentNo
+        || item?.incidentNo
+        || docEntry
+        || resolveIncidentDocEntryFromNotification(item)
+        || ''
+      ).trim();
+
+      navigation.navigate('FaultWork', {
+        docEntry: Number(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.DocEntry || item?.docEntry || docEntry || 0) || 0,
+        dbName: dbName || 'MUTSPL_TEST',
+        jobCardNo: item?.JobCardNo || item?.jobCardNo || item?.DocEntry || item?.docEntry || docEntry || '',
+        complaintType: item?.ComplaintType || item?.complaintType || 'Breakdown',
+        complaintNo: breakdownComplaintNo || String(docEntry || ''),
+        fault: item,
+        faultLine: Number(item?.FaultLine || item?.faultLine || 1) || 1,
+        depot: item?.Depot || item?.depot || item?.BranchNm || item?.Branch || '',
+      });
+      return;
+    }
 
     // Route team tasks straight to the same focused Team Approvals item.
     if ((type === 'T' || (isTeamLeaderUser(user) && type === 'J')) && docEntry) {
@@ -738,11 +530,12 @@ const NotificationsScreen = ({ navigation }) => {
       return;
     }
 
-    if (type === 'J') {
+    if (type === 'J' || type === 'JB' || type === 'JCT' || type === 'JCA') {
       navigation.navigate('JobCardDetail', {
         docEntry,
         jobCardNo: docEntry,
         dbName: dbName || 'MUTSPL_TEST',
+        complaintType: ['JCT', 'JCA'].includes(type) ? 'Breakdown' : undefined,
       });
       return;
     }
@@ -771,6 +564,8 @@ const NotificationsScreen = ({ navigation }) => {
       case 'D':
         return 'report-problem';
       case 'B':
+      case 'JCT':
+      case 'JCA':
         return 'warning';
       case 'J':
         return 'assignment';
@@ -847,16 +642,6 @@ const NotificationsScreen = ({ navigation }) => {
           <Text style={[styles.time, { color: colors.gray }]}>
             {formatDateTime(item.timestamp || item.Date)}
           </Text>
-          {item?.workflowDerived && String(item?.type || '').toUpperCase() === 'V' && (
-            <TouchableOpacity
-              onPress={() => handleNotificationPress(item)}
-              style={[styles.quickActionBtn, { borderColor: '#6D28D9' }]}
-              activeOpacity={0.8}
-            >
-              <MaterialIcons name="check-circle" size={14} color="#6D28D9" />
-              <Text style={styles.quickActionText}>Verify Now</Text>
-            </TouchableOpacity>
-          )}
         </View>
 
         {!item.read && (

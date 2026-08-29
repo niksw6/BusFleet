@@ -57,7 +57,7 @@ const request = async (url, options = {}) => {
     if (method !== 'GET' && options.body) {
       try {
         const bodyObj = JSON.parse(options.body);
-        console.log(`   📦 Payload:`, JSON.stringify(bodyObj, null, 2));
+        console.log(`   📦 Payload:`, JSON.stringify(bodyObj));
       } catch (e) {
         console.log(`   📦 Payload: ${options.body}`);
       }
@@ -109,7 +109,7 @@ const request = async (url, options = {}) => {
     console.log(`\n✅ API ${method} RESPONSE SUCCESS`);
     console.log(`   🔗 URL: ${fullUrl}`);
     console.log(`   📊 Status: ${response.status}`);
-    console.log(`   📄 Response:`, JSON.stringify(data, null, 2));
+    console.log(`   📄 Response:`, JSON.stringify(data));
     
     return { data, status: response.status, ok: response.ok };
   } catch (error) {

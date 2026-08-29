@@ -315,7 +315,12 @@ const extractPendingWorkEntryIdsFromNotifications = (notifications = []) => {
   rows.forEach((item) => {
     const type = String(item?.Type || item?.type || '').trim().toUpperCase();
     const text = `${item?.Message || item?.message || ''} ${item?.Title || item?.title || ''}`.toLowerCase();
-    const isWorkEntryVerificationText = text.includes('work entry') && (text.includes('verify') || text.includes('approve'));
+    const isWorkEntryVerificationText = text.includes('work entry') && (
+      text.includes('verify')
+      || text.includes('approve')
+      || text.includes('supervisor inspection')
+      || text.includes('inspection is required')
+    );
     const isVerificationItem = type === 'WE' || type === 'V' || isWorkEntryVerificationText;
     if (!isVerificationItem) return;
 
@@ -500,6 +505,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
   const [actioningWorkEntry, setActioningWorkEntry] = useState(null);
   const [showDenyModal, setShowDenyModal] = useState(false);
   const [denyReason, setDenyReason] = useState('');
+  const [approvalRemarks, setApprovalRemarks] = useState('');
   const consumedFocusEntryRef = useRef('');
 
   const onPanGestureEvent = Animated.event(
@@ -980,6 +986,8 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
       return;
     }
 
+    const remarks = toCleanString(approvalRemarks) || 'Verified Successfully.';
+
     try {
       setActioningWorkEntry(workEntryDocEntry);
       const response = await workEntryService.verifyWorkEntry({
@@ -987,7 +995,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
         UserCode: resolveCurrentUserCode(),
         Status: 'SV',
-        Remarks: 'Verified Successfully.',
+        Remarks: remarks,
       });
       if (response?.Success === false || response?.Status === false) {
         throw new Error(response?.Message || 'Unable to approve work entry.');
@@ -998,7 +1006,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         status: 'SV',
         completed: true,
         verifyBy: resolveCurrentUserCode(),
-        verifyRemarks: 'Verified Successfully.',
+        verifyRemarks: remarks,
       }));
       setSelectedWorkEntry((prev) => {
         if (!prev) return prev;
@@ -1010,11 +1018,12 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
             status: 'SV',
             completed: true,
             verifyBy: resolveCurrentUserCode(),
-            verifyRemarks: 'Verified Successfully.',
+            verifyRemarks: remarks,
           },
         };
       });
       setSelectedWorkEntry(null);
+      setApprovalRemarks('');
       consumedFocusEntryRef.current = '';
       navigation.setParams({
         focusWorkEntryDocEntry: null,
@@ -1037,6 +1046,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
   };
 
   const openDenyFlow = () => {
+    setApprovalRemarks('');
     setDenyReason('');
     setShowDenyModal(true);
   };
@@ -1407,6 +1417,19 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                     ))
                   )}
                 </View>
+
+                <TextInput
+                  mode="outlined"
+                  label="Supervisor remarks"
+                  value={approvalRemarks}
+                  onChangeText={setApprovalRemarks}
+                  multiline
+                  numberOfLines={3}
+                  style={{ marginTop: 12, marginBottom: 10, backgroundColor: colors.white }}
+                  outlineColor={colors.border || '#D0D0D0'}
+                  activeOutlineColor={colors.primary}
+                  placeholder="Enter approval remarks"
+                />
 
                 <View style={styles.actionsRow}>
                   <TouchableOpacity

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿/**
+﻿﻿/**
  * WorkOrderRenderers.js
  * Rich, interactive tab renderers for WorkOrderDetailScreen.
  */
@@ -307,7 +307,7 @@ export const renderMechanicsTab = ({ mechanics, theme }) => {
   );
 };
 
-﻿export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
+export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
   const woParts = Array.isArray(parts) ? parts : [];
   const reqParts = Array.isArray(mechanicPartRequests) ? mechanicPartRequests : [];
   const merged = [...woParts, ...reqParts];
@@ -580,7 +580,6 @@ const htStyles = StyleSheet.create({
 export const renderTabContent = (activeTab, ctx) => {
   const { theme, workOrder, mechanics, parts, mechanicPartRequests, workOrderEntries, history, historyLoading, onRefreshHistory } = ctx;
   switch (activeTab) {
-    case 'Details': return renderDetailsTab({ workOrder, theme });
     case 'Mechanics': return renderMechanicsTab({ mechanics, theme });
     case 'PartDetails': return renderPartsTab({ parts, theme, mechanicPartRequests });
     case 'WorkEntry': return renderWorkEntriesTab({ entries: workOrderEntries, theme });

@@ -6,9 +6,14 @@ import {
   TextInput as RNTextInput,
 } from 'react-native';
 import { Text, Chip, TextInput } from 'react-native-paper';
-import MaterialIcons from '../../../shared/components/AppIcon.js';
+import MaterialIcons from '../../../components/AppIcon.js';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
+const BUS_LOCATIONS = [
+  'FRONT', 'BACK', 'LEFT', 'RIGHT', 'TOP', 'BOTTOM',
+  'FRONT_LEFT', 'FRONT_RIGHT', 'BACK_LEFT', 'BACK_RIGHT',
+  'CENTER', 'ENGINE', 'CABIN', 'UNDERBODY',
+].map((value) => ({ Code: value, Name: value }));
 
 /**
  * FaultMechanicPartsSection
@@ -41,6 +46,8 @@ const FaultMechanicPartsSection = ({
   const [expanded, setExpanded] = useState(true);
   const [showMechanicModal, setShowMechanicModal] = useState(false);
   const [showPartsModal, setShowPartsModal] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [locationTargetCode, setLocationTargetCode] = useState(null);
   const [tempMechanics, setTempMechanics] = useState(value.mechanics || []);
   const [partQtyInputs, setPartQtyInputs] = useState({});
 
@@ -75,6 +82,7 @@ const FaultMechanicPartsSection = ({
       Qty: '1',
       UoM: item.UoM || item.InvntryUom || 'Nos',
       StoreItemStatus: 'Direct',
+      BusLocation: '',
     };
     onChange(faultIndex, { mechanics: selectedMechanics, parts: [...selectedParts, newPart] });
     setShowPartsModal(false);
@@ -97,6 +105,13 @@ const FaultMechanicPartsSection = ({
   const updatePartStoreItemStatus = (itemCode, mode) => {
     const updated = selectedParts.map(p =>
       (p.ItemCode || p.Code) === itemCode ? { ...p, StoreItemStatus: mode } : p
+    );
+    onChange(faultIndex, { mechanics: selectedMechanics, parts: updated });
+  };
+
+  const updatePartBusLocation = (itemCode, location) => {
+    const updated = selectedParts.map(p =>
+      (p.ItemCode || p.Code) === itemCode ? { ...p, BusLocation: location } : p
     );
     onChange(faultIndex, { mechanics: selectedMechanics, parts: updated });
   };
@@ -284,6 +299,20 @@ const FaultMechanicPartsSection = ({
                             );
                           })}
                         </View>
+                        <TouchableOpacity
+                          style={[styles.locationPicker, { borderColor: colors.border || '#CCC' }]}
+                          onPress={() => {
+                            setLocationTargetCode(key);
+                            setShowLocationModal(true);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.modeLabel, { color: colors.gray }]}>Bus location:</Text>
+                          <Text style={{ color: part.BusLocation ? colors.dark : colors.gray, fontSize: 12, flex: 1 }}>
+                            {part.BusLocation || 'Select location'}
+                          </Text>
+                          <MaterialIcons name="arrow-drop-down" size={18} color={colors.gray} />
+                        </TouchableOpacity>
                       </View>
                       <View style={styles.partQtyRow}>
                         <Text style={[styles.uomText, { color: colors.gray }]}>{part.UoM}</Text>
@@ -363,6 +392,28 @@ const FaultMechanicPartsSection = ({
             ) : null}
           </View>
         )}
+      />
+
+      <ModalSelector
+        visible={showLocationModal}
+        onClose={() => {
+          setShowLocationModal(false);
+          setLocationTargetCode(null);
+        }}
+        onSelect={(value, item) => {
+          if (locationTargetCode !== null) {
+            updatePartBusLocation(locationTargetCode, item?.Code || value);
+          }
+          setShowLocationModal(false);
+          setLocationTargetCode(null);
+        }}
+        title="Select Bus Location"
+        data={BUS_LOCATIONS}
+        loading={false}
+        searchPlaceholder="Search locations..."
+        displayKey="Name"
+        valueKey="Code"
+        searchKeys={['Name', 'Code']}
       />
     </View>
   );
@@ -505,6 +556,15 @@ const styles = StyleSheet.create({
     minHeight: 28,
     paddingVertical: 4,
     paddingHorizontal: 2,
+  },
+  locationPicker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    marginTop: 6,
   },
   radioOuter: {
     width: 16,

@@ -7,9 +7,7 @@ import { useSelector, useDispatch } from 'react-redux';
 // Feature-based imports
 import { LoginScreen } from '../features/auth';
 import { CreateFuelLogScreen, CreateScheduleScreen } from '../features/maintenance';
-import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen } from '../features/jobCards';
-import LineBreakdownWorkEntryScreen from '../features/jobCards/screens/LineBreakdownWorkEntryScreen';
-import LineBreakdownWorkDetailScreen from '../features/jobCards/screens/LineBreakdownWorkDetailScreen';
+import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, WorkEntryScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen, ReviewWorkEntriesScreen } from '../features/jobCards';
 import { CreateIncidentScreen } from '../features/complaints';
 import BreakdownTeamsListScreen from '../features/breakdownTeams/screens/BreakdownTeamsListScreen';
 import BreakdownTeamPortalScreen from '../features/breakdownTeams/screens/BreakdownTeamPortalScreen';
@@ -23,9 +21,8 @@ import { loginSuccess } from '../store/slices/authSlice';
 import { setUnreadCount } from '../store/slices/notificationSlice';
 import { getUserData, getDBName } from '../utils/storage';
 import { setNavigationRef } from '../api/client';
-import { dashboardService, storeService, teamService, mechanicService, jobCardService } from '../api/services';
 import { COLORS, DARK_COLORS } from '../constants/theme';
-import { isSupervisorUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../utils/roleAccess';
+import { isSupervisorUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser } from '../utils/roleAccess';
 
 const Stack = createNativeStackNavigator();
 
@@ -44,113 +41,10 @@ const AppNavigator = () => {
   const teamLeaderUser = isTeamLeaderUser(user);
   const driverUser = isDriverUser(user);
 
-  const isSupervisorVerificationPending = (entity) => {
-    const raw = String(entity?.Status ?? entity?.WorkStatus ?? entity?.FaultStatus ?? '').trim().toUpperCase();
-    return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw);
-  };
-
-  const isPendingPartApproval = (part) => {
-    const status = String(part?.Status ?? part?.ApprovalStatus ?? '').trim().toUpperCase();
-    return !status || ['P', 'PENDING', 'RQ', 'REQUESTED'].includes(status);
-  };
-
-  // Refresh the badge whenever navigation changes. Some actionable items are
-  // workflow queues rather than rows from GetNotifications, so count them here.
-  const refreshNotificationCount = useCallback(async () => {
+  const refreshNotificationCount = useCallback(() => {
     if (!isAuthenticated || !user) return;
-
-    const companyDb = dbName || 'MUTSPL_TEST';
-    const userCode = String(user?.User || user?.user || user?.username || user?.Code || user?.code || user?.Name || user?.name || '').trim();
-    let unreadCount = 0;
-
-    try {
-      if (userCode) {
-        const countResponse = await dashboardService.getNotificationCount(companyDb, userCode);
-        unreadCount = Number(countResponse?.Data) || 0;
-      }
-
-      if (teamLeaderUser && userCode) {
-        const teamResponse = await teamService.getMechanicalDashboard(companyDb, userCode);
-        const source = teamResponse?.Data ?? teamResponse;
-        const jobs = Array.isArray(source)
-          ? source
-          : (Array.isArray(source?.JobCards) ? source.JobCards : (Array.isArray(source?.Jobs) ? source.Jobs : []));
-        const teamCode = getUserTeamCode(user);
-        const pendingTeamJobs = jobs.filter((job) => {
-          const status = String(job?.TeamStatus ?? job?.Status ?? job?.AcceptStatus ?? '').trim().toUpperCase();
-          const belongsToTeam = !teamCode || !job?.TeamCode || String(job.TeamCode).trim() === teamCode;
-          return belongsToTeam && !['A', 'ACCEPTED', 'R', 'REJECTED'].includes(status);
-        }).length;
-        unreadCount += pendingTeamJobs;
-      }
-
-      if (fieldStaffUser && userCode) {
-        // Count only this mechanic/electrician's own queue. Prefer the new
-        // assignment-scoped endpoint and retain the live dashboard fallback.
-        let mechanicResponse;
-        try {
-          mechanicResponse = await mechanicService.getMyJobs(companyDb, userCode);
-        } catch (queueError) {
-          mechanicResponse = await mechanicService.getMechanicDashboard(companyDb, userCode);
-        }
-        const source = mechanicResponse?.Data ?? mechanicResponse;
-        const jobs = Array.isArray(source)
-          ? source
-          : (Array.isArray(source?.Faults) ? source.Faults : (Array.isArray(source?.Jobs) ? source.Jobs : (Array.isArray(source?.Items) ? source.Items : [])));
-        const assignedPending = jobs.filter((job) => {
-          const status = String(job?.Status ?? job?.FaultStatus ?? job?.WorkStatus ?? '').trim().toUpperCase();
-          return !['C', 'CM', 'COMPLETED', 'COMPLETE'].includes(status);
-        }).length;
-        let approvedPartJobs = 0;
-        try {
-          const approvedResponse = await storeService.getApprovedJobCardParts(companyDb, userCode);
-          const approvedParts = Array.isArray(approvedResponse?.Data)
-            ? approvedResponse.Data
-            : (Array.isArray(approvedResponse?.data) ? approvedResponse.data : []);
-          approvedPartJobs = new Set(
-            approvedParts
-              .filter((part) => !part?.Received && String(part?.Status ?? part?.ApprovalStatus ?? 'A').trim().toUpperCase() !== 'R')
-              .map((part) => part?.JobCardDocEntry ?? part?.JobCardNo ?? part?.DocEntry)
-              .filter((value) => value !== undefined && value !== null && String(value).trim())
-              .map(String)
-          ).size;
-        } catch (approvedPartsError) {
-          // Keep the work-queue badge available on server versions without this endpoint.
-        }
-        unreadCount = Math.max(unreadCount, assignedPending + approvedPartJobs);
-      }
-
-      if (supervisorUser) {
-        try {
-          const partsResponse = await storeService.getMechanicPartRequests(companyDb);
-          const partRows = Array.isArray(partsResponse?.Data) ? partsResponse.Data : (Array.isArray(partsResponse?.data) ? partsResponse.data : []);
-          const pendingWorkEntries = new Set(
-            partRows
-              .filter(isPendingPartApproval)
-              .map((part) => part?.WorkEntryDocEntry ?? part?.WorkEntryNo ?? part?.DocEntry)
-              .filter((value) => value !== undefined && value !== null && String(value).trim())
-              .map(String)
-          );
-          unreadCount += pendingWorkEntries.size;
-        } catch (partsError) {
-          // A parts endpoint failure must not hide other supervisor badges.
-          console.warn('Parts-request badge refresh failed:', partsError?.message || partsError);
-        }
-
-        try {
-          const jobCardsResponse = await jobCardService.getJobCards(companyDb);
-          const jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
-          unreadCount += jobCards.filter(isSupervisorVerificationPending).length;
-        } catch (verificationError) {
-          console.warn('Verification badge refresh failed:', verificationError?.message || verificationError);
-        }
-      }
-
-      dispatch(setUnreadCount(unreadCount));
-    } catch (error) {
-      console.warn('Notification badge refresh failed:', error?.message || error);
-    }
-  }, [dbName, dispatch, fieldStaffUser, isAuthenticated, supervisorUser, teamLeaderUser, user]);
+    dispatch(setUnreadCount(0));
+  }, [dispatch, isAuthenticated, user]);
 
   const [appIsReady, setAppIsReady] = useState(false);
 
@@ -278,22 +172,12 @@ const AppNavigator = () => {
                 }}
               />
             )}
-            {(fieldStaffUser || supervisorUser) && (
-              <Stack.Screen
-                name="LineBreakdownWorkEntry"
-                component={LineBreakdownWorkEntryScreen}
-                options={{
-                  title: 'Line Breakdown Work Entry',
-                  presentation: 'modal',
-                }}
-              />
-            )}
             {fieldStaffUser && (
               <Stack.Screen
-                name="LineBreakdownWorkDetail"
-                component={LineBreakdownWorkDetailScreen}
+                name="WorkEntry"
+                component={WorkEntryScreen}
                 options={{
-                  title: 'Work Entry Details',
+                  title: 'Work Entry',
                   presentation: 'modal',
                 }}
               />
@@ -348,6 +232,15 @@ const AppNavigator = () => {
               <Stack.Screen
                 name="PartsApproval"
                 component={PartsApprovalScreen}
+                options={{
+                  headerShown: false,
+                }}
+              />
+            )}
+            {supervisorUser && (
+              <Stack.Screen
+                name="ReviewWorkEntries"
+                component={ReviewWorkEntriesScreen}
                 options={{
                   headerShown: false,
                 }}

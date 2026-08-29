@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿import React, { useState, useEffect, useCallback } from 'react';
+﻿﻿import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -18,10 +18,10 @@ import Toast from 'react-native-toast-message';
 
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { complaintService, jobCardService, masterService, workEntryService, storeService, teamService, mechanicService } from '../../../api/services';
+import { complaintService, jobCardService, masterService, workEntryService, storeService, teamService, mechanicService, lineBreakdownService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
-import { isFieldStaffUser, isSupervisorUser } from '../../../utils/roleAccess';
+import { getUserDepot, getUserRole, isFieldStaffUser, isSupervisorUser } from '../../../utils/roleAccess';
 import { renderTabContent as renderRichTabContent, buildTheme as buildRichTheme } from './WorkOrderRenderers.js';
 
 /**
@@ -36,6 +36,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     jobType,
     complaintType: routeComplaintType,
     complaintNo,
+    focusTransfer,
     dbName: routeDbName,
     regTime: routeRegTime,
     complaintTime: routeComplaintTime,
@@ -48,9 +49,42 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const userRole = getUserRole(user);
   const mechanicUser = isFieldStaffUser(user);
   const supervisorUser = isSupervisorUser(user);
   const inputBorderColor = colors.border || COLORS.border;
+
+  const isBreakdownJobCard = () => {
+    const rawType = String(
+      routeComplaintType
+      || workOrder?.ComplaintType
+      || workOrder?.FormType
+      || workOrder?.JobType
+      || workOrder?.Type
+      || ''
+    ).trim().toLowerCase();
+    return rawType.includes('breakdown') || rawType.includes('brk');
+  };
+
+  const canManageMechanicsOnJobCard = supervisorUser && (isBreakdownJobCard() || String(
+    workOrder?.AssignmentType
+    || workOrder?.AssignType
+    || workOrder?.TransferTo
+    || ''
+  ).trim().toLowerCase().includes('supervisor'));
+
+  const getAccessibleTabs = () => {
+    const tabs = [];
+    if (supervisorUser) {
+      tabs.push({ key: 'Mechanics', label: 'Mechanics', shortLabel: 'Mechs' });
+      tabs.push({ key: 'PartDetails', label: 'Part Details', shortLabel: 'Parts' });
+    }
+    if (mechanicUser || supervisorUser) {
+      tabs.push({ key: 'WorkEntry', label: 'Work Entry', shortLabel: 'Entries' });
+    }
+    tabs.push({ key: 'History', label: 'History', shortLabel: 'Log' });
+    return tabs;
+  };
 
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('Mechanics');
@@ -69,6 +103,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [workEntry, setWorkEntry] = useState({ description: '', hours: '' });
   const [mechanicWork, setMechanicWork] = useState([]);
   const [selectedMechanics, setSelectedMechanics] = useState([]);
+  const [availableMechanics, setAvailableMechanics] = useState([]);
+  const [assignedMechanics, setAssignedMechanics] = useState([]);
   const [mechanicFaultMap, setMechanicFaultMap] = useState({});
   const [submittingWorkOrder, setSubmittingWorkOrder] = useState(false);
   const [workOrderEntries, setWorkOrderEntries] = useState([]);
@@ -76,10 +112,15 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [historyRows, setHistoryRows] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [workOrderExpandedMap, setWorkOrderExpandedMap] = useState({});
+  const [selectedWorkEntry, setSelectedWorkEntry] = useState(null);
   const [mechanicPartRequests, setMechanicPartRequests] = useState([]);
   const [loadingMechanicPartRequests, setLoadingMechanicPartRequests] = useState(false);
   const [verifyingEntryId, setVerifyingEntryId] = useState(null);
   const [closingJobCard, setClosingJobCard] = useState(false);
+  const [transferResponseVisible, setTransferResponseVisible] = useState(false);
+  const [transferResponseAction, setTransferResponseAction] = useState('ACCEPT');
+  const [transferRemarks, setTransferRemarks] = useState('');
+  const [respondingToTransfer, setRespondingToTransfer] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedMechanicDetail, setSelectedMechanicDetail] = useState(null);
   const [mechanicDetailVisible, setMechanicDetailVisible] = useState(false);
@@ -87,15 +128,30 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [previewImageUri, setPreviewImageUri] = useState(null);
   const [previewImageTitle, setPreviewImageTitle] = useState('');
 
-  const tabs = [
-    { key: 'Details',     label: 'Details',      shortLabel: 'Info' },
-    { key: 'Mechanics',   label: 'Mechanics',    shortLabel: 'Mechs' },
-    { key: 'PartDetails', label: 'Part Details', shortLabel: 'Parts' },
-    { key: 'WorkEntry',   label: 'Work Entry',   shortLabel: 'Entries' },
-    { key: 'History',     label: 'History',      shortLabel: 'Log' },
-  ];
+  const tabs = getAccessibleTabs();
 
   const getTabConfig = (key) => tabs.find((t) => t.key === key);
+
+  useEffect(() => {
+    if (!tabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(tabs[0]?.key || 'History');
+    }
+  }, [activeTab, tabs]);
+
+  const isTransferFlagSet = (value) => (
+    value === true
+    || value === 1
+    || String(value || '').trim().toLowerCase() === 'true'
+    || String(value || '').trim() === '1'
+  );
+
+  useEffect(() => {
+    if (focusTransfer && supervisorUser && !isTransferFlagSet(workOrder?.IsTransfer)) {
+      setTransferResponseVisible(true);
+    } else if (isTransferFlagSet(workOrder?.IsTransfer)) {
+      setTransferResponseVisible(false);
+    }
+  }, [focusTransfer, supervisorUser, workOrder?.IsTransfer]);
 
   const extractRows = (response) => {
     const data = response?.Data ?? response?.data ?? response;
@@ -249,12 +305,38 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const isApiSuccess = (response) => response?.Success !== false && response?.Status !== false;
   const getEntryStatus = (entry) => {
-    const raw = entry?.Status ?? entry?.WorkStatus ?? entry?.FaultStatus ?? '';
+    const raw = entry?.WorkEntryStatus
+      ?? entry?.EntryStatus
+      ?? entry?.WorkStatus
+      ?? entry?.FaultStatus
+      ?? entry?.WorkEntry?.Status
+      ?? entry?.Data?.Status
+      ?? entry?.Status
+      ?? '';
     if (raw === null || raw === undefined || typeof raw === 'boolean' || raw === '') return '';
     return String(raw).trim().toUpperCase();
   };
   const isAwaitingSupervisorVerification = (entry) => ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(getEntryStatus(entry));
   const isSupervisorVerified = (entry) => ['SV', 'C', 'CM', 'COMPLETED', 'COMPLETE'].includes(getEntryStatus(entry));
+  const getWorkEntryStatusLabel = (entry) => {
+    const status = getEntryStatus(entry);
+    if (isSupervisorVerified(entry)) return 'Approved by Supervisor';
+    if (isAwaitingSupervisorVerification(entry)) return 'Awaiting Verification';
+    if (status === 'I' || status === 'IP' || status === 'IN PROGRESS') return 'In Progress';
+    if (status === 'RW' || status === 'REWORK') return 'Sent for Rework';
+    return status || 'Open';
+  };
+  const transferStatus = String(workOrder?.TransferStatus || workOrder?.TransferApprovalStatus || workOrder?.TransferAction || '').trim().toUpperCase();
+  const transferAlreadyAccepted = isTransferFlagSet(workOrder?.IsTransfer);
+  const currentSupervisorCode = String(user?.Code || user?.code || user?.UserCode || user?.userCode || user?.User || '').trim();
+  const transferSupervisorCode = String(workOrder?.ToSupervisorCode || workOrder?.TrnSupCode || workOrder?.TransferToSupervisorCode || '').trim();
+  const hasPendingTransfer = supervisorUser
+    && transferSupervisorCode
+    && currentSupervisorCode
+    && transferSupervisorCode === currentSupervisorCode
+    && !transferAlreadyAccepted
+    && !['ACCEPT', 'ACCEPTED', 'A', 'REJECT', 'REJECTED', 'R'].includes(transferStatus);
+  const transferAccepted = supervisorUser && (transferAlreadyAccepted || ['ACCEPT', 'ACCEPTED', 'A'].includes(transferStatus));
 
   const setExpandedEntryKeys = (entries = []) => {
     setWorkOrderExpandedMap((prev) => {
@@ -384,6 +466,13 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         ? row.WorkEntries.map((entry) => ({
           ...row,
           ...entry,
+          WorkEntryStatus: entry?.WorkEntryStatus
+            || entry?.EntryStatus
+            || entry?.WorkStatus
+            || entry?.Status
+            || row?.WorkEntryStatus
+            || row?.WorkStatus
+            || (entry?.CompleteDate || entry?.CompletedDate || entry?.EndDate ? 'C' : 'WC'),
           FaultCode: entry?.FaultCode || row?.FaultCode,
           Fault: entry?.Fault || row?.FaultCode || row?.FaultName,
           FaultName: entry?.FaultName || row?.FaultName,
@@ -515,7 +604,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   // Multiple work orders per job card are allowed
   // Job Cards are the source of truth. Mechanics submit work through Fault Work;
   // this screen is read-only and surfaces those entries.
-  const isWorkOrderLocked = true;
+  const isWorkOrderLocked = !transferAccepted;
   const derivedMechanics = Array.from(new Map(
     (Array.isArray(workOrderEntries) ? workOrderEntries : [])
       .map((entry, index) => {
@@ -527,10 +616,26 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       .filter(Boolean)
   ).values());
   const mechanicsForDisplay = Array.isArray(workOrder?.Mechanics) && workOrder.Mechanics.length > 0
-    ? workOrder.Mechanics
-    : derivedMechanics;
+    ? (transferAccepted && availableMechanics.length > 0 ? availableMechanics : workOrder.Mechanics)
+    : (availableMechanics.length > 0 ? availableMechanics : derivedMechanics);
   const mechanicCount = mechanicsForDisplay.length;
   const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
+
+  useEffect(() => {
+    if (!transferAccepted || availableMechanics.length > 0) return;
+    const mechanicDepot = String(
+      getUserDepot(user)
+      || workOrder?.ToDepot
+      || workOrder?.TrnDepot
+      || workOrder?.TransferToDepot
+      || workOrder?.Depot
+      || '',
+    ).trim();
+    if (!mechanicDepot) return;
+    masterService.getMechanicList(dbName || 'MUTSPL_TEST', mechanicDepot)
+      .then((response) => setAvailableMechanics(extractRows(response)))
+      .catch(() => setAvailableMechanics([]));
+  }, [transferAccepted, dbName, user, workOrder, availableMechanics.length]);
 
   useFocusEffect(
     useCallback(() => {
@@ -963,9 +1068,13 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         const mechanicMap = new Map();
         [...sourceMechanics, ...dashboardData.mechanics, ...workEntryMechanics].forEach((mechanic, index) => {
           const code = String(mechanic?.MechanicCode || mechanic?.MechCode || mechanic?.Code || mechanic?.UserCode || '').trim();
-          const name = String(mechanic?.MechanicName || mechanic?.MechName || mechanic?.Name || '').trim();
+          const name = String(mechanic?.MechanicName || mechanic?.MechName || mechanic?.EmployeeName || mechanic?.UserName || mechanic?.Name || '').trim();
           const key = `${name || 'mechanic'}-${code || index}`;
-          mechanicMap.set(key, { ...mechanic, MechanicCode: code, MechanicName: name || code || '-' });
+          mechanicMap.set(key, {
+            ...mechanic,
+            MechanicCode: code,
+            MechanicName: name || code || '-',
+          });
         });
         const mergedMechanics = Array.from(mechanicMap.values());
         const mergedFaults = [...normalizedFaults, ...dashboardData.faults];
@@ -989,6 +1098,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           }),
           Operations: mergedOperations,
         });
+        if (mergedMechanics.length > 0) setAssignedMechanics(mergedMechanics);
         let enrichedWorkEntries = await fetchRelatedWorkOrders({
           ...sourceData,
           Mechanics: mergedMechanics,
@@ -1042,11 +1152,17 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const closeVerifiedJobCard = async (entries) => {
     const allVerified = entries.length > 0 && entries.every(isSupervisorVerified);
-    if (!allVerified) return;
+    if (!allVerified) {
+      Toast.show({
+        type: 'info',
+        text1: 'Work entry pending verification',
+        text2: 'Verify all work entries before closing this job card.',
+      });
+      return;
+    }
 
     const companyDb = dbName || 'MUTSPL_TEST';
     const jobCardDocEntry = workOrder?.DocEntry || workOrder?.JobCardDocEntry || docEntry;
-    const incidentDocEntry = workOrder?.ComplaintNo || workOrder?.CmplaintNo || complaintNo;
     if (!jobCardDocEntry) return;
 
     try {
@@ -1056,20 +1172,94 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         throw new Error(jobCardResponse?.Message || 'Could not close the job card.');
       }
 
-      if (incidentDocEntry) {
-        const formType = String(routeComplaintType || workOrder?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
-        const incidentResponse = await complaintService.closeIncident(companyDb, incidentDocEntry, formType);
-        if (!isApiSuccess(incidentResponse)) {
-          throw new Error(incidentResponse?.Message || 'Job card closed, but the incident could not be closed.');
-        }
-      }
-
       setWorkOrder((prev) => ({ ...(prev || {}), Status: 'C' }));
-      Toast.show({ type: 'success', text1: 'Job card and incident closed' });
+      Toast.show({ type: 'success', text1: 'Job card closed' });
     } catch (error) {
-      Toast.show({ type: 'error', text1: 'Closure failed', text2: error?.message || 'Unable to close the job card and incident.' });
+      Toast.show({ type: 'error', text1: 'Closure failed', text2: error?.message || 'Unable to complete closure.' });
     } finally {
       setClosingJobCard(false);
+    }
+  };
+
+  const handleTransferResponse = async () => {
+    const remarks = String(transferRemarks || '').trim();
+    if (!remarks) {
+      Toast.show({ type: 'error', text1: 'Remarks required', text2: 'Enter remarks before responding to the transfer.' });
+      return;
+    }
+    const transferDocEntry = workOrder?.DocEntry || workOrder?.JobCardDocEntry || docEntry;
+    try {
+      setRespondingToTransfer(true);
+      const response = await jobCardService.respondJobCardTransfer(
+        dbName || 'MUTSPL_TEST',
+        transferDocEntry,
+        currentSupervisorCode,
+        transferResponseAction,
+        remarks,
+      );
+      if (!isApiSuccess(response)) throw new Error(response?.Message || 'Unable to respond to transfer.');
+      setWorkOrder((prev) => ({
+        ...(prev || {}),
+        TransferStatus: transferResponseAction,
+        IsTransfer: transferResponseAction === 'ACCEPT' ? true : prev?.IsTransfer,
+      }));
+      setTransferResponseVisible(false);
+      setTransferRemarks('');
+      if (transferResponseAction === 'ACCEPT') setActiveTab('Mechanics');
+      Toast.show({ type: 'success', text1: `Transfer ${transferResponseAction === 'ACCEPT' ? 'accepted' : 'rejected'}` });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Transfer response failed', text2: error?.message || 'Unable to respond to transfer.' });
+    } finally {
+      setRespondingToTransfer(false);
+    }
+  };
+
+  const handleAssignTransferredMechanic = async () => {
+    if (!transferAccepted || selectedMechanics.length === 0) {
+      Toast.show({ type: 'error', text1: 'Select mechanic', text2: 'Select at least one mechanic to assign.' });
+      return;
+    }
+
+    try {
+      setSubmittingWorkOrder(true);
+      const mechanics = selectedMechanics.map((mechanicName) => {
+        const mechanic = mechanicsForDisplay.find((item) => getMechanicName(item) === mechanicName) || {};
+        const selectedFaultCode = mechanicFaultMap[mechanicName] || getAvailableFaults()[0]?.FaultCode || '';
+        const fault = getAvailableFaults().find((item) => String(item.FaultCode) === String(selectedFaultCode)) || {};
+        return {
+          MechanicCode: getMechanicCode(mechanic),
+          MechanicName: mechanicName,
+          FaultCode: selectedFaultCode,
+          FaultName: fault.FaultDesc || fault.FaultName || '',
+          DueHours: Number(fault.DueHours || 0) || 0,
+        };
+      });
+      const lines = mechanics.map((mechanic, index) => ({
+        FaultLine: Number(
+          getAvailableFaults().find((fault) => String(fault.FaultCode) === String(mechanic.FaultCode))?.LineNum
+          || index + 1,
+        ),
+        FaultCode: mechanic.FaultCode,
+        FaultName: mechanic.FaultName,
+        MechanicCode: mechanic.MechanicCode,
+        MechanicName: mechanic.MechanicName,
+        DueHours: mechanic.DueHours,
+      }));
+      const response = await jobCardService.assignMechanics(
+        dbName || 'MUTSPL_TEST',
+        Number(workOrder?.DocEntry || docEntry) || workOrder?.DocEntry || docEntry,
+        lines,
+      );
+      if (!isApiSuccess(response)) throw new Error(response?.Message || 'Unable to assign mechanic.');
+      setWorkOrder((prev) => ({ ...(prev || {}), Mechanics: mechanics }));
+      setAssignedMechanics(mechanics);
+      setSelectedMechanics([]);
+      Toast.show({ type: 'success', text1: 'Mechanic assigned' });
+      await fetchWorkOrderDetails();
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Assignment failed', text2: error?.message || 'Unable to assign mechanic.' });
+    } finally {
+      setSubmittingWorkOrder(false);
     }
   };
 
@@ -1081,13 +1271,24 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     }
     try {
       setVerifyingEntryId(String(workEntryDocEntry));
-      const response = await workEntryService.verifyWorkEntry({
-        CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        UserCode: resolveUserCode(),
-        Status: status,
-        Remarks: status === 'RW' ? 'Returned to mechanic for rework.' : 'Verified by supervisor.',
-      });
+
+      const isBreakdownFlow = isBreakdownJobCard();
+      const response = isBreakdownFlow
+        ? await lineBreakdownService.verifyLineBreakdownWorkEntry({
+            CompanyDB: dbName || 'MUTSPL_TEST',
+            WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+            UserCode: resolveUserCode(),
+            Status: status,
+            Remarks: status === 'RW' ? 'Issue still exists.' : 'Repair verified.',
+          })
+        : await workEntryService.verifyWorkEntry({
+            CompanyDB: dbName || 'MUTSPL_TEST',
+            WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+            UserCode: resolveUserCode(),
+            Status: status,
+            Remarks: status === 'RW' ? 'Returned to mechanic for rework.' : 'Verified by supervisor.',
+          });
+
       if (!isApiSuccess(response)) {
         throw new Error(response?.Message || 'Unable to verify work entry.');
       }
@@ -1101,7 +1302,6 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         text1: status === 'SV' ? 'Work entry verified' : 'Sent back for rework',
         text2: status === 'SV' ? 'The mechanic work is accepted.' : 'The mechanic can update the work entry again.',
       });
-      if (status === 'SV') await closeVerifiedJobCard(nextEntries);
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Verification failed', text2: error?.message || 'Unable to update work entry.' });
     } finally {
@@ -1110,16 +1310,35 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   };
 
   const getMechanicName = (mechanic) => (
-    mechanic?.Mechanic || mechanic?.MechanicName || mechanic?.Name || mechanic?.Mech || '-'
+    mechanic?.Mechanic
+    || mechanic?.MechanicName
+    || mechanic?.EmployeeName
+    || mechanic?.UserName
+    || mechanic?.FirstName
+    || mechanic?.Name
+    || mechanic?.Mech
+    || '-'
   );
 
   const getMechanicCode = (mechanic) => String(
     mechanic?.MechanicCode
     || mechanic?.MechCode
+    || mechanic?.EmpCode
     || mechanic?.UserCode
     || mechanic?.Code
     || ''
   ).trim();
+
+  const isMechanicAssigned = (mechanic) => {
+    const mechanicCode = getMechanicCode(mechanic).toLowerCase();
+    const mechanicName = String(getMechanicName(mechanic)).trim().toLowerCase();
+    return (Array.isArray(assignedMechanics) ? assignedMechanics : []).some((assigned) => {
+      const assignedCode = getMechanicCode(assigned).toLowerCase();
+      const assignedName = String(getMechanicName(assigned)).trim().toLowerCase();
+      return (mechanicCode && assignedCode && mechanicCode === assignedCode)
+        || (mechanicName && assignedName && mechanicName === assignedName);
+    });
+  };
 
   const getFaultLabel = (fault) => {
     const faultCode = String(fault?.FaultCode || fault?.Fault || '').trim();
@@ -1178,14 +1397,18 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const getAvailableFaults = () => {
     if (workOrder?.Faults && workOrder.Faults.length > 0) {
       return workOrder.Faults.map((fault, index) => ({
+        LineNum: Number((fault?.LineNum ?? fault?.FaultLine ?? fault?.Line) || index + 1),
         FaultCode: String(fault?.FaultCode || fault?.Fault || `FLT${String(index + 1).padStart(3, '0')}`),
         FaultDesc: fault?.FaultDesc || fault?.Dscption || fault?.Description || fault?.Fault || workEntry.description || '',
+        DueHours: Number(fault?.DueHours || fault?.DueHour || 0) || 0,
       }));
     }
 
     return [{
+      LineNum: 1,
       FaultCode: 'FLT001',
       FaultDesc: workEntry.description || 'General Work',
+      DueHours: 0,
     }];
   };
 
@@ -1542,7 +1765,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             {workOrder.Faults.map((fault, index) => (
               <View key={index} style={[styles.faultItem, { backgroundColor: colors.light, padding: SPACING.sm, borderRadius: BORDER_RADIUS.sm, marginBottom: SPACING.xs }]}>
                 <Text style={[styles.faultName, { color: colors.dark }]}>
-                  > � {fault?.FaultCode || fault?.Fault || '-'}
+                  &gt; {fault?.FaultCode || fault?.Fault || '-'}
                 </Text>
                 <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
                   {fault?.FaultDesc || fault?.Dscption || '-'}
@@ -1561,7 +1784,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             {workOrder.Operations.map((operation, index) => (
               <View key={`${operation?.WorkEntryDocEntry || 'work'}-${operation?.LineId || index}`} style={[styles.faultItem, { backgroundColor: colors.light, padding: SPACING.sm, borderRadius: BORDER_RADIUS.sm, marginBottom: SPACING.xs }]}>
                 <Text style={[styles.faultName, { color: colors.dark }]}>
-                  > � {getDisplayText(operation?.WorkDone, operation?.Description, operation?.WorkCode, operation) || 'Work update'}
+                  &gt; {getDisplayText(operation?.WorkDone, operation?.Description, operation?.WorkCode, operation) || 'Work update'}
                 </Text>
                 <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
                   Work Entry: {operation?.WorkEntryDocEntry || '-'} | Fault: {operation?.FaultCode || '-'}
@@ -1582,7 +1805,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             {workOrder.Parts.map((part, index) => (
               <View key={index} style={[styles.faultItem, { backgroundColor: colors.light, padding: SPACING.sm, borderRadius: BORDER_RADIUS.sm, marginBottom: SPACING.xs }]}>
                 <Text style={[styles.faultName, { color: colors.dark }]}>
-                  > � {part?.ItemCode || '-'} - {part?.ItemName || '-'}
+                  &gt; {part?.ItemCode || '-'} - {part?.ItemName || '-'}
                 </Text>
                 <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
                   ReqQty: {part?.ReqQty ?? '-'} | IssQty: {part?.IssQty ?? '-'} | AddQty: {part?.AddQty ?? '-'}
@@ -1753,7 +1976,18 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const renderMechanicsDetails = () => (
     <View style={styles.tabContent}>
-      <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: SPACING.xs }]}>Assigned Mechanics</Text>
+      <View style={styles.mechanicsTitleRow}>
+        <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: SPACING.xs }]}>Assigned Mechanics</Text>
+        {transferAccepted && (
+          <TouchableOpacity
+            style={[styles.assignMechanicButton, { backgroundColor: colors.primary }]}
+            onPress={handleAssignTransferredMechanic}
+            disabled={submittingWorkOrder}
+          >
+            {submittingWorkOrder ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.closeJobCardButtonText}>Assign Mechanic</Text>}
+          </TouchableOpacity>
+        )}
+      </View>
       {mechanicsForDisplay.length > 0 ? (
         <View style={styles.mechanicsList}>
           {mechanicsForDisplay.map((mechanic, index) => (
@@ -1779,6 +2013,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               <Text style={[styles.mechanicName, { color: colors.dark }]}>
                 {getMechanicName(mechanic)}
               </Text>
+              {isMechanicAssigned(mechanic) && (
+                <Text style={{ color: '#2B7D2B', fontWeight: '700', marginLeft: 'auto' }}>Assigned</Text>
+              )}
             </TouchableOpacity>
           ))} 
         </View>
@@ -1793,20 +2030,14 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
       <View style={[styles.mappingSection, { backgroundColor: colors.light, borderColor: colors.border || '#E0E0E0' }]}>
         <Text style={[styles.label, { color: colors.dark }]}>Fault Mapping for Mechanics</Text>
-        {(selectedMechanics.length > 0
-          ? selectedMechanics.map((mechanicName, index) => (
-              mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
-              || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
-            ))
-          : mechanicsForDisplay
-        ).length > 0 ? (
-          (selectedMechanics.length > 0
-            ? selectedMechanics.map((mechanicName, index) => (
-                mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
-                || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
-              ))
-            : mechanicsForDisplay
-          ).map((mechanic, index) => {
+        {(selectedMechanics.length > 0 ? selectedMechanics.map((mechanicName, index) => (
+          mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
+          || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
+        )) : assignedMechanics).length > 0 ? (
+          (selectedMechanics.length > 0 ? selectedMechanics.map((mechanicName, index) => (
+            mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
+            || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
+          )) : assignedMechanics).map((mechanic, index) => {
             const faultLabels = getMechanicFaultLabels(mechanic);
             return (
               <View key={`${getMechanicName(mechanic)}-${getMechanicCode(mechanic) || index}`} style={styles.mappingRow}>
@@ -1838,6 +2069,15 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const renderWorkOrderEntries = () => (
     <View style={styles.tabContent}>
+      {mechanicUser && (
+        <TouchableOpacity
+          style={[styles.primaryActionBtn, { backgroundColor: colors.primary, marginBottom: SPACING.md }]}
+          onPress={() => navigation.navigate('MechanicDashboard')}
+        >
+          <Text style={styles.primaryActionText}>+ Add Work Entry</Text>
+        </TouchableOpacity>
+      )}
+
       {loadingWorkOrderEntries ? (
         <View style={styles.emptyState}>
           <Text style={[styles.emptyText, { color: colors.gray }]}>Loading work entries...</Text>
@@ -1853,9 +2093,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             const isExpanded = workOrderExpandedMap[entryKey] !== false;
 
             return (
-              <View
+              <TouchableOpacity
                 key={`${entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.DocNum || index}`}
                 style={[styles.workOrderEntryCard, { backgroundColor: colors.white, borderColor: colors.border || '#E0E0E0' }]}
+                onPress={() => setSelectedWorkEntry(entry)}
+                activeOpacity={0.92}
               >
                 <View style={styles.workOrderEntryHeader}>
                   <View style={styles.workOrderEntryHeaderLeft}>
@@ -1869,8 +2111,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                     <Text style={[styles.workOrderEntryNo, { color: colors.dark }]}>Work Entry #{entry?.WorkEntryDocEntry ?? entry?.DocEntry ?? '-'}</Text>
                   </View>
                   <View style={styles.workOrderEntryHeaderRight}>
-                    <View style={[styles.priorityBadgeInline, { backgroundColor: getStatusColor(entry?.Status || 'O') }]}>
-                      <Text style={styles.priorityTextInline}>{getStatusName(entry?.Status || 'O')}</Text>
+                    <View style={[styles.priorityBadgeInline, { backgroundColor: getStatusColor(getEntryStatus(entry) || 'O') }]}>
+                      <Text style={styles.priorityTextInline}>{getWorkEntryStatusLabel(entry)}</Text>
                     </View>
                   </View>
                 </View>
@@ -1912,7 +2154,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         <Text style={[styles.entryDetailsTitle, { color: colors.gray }]}>Faults:</Text>
                         {entry.DetailedFaults.map((fault, faultIndex) => (
                           <View key={`${entry?.DocEntry || index}-fault-${faultIndex}`} style={[styles.entryDetailsCard, { backgroundColor: colors.light }]}> 
-                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>> � {fault?.FaultCode || fault?.Fault || '-'}</Text>
+                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>&gt; {fault?.FaultCode || fault?.Fault || '-'}</Text>
                             <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>{getDisplayText(fault?.FaultDesc, fault?.Dscption) || '-'}</Text>
                             <Text style={[styles.entryDetailsMeta, { color: colors.gray }]}>Status: {fault?.Status || '-'} | TotalHrs: {fault?.TotalHrs ?? '-'}</Text>
                           </View>
@@ -1925,7 +2167,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         <Text style={[styles.entryDetailsTitle, { color: colors.gray }]}>Parts:</Text>
                         {entry.DetailedParts.map((part, partIndex) => (
                           <View key={`${entry?.DocEntry || index}-part-${partIndex}`} style={[styles.entryDetailsCard, { backgroundColor: colors.light }]}> 
-                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>> � {part?.ItemCode || '-'} - {part?.ItemName || '-'}</Text>
+                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>&gt; {part?.ItemCode || '-'} - {part?.ItemName || '-'}</Text>
                             <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>ReqQty: {part?.ReqQty ?? '-'} | IssQty: {part?.IssQty ?? '-'} | AddQty: {part?.AddQty ?? '-'}</Text>
                             <Text style={[styles.entryDetailsMeta, { color: colors.gray }]}>Whs: {part?.Whs || '-'} | Fault: {part?.Fault || '-'} | Status: {part?.Status || '-'}</Text>
                           </View>
@@ -1958,7 +2200,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                     )}
                   </>
                 )}
-              </View>
+              </TouchableOpacity>
             );
           })}
         </View>
@@ -1971,6 +2213,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     // Mechanics tab uses the local multi-select creation flow, not the rich renderer.
     if (activeTab === 'Mechanics') {
       return renderMechanicsDetails();
+    }
+    if (activeTab === 'WorkEntry') {
+      return renderWorkOrderEntries();
     }
     const mechanicsList = (() => {
       const woMechs = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics : [];
@@ -2025,6 +2270,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     const n = counts?.[key] ?? 0;
     return n > 0 ? String(n) : '0';
   };
+
+  const jobCardIsClosed = ['C', 'CM', 'CLOSED', 'COMPLETED'].includes(String(workOrder?.Status || '').trim().toUpperCase());
+  const incidentIsClosed = ['C', 'CM', 'CLOSED', 'COMPLETED'].includes(String(
+    workOrder?.ComplaintStatus || workOrder?.IncidentStatus || workOrder?.CmplaintStatus || '',
+  ).trim().toUpperCase());
 
   if (loading) {
     return <Loader />;
@@ -2098,6 +2348,43 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         </View>
       </View>
 
+      {hasPendingTransfer && (
+        <View style={[styles.transferPendingCard, { backgroundColor: colors.white, borderColor: inputBorderColor }]}>
+          <Text style={[styles.transferPendingTitle, { color: colors.dark }]}>Job Card Transfer Request</Text>
+          <Text style={[styles.transferPendingText, { color: colors.gray }]}>Transferred to {workOrder?.ToDepot || workOrder?.TrnDepot || '-'}</Text>
+          <View style={styles.transferActionRow}>
+            <TouchableOpacity
+              style={[styles.transferActionButton, { backgroundColor: '#2B7D2B' }]}
+              onPress={() => { setTransferResponseAction('ACCEPT'); setTransferResponseVisible(true); }}
+              disabled={respondingToTransfer}
+            >
+              <Text style={styles.closeJobCardButtonText}>Accept</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.transferActionButton, { backgroundColor: '#B42318' }]}
+              onPress={() => { setTransferResponseAction('REJECT'); setTransferResponseVisible(true); }}
+              disabled={respondingToTransfer}
+            >
+              <Text style={styles.closeJobCardButtonText}>Reject</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {supervisorUser && workOrder && (!jobCardIsClosed || !incidentIsClosed) && (
+        <View style={styles.closeActionsRow}>
+          {!jobCardIsClosed && <TouchableOpacity
+            style={[styles.closeJobCardButton, styles.closeActionButton, { backgroundColor: colors.primary }]}
+            onPress={() => closeVerifiedJobCard(workOrderEntries)}
+            disabled={closingJobCard}
+            accessibilityRole="button"
+            accessibilityLabel="Close job card"
+          >
+            {closingJobCard ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.closeJobCardButtonText}>Close Job Card</Text>}
+          </TouchableOpacity>}
+        </View>
+      )}
+
 
       {/* Tabs */}
       <View style={[styles.tabsContainer, { backgroundColor: colors.white, borderBottomColor: inputBorderColor }]}>
@@ -2164,6 +2451,121 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         {renderTabContent()}
       </ScrollView>
 
+      <Modal
+        visible={Boolean(selectedWorkEntry)}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setSelectedWorkEntry(null)}
+      >
+        <View style={styles.workEntryModalBackdrop}>
+          <View style={[styles.workEntryModal, { backgroundColor: colors.white }]}>
+            <View style={styles.workEntryModalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.workEntryModalTitle, { color: colors.dark }]}>Work Entry #{selectedWorkEntry?.WorkEntryDocEntry ?? selectedWorkEntry?.DocEntry ?? '-'}</Text>
+                <Text style={[styles.workEntryModalStatus, { color: colors.primary }]}>{selectedWorkEntry ? getWorkEntryStatusLabel(selectedWorkEntry) : ''}</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.workEntryModalClose}
+                onPress={() => setSelectedWorkEntry(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Close work entry details"
+              >
+                <MaterialIcons name="close" size={22} color={colors.dark} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView contentContainerStyle={styles.workEntryModalContent}>
+              <View style={[styles.workEntryModalStatusPanel, { backgroundColor: colors.light }]}>
+                <Text style={[styles.workEntryModalStatusPanelText, { color: colors.dark }]}>Status: {selectedWorkEntry ? getWorkEntryStatusLabel(selectedWorkEntry) : '-'}</Text>
+                {selectedWorkEntry && isSupervisorVerified(selectedWorkEntry) && (
+                  <Text style={[styles.workEntryModalVerificationText, { color: '#2B7D2B' }]}>Approved by supervisor</Text>
+                )}
+                {selectedWorkEntry && isAwaitingSupervisorVerification(selectedWorkEntry) && (
+                  <Text style={[styles.workEntryModalVerificationText, { color: '#B45309' }]}>Awaiting supervisor verification</Text>
+                )}
+              </View>
+
+              {[
+                ['Assigned', selectedWorkEntry?.AssignedMechanics],
+                ['Start Date', selectedWorkEntry?.MechanicStartDt ? formatDate(selectedWorkEntry.MechanicStartDt) : null],
+                ['Start Time', formatMechanicTime(selectedWorkEntry?.MechanicStartTm)],
+                ['Total Hours', selectedWorkEntry?.MechanicsTotalHrs],
+                ['Vehicle', selectedWorkEntry?.Vehicle],
+                ['Work Done', getDisplayText(selectedWorkEntry?.WorkDoneDetails, selectedWorkEntry?.WorkDone, selectedWorkEntry?.WorkDesc, selectedWorkEntry?.Remarks, selectedWorkEntry?.Description, selectedWorkEntry?.FaultDesc)],
+              ].map(([label, value]) => (
+                <View key={label} style={styles.workEntryModalRow}>
+                  <Text style={[styles.workEntryModalLabel, { color: colors.gray }]}>{label}</Text>
+                  <Text style={[styles.workEntryModalValue, { color: colors.dark }]}>{value || '-'}</Text>
+                </View>
+              ))}
+
+              {Array.isArray(selectedWorkEntry?.DetailedFaults) && selectedWorkEntry.DetailedFaults.length > 0 && (
+                <View style={styles.workEntryModalSection}>
+                  <Text style={[styles.workEntryModalSectionTitle, { color: colors.dark }]}>Faults</Text>
+                  {selectedWorkEntry.DetailedFaults.map((fault, faultIndex) => (
+                    <View key={`modal-fault-${faultIndex}`} style={[styles.workEntryModalItem, { backgroundColor: colors.light }]}>
+                      <Text style={[styles.workEntryModalValue, { color: colors.dark }]}>{fault?.FaultCode || fault?.Fault || '-'}</Text>
+                      <Text style={[styles.workEntryModalSecondary, { color: colors.gray }]}>{getDisplayText(fault?.FaultDesc, fault?.Dscption) || '-'}</Text>
+                      <Text style={[styles.workEntryModalSecondary, { color: colors.gray }]}>Status: {fault?.Status || '-'} | Hours: {fault?.TotalHrs ?? '-'}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {Array.isArray(selectedWorkEntry?.DetailedParts) && selectedWorkEntry.DetailedParts.length > 0 && (
+                <View style={styles.workEntryModalSection}>
+                  <Text style={[styles.workEntryModalSectionTitle, { color: colors.dark }]}>Parts</Text>
+                  {selectedWorkEntry.DetailedParts.map((part, partIndex) => (
+                    <View key={`modal-part-${partIndex}`} style={[styles.workEntryModalItem, { backgroundColor: colors.light }]}>
+                      <Text style={[styles.workEntryModalValue, { color: colors.dark }]}>{part?.ItemCode || '-'} - {part?.ItemName || '-'}</Text>
+                      <Text style={[styles.workEntryModalSecondary, { color: colors.gray }]}>Requested: {part?.ReqQty ?? '-'} | Issued: {part?.IssQty ?? '-'} | Received: {part?.ReceivedQty ?? '-'}</Text>
+                      <Text style={[styles.workEntryModalSecondary, { color: colors.gray }]}>Warehouse: {part?.Whs || '-'} | Status: {part?.Status || '-'}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={transferResponseVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setTransferResponseVisible(false)}
+      >
+        <View style={styles.transferModalBackdrop}>
+          <View style={[styles.transferModal, { backgroundColor: colors.white }]}>
+            <Text style={[styles.workEntryModalTitle, { color: colors.dark }]}>Transfer {transferResponseAction === 'ACCEPT' ? 'Acceptance' : 'Rejection'}</Text>
+            <Text style={[styles.transferPendingText, { color: colors.gray }]}>Remarks are required.</Text>
+            <PaperTextInput
+              mode="outlined"
+              label="Remarks"
+              value={transferRemarks}
+              onChangeText={setTransferRemarks}
+              multiline
+              numberOfLines={4}
+              style={styles.transferRemarksInput}
+            />
+            <View style={styles.transferActionRow}>
+              <TouchableOpacity
+                style={[styles.transferActionButton, { backgroundColor: colors.gray }]}
+                onPress={() => setTransferResponseVisible(false)}
+                disabled={respondingToTransfer}
+              >
+                <Text style={styles.closeJobCardButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.transferActionButton, { backgroundColor: transferResponseAction === 'ACCEPT' ? '#2B7D2B' : '#B42318' }]}
+                onPress={handleTransferResponse}
+                disabled={respondingToTransfer}
+              >
+                {respondingToTransfer ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.closeJobCardButtonText}>Submit</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <ModalSelector
         visible={showPartsModal}
@@ -2427,6 +2829,85 @@ const styles = StyleSheet.create({
     minHeight: 56,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  closeJobCardButton: {
+    marginHorizontal: SPACING.sm,
+    marginBottom: SPACING.xs,
+    minHeight: 46,
+    borderRadius: BORDER_RADIUS.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+  },
+  closeActionsRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginHorizontal: SPACING.sm,
+  },
+  closeActionButton: {
+    flex: 1,
+    marginHorizontal: 0,
+  },
+  transferPendingCard: {
+    marginHorizontal: SPACING.sm,
+    marginBottom: SPACING.xs,
+    padding: SPACING.sm,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+  },
+  transferPendingTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  transferPendingText: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  transferActionRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginTop: SPACING.sm,
+  },
+  transferActionButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: BORDER_RADIUS.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: SPACING.sm,
+  },
+  transferModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: SPACING.md,
+  },
+  transferModal: {
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+  },
+  transferRemarksInput: {
+    marginTop: SPACING.md,
+    minHeight: 100,
+  },
+  mechanicsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: SPACING.sm,
+  },
+  assignMechanicButton: {
+    minHeight: 36,
+    borderRadius: BORDER_RADIUS.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: SPACING.sm,
+  },
+  closeJobCardButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   summaryValue: {
     fontSize: 16,
@@ -2793,6 +3274,92 @@ const styles = StyleSheet.create({
     padding: SPACING.sm,
     marginBottom: SPACING.sm,
     width: '100%',
+  },
+  workEntryModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  workEntryModal: {
+    maxHeight: '92%',
+    borderTopLeftRadius: BORDER_RADIUS.lg,
+    borderTopRightRadius: BORDER_RADIUS.lg,
+    overflow: 'hidden',
+  },
+  workEntryModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  workEntryModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  workEntryModalStatus: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+  workEntryModalClose: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  workEntryModalContent: {
+    padding: SPACING.md,
+    paddingBottom: SPACING.xl,
+  },
+  workEntryModalStatusPanel: {
+    borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  workEntryModalStatusPanelText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  workEntryModalVerificationText: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  workEntryModalRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  workEntryModalLabel: {
+    width: 105,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  workEntryModalValue: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  workEntryModalSection: {
+    marginTop: SPACING.md,
+  },
+  workEntryModalSectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: SPACING.xs,
+  },
+  workEntryModalItem: {
+    borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.sm,
+    marginBottom: SPACING.xs,
+  },
+  workEntryModalSecondary: {
+    fontSize: 12,
+    marginTop: 4,
   },
   workOrderEntryHeader: {
     flexDirection: 'row',

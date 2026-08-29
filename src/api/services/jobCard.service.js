@@ -1,10 +1,48 @@
 import { get, post, handleApiError } from '../client';
+import { API_ENDPOINTS } from '../../constants/config';
 
 /**
  * Job Card Service
  * Handles job card creation, assignment, and tracking
  */
 export const jobCardService = {
+  transferJobCard: async (companyDB, jobCardDocEntry, toDepot, toSupervisorCode, toSupervisorName, remarks) => {
+    const transferRemarks = String(remarks || '').trim();
+    if (!transferRemarks) throw new Error('Transfer remarks are required.');
+    try {
+      const response = await post(API_ENDPOINTS.TRANSFER_JOB_CARD, {
+        CompanyDB: companyDB,
+        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
+        ToDepot: String(toDepot || '').trim(),
+        ToSupervisorCode: String(toSupervisorCode || '').trim(),
+        ToSupervisorName: String(toSupervisorName || '').trim(),
+        Remarks: transferRemarks,
+      });
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  respondJobCardTransfer: async (companyDB, jobCardDocEntry, supervisorCode, action, remarks) => {
+    const normalizedAction = String(action || '').trim().toUpperCase();
+    const responseRemarks = String(remarks || '').trim();
+    if (!['ACCEPT', 'REJECT'].includes(normalizedAction)) throw new Error('Transfer action must be ACCEPT or REJECT.');
+    if (!responseRemarks) throw new Error('Remarks are required.');
+    try {
+      const response = await post(API_ENDPOINTS.RESPOND_JOB_CARD_TRANSFER, {
+        CompanyDB: companyDB,
+        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
+        SupervisorCode: String(supervisorCode || '').trim(),
+        Action: normalizedAction,
+        Remarks: responseRemarks,
+      });
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   /** Close a job card after every work entry is supervisor-verified. */
   closeJobCard: async (companyDB, docEntry) => {
     try {
@@ -28,7 +66,7 @@ export const jobCardService = {
         DocEntry: Number(docEntry) || docEntry,
         FormType: formType,
       };
-      console.log('📤 Closing via CloseIncident:', JSON.stringify(payload, null, 2));
+      console.log('📤 Closing via CloseIncident:', JSON.stringify(payload));
       const response = await post('CloseIncident', payload);
       console.log('📥 CloseIncident response:', response.data);
       return response.data;
@@ -45,7 +83,7 @@ export const jobCardService = {
    */
   createJobCard: async (jobCardData) => {
     try {
-      console.log('📋 Creating job card:', JSON.stringify(jobCardData, null, 2));
+      console.log('📋 Creating job card:', JSON.stringify(jobCardData));
       const response = await post('CreateJobCard', jobCardData);
       console.log('📋 Job card created:', response.data);
       return response.data;
@@ -62,9 +100,22 @@ export const jobCardService = {
    */
   updateJobCard: async (jobCardData) => {
     try {
-      console.log('📝 Updating job card:', JSON.stringify(jobCardData, null, 2));
+      console.log('📝 Updating job card:', JSON.stringify(jobCardData));
       const response = await post('UpdateJobCard', jobCardData);
       console.log('📝 Job card updated:', response.data);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  assignMechanics: async (companyDB, docEntry, lines) => {
+    try {
+      const response = await post(API_ENDPOINTS.ASSIGN_MECHANICS, {
+        CompanyDB: companyDB,
+        DocEntry: Number(docEntry) || docEntry,
+        Lines: Array.isArray(lines) ? lines : [],
+      });
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -76,7 +127,7 @@ export const jobCardService = {
    */
   createWorkOrder: async (workOrderData) => {
     try {
-      console.log('🛠️ Creating work order:', JSON.stringify(workOrderData, null, 2));
+      console.log('🛠️ Creating work order:', JSON.stringify(workOrderData));
       const response = await post('CreateWorkOrder', workOrderData);
       console.log('🛠️ Work order created:', response.data);
       return response.data;
@@ -104,7 +155,7 @@ export const jobCardService = {
         AcceptDate: new Date().toISOString().slice(0, 10),
         AcceptTime: new Date().toTimeString().slice(0, 5).replace(':', ''),
       };
-      console.log('✅ Accepting job:', JSON.stringify(payload, null, 2));
+      console.log('✅ Accepting job:', JSON.stringify(payload));
       const response = await post('AcceptJob', payload);
       console.log('✅ AcceptJob response:', response.data);
       return response.data;
@@ -126,7 +177,7 @@ export const jobCardService = {
         Remarks: remarks,
         CompletedAt: new Date().toISOString(),
       };
-      console.log('🏁 CompleteWork:', JSON.stringify(payload, null, 2));
+      console.log('🏁 CompleteWork:', JSON.stringify(payload));
       const response = await post('CompleteWork', payload);
       console.log('🏁 CompleteWork response:', response.data);
       return response.data;
@@ -295,7 +346,7 @@ export const jobCardService = {
       RespondedAt: new Date().toISOString(),
     };
     try {
-      console.log(`📤 Team Leader ${decision} job card:`, JSON.stringify(payload, null, 2));
+      console.log(`📤 Team Leader ${decision} job card:`, JSON.stringify(payload));
       const response = await post('UpdateJobCard', payload);
       return response.data;
     } catch (error) {
@@ -322,7 +373,7 @@ export const jobCardService = {
       ReassignReason: reason,
     };
     try {
-      console.log('📤 Reassigning job card:', JSON.stringify(payload, null, 2));
+      console.log('📤 Reassigning job card:', JSON.stringify(payload));
       const response = await post('UpdateJobCard', payload);
       return response.data;
     } catch (error) {

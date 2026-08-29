@@ -5,6 +5,7 @@ export const mapUsertypeToRole = (usertype) => {
   if (code === 'M') return USER_ROLES.MECHANIC;
   if (code === 'E') return USER_ROLES.ELECTRICIAN;
   if (code === 'S') return USER_ROLES.SUPERVISOR;
+  if (code === 'ST') return USER_ROLES.STORE;
   if (code === 'TL' || code === 'T') return USER_ROLES.TEAM_LEADER;
   if (code === 'TH') return USER_ROLES.TECHNICAL_HEAD;
   if (code === 'DH') return USER_ROLES.DEPOT_HEAD;
@@ -23,6 +24,7 @@ const normalizeExplicitRole = (roleValue) => {
   if (normalized === 'mechanic') return USER_ROLES.MECHANIC;
   if (normalized === 'electrician') return USER_ROLES.ELECTRICIAN;
   if (normalized === 'supervisor') return USER_ROLES.SUPERVISOR;
+  if (normalized === 'store') return USER_ROLES.STORE;
   if (normalized === 'driver') return USER_ROLES.DRIVER;
   if (normalized === 'admin') return USER_ROLES.ADMIN;
   if (normalized === 'teamleader' || normalized === 'team leader' || normalized === 'team_leader') return USER_ROLES.TEAM_LEADER;
@@ -46,6 +48,7 @@ export const getUserRole = (user) => {
 };
 
 export const isSupervisorUser = (user) => getUserRole(user) === USER_ROLES.SUPERVISOR;
+export const isStoreUser = (user) => getUserRole(user) === USER_ROLES.STORE;
 export const isMechanicUser = (user) => getUserRole(user) === USER_ROLES.MECHANIC;
 export const isElectricianUser = (user) => getUserRole(user) === USER_ROLES.ELECTRICIAN;
 export const isTeamLeaderUser = (user) => getUserRole(user) === USER_ROLES.TEAM_LEADER;

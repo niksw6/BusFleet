@@ -46,7 +46,7 @@ export const maintenanceService = {
         Tasks: normalizedTasks,
       };
 
-      console.log('🛠️ Creating service scheduler:', JSON.stringify(normalizedPayload, null, 2));
+      console.log('🛠️ Creating service scheduler:', JSON.stringify(normalizedPayload));
       const response = await post('CreateServiceScheduler', normalizedPayload);
       console.log('🛠️ Service scheduler created:', response.data);
       return response.data;
@@ -106,7 +106,7 @@ export const maintenanceService = {
    */
   createFuelLog: async (fuelData) => {
     try {
-      console.log('⛽ Creating fuel log:', JSON.stringify(fuelData, null, 2));
+      console.log('⛽ Creating fuel log:', JSON.stringify(fuelData));
       const response = await post('CreateFuelLog', fuelData);
       console.log('⛽ Fuel log created:', response.data);
       return response.data;
@@ -142,7 +142,7 @@ export const maintenanceService = {
    */
   createSchedule: async (scheduleData) => {
     try {
-      console.log('📅 Creating schedule:', JSON.stringify(scheduleData, null, 2));
+      console.log('📅 Creating schedule:', JSON.stringify(scheduleData));
       const response = await post('CreateSchedule', scheduleData);
       console.log('📅 Schedule created:', response.data);
       return response.data;

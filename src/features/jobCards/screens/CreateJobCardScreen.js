@@ -435,6 +435,10 @@ const CreateJobCardScreen = ({ route, navigation }) => {
       ).trim();
       const complaintTypeForApi = normalizeJobCardComplaintType(formValues.complaintType || complaintType);
       const assignmentType = formValues.assignmentType || 'Area Breakdown Team';
+      const isTransferAssignment = complaintTypeForApi === 'Breakdown' && assignmentType === 'Transfer to nearest supervisor';
+      if (isTransferAssignment && (!selectedTransferDepot || !selectedTransferSupervisor)) {
+        throw new Error('Select the destination depot and supervisor before creating the job card.');
+      }
       const normalizedOperations = (formValues.operations || []).map(operation => ({
         OPCode: operation?.OPCode || operation?.Code || operation?.OperationCode || '',
         OPName: operation?.OPName || operation?.Name || operation?.OperationName || '',
@@ -443,7 +447,8 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         ETime: operation?.ETime || operation?.EndTime || '',
         Status: operation?.Status || 'O',
       }));
-      const jobTypeCode = getJobTypeCode(complaintTypeForApi);
+      const formTypeCode = complaintTypeForApi === 'Breakdown' ? 'B' : 'D';
+      const jobTypeName = complaintTypeForApi === 'Breakdown' ? 'Breakdown' : 'Driver Complaint';
 
       const createJobCardPayload = (payloadComplaintType) => {
         const isBreakdownIncident = payloadComplaintType === 'Breakdown' || String(payloadComplaintType || '').toLowerCase().includes('breakdown');
@@ -468,8 +473,8 @@ const CreateJobCardScreen = ({ route, navigation }) => {
             U_RTime: formattedTimeHHMM,
             RouteNo: parseInt(formValues.routeNo) || 0,
             BreakdownPlace: formValues.breakdownPlace || '',
-            FormType: jobTypeCode,
-            JobType: jobTypeCode,
+            FormType: 'D',
+            JobType: 'Driver Complaint',
             CmplaintNo: Number(complaintNo) || complaintNo || '',
             ComplaintNo: Number(complaintNo) || complaintNo || '',
             Branch: '1',
@@ -486,6 +491,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 ItemName: p.ItemName || p.Name || '',
                 ReqQty: parseFloat(p.Qty) || 1,
                 FaultLine: faultLine,
+                BusLocation: p.BusLocation || '',
                 ReqBy: supervisorCode,
                 ReqDate: partRequestDate,
                 ReqTime: partRequestTime,
@@ -520,7 +526,8 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         }
 
         const breakdownAssignmentType = assignmentType || 'Area Breakdown Team';
-        const breakdownFormType = breakdownAssignmentType === 'Individual Depot Mechanic' ? 'D' : 'L';
+        const breakdownFormType = 'B';
+        const breakdownJobType = 'Breakdown';
         const isAreaTeamAssignment = breakdownAssignmentType === 'Area Breakdown Team';
         const isTransferAssignment = breakdownAssignmentType === 'Transfer to nearest supervisor';
 
@@ -549,7 +556,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           Supervisr: supervisorCode,
           SprvsrNm: supervisorName,
           FormType: breakdownFormType,
-          JobType: breakdownFormType,
+          JobType: breakdownJobType,
           AsgnType: isAreaTeamAssignment ? 'T' : isTransferAssignment ? 'S' : 'M',
           BrkTeam: isAreaTeamAssignment ? (selectedBreakdownTeam?.TeamCode || selectedBreakdownTeam?.Code || '') : '',
           BrkTmName: isAreaTeamAssignment ? (selectedBreakdownTeam?.TeamName || selectedBreakdownTeam?.Name || selectedBreakdownTeam?.TeamCode || '') : '',
@@ -566,6 +573,9 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           TrnSupCode: isTransferAssignment ? (selectedTransferSupervisor?.EmpID || selectedTransferSupervisor?.Code || selectedTransferSupervisor?.UserCode || selectedTransferSupervisor?.EmpCode || '') : '',
           TrnSupName: isTransferAssignment ? (selectedTransferSupervisor?.SupervisorName || selectedTransferSupervisor?.FirstName || selectedTransferSupervisor?.Name || selectedTransferSupervisor?.UserName || '') : '',
           TrnRmk: isTransferAssignment ? 'Transferred to nearest available supervisor' : '',
+          ToDepot: isTransferAssignment ? (selectedTransferDepot?.DepotCode || selectedTransferDepot?.Depot || selectedTransferDepot?.Code || '') : '',
+          ToSupervisorCode: isTransferAssignment ? (selectedTransferSupervisor?.EmpID || selectedTransferSupervisor?.Code || selectedTransferSupervisor?.UserCode || selectedTransferSupervisor?.EmpCode || '') : '',
+          ToSupervisorName: isTransferAssignment ? (selectedTransferSupervisor?.SupervisorName || selectedTransferSupervisor?.FirstName || selectedTransferSupervisor?.Name || selectedTransferSupervisor?.UserName || '') : '',
           Operations: normalizedOperations,
           Mechanics: isAreaTeamAssignment || isTransferAssignment ? [] : (
             selectedAssignmentMechanic ? [{ Mechanic: selectedAssignmentMechanic.Code || selectedAssignmentMechanic.EmpCode || selectedAssignmentMechanic.UserCode || selectedAssignmentMechanic.FirstName || '' }] : []
@@ -580,14 +590,26 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 };
               })
             : [],
-          Parts: [],
+          Parts: effectiveFaultEntries.flatMap(({ assignmentKey, faultLine }) => (
+            (faultAssignments[assignmentKey]?.parts || []).map(p => ({
+              ItemCode: p.ItemCode || p.Code || '',
+              ItemName: p.ItemName || p.Name || '',
+              ReqQty: parseFloat(p.Qty) || 1,
+              FaultLine: faultLine,
+              BusLocation: p.BusLocation || '',
+              ReqBy: supervisorCode,
+              ReqDate: partRequestDate,
+              ReqTime: partRequestTime,
+              StoreItemStatus: String(p.StoreItemStatus || 'Direct').trim() || 'Direct',
+            }))
+          )),
         };
       };
 
       // Use the same canonical type as the incident. Retrying with arbitrary
       // type labels can create a Job Card in a different backend series.
       const attemptPayload = createJobCardPayload(complaintTypeForApi);
-      console.log('💼 Creating job card:', JSON.stringify(attemptPayload, null, 2));
+      console.log('💼 Creating job card:', JSON.stringify(attemptPayload));
       console.log('🔍 ComplaintType (API):', complaintTypeForApi, '| Input:', formValues.complaintType || complaintType);
       const response = await jobCardService.createJobCard(attemptPayload);
 
@@ -598,7 +620,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           TeamCode: selectedBreakdownTeam.TeamCode || selectedBreakdownTeam.Code || '',
           Remarks: 'Please attend the breakdown immediately.',
         };
-        console.log('📤 AssignBreakdownTeam payload:', JSON.stringify(breakdownAssignPayload, null, 2));
+        console.log('📤 AssignBreakdownTeam payload:', JSON.stringify(breakdownAssignPayload));
         try {
           const assignResponse = await complaintService.assignBreakdownTeam(
             dbName || 'MUTSPL_TEST',
@@ -655,6 +677,25 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           }
         } catch (statusError) {
           console.log('ℹ️ Incident status sync skipped:', statusError?.message || statusError);
+        }
+
+        if (isTransferAssignment) {
+          try {
+            const transferResponse = await jobCardService.transferJobCard(
+              dbName || 'MUTSPL_TEST',
+              createdJobCardDocEntry,
+              selectedTransferDepot?.DepotCode || selectedTransferDepot?.Depot || selectedTransferDepot?.Code || '',
+              selectedTransferSupervisor?.EmpID || selectedTransferSupervisor?.Code || selectedTransferSupervisor?.UserCode || selectedTransferSupervisor?.EmpCode || '',
+              selectedTransferSupervisor?.SupervisorName || selectedTransferSupervisor?.FirstName || selectedTransferSupervisor?.Name || selectedTransferSupervisor?.UserName || '',
+              'Transferred to nearest depot.',
+            );
+            if (transferResponse?.Success === false) {
+              throw new Error(transferResponse?.Message || 'Transfer request failed.');
+            }
+            console.log('✅ Job card transfer requested:', transferResponse);
+          } catch (transferError) {
+            Toast.show({ type: 'error', text1: 'Transfer Failed', text2: transferError?.message || 'Job card was created but transfer failed.' });
+          }
         }
 
         Toast.show({
@@ -1047,7 +1088,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         visible={showRouteModal}
         onClose={() => setShowRouteModal(false)}
         onSelect={(value, item) => {
-          console.log('✅ Route selected - item:', JSON.stringify(item, null, 2));
+          console.log('✅ Route selected - item:', JSON.stringify(item));
           console.log('✅ Route selected - value:', value);
           if (formikRef.current) {
             const routeNo = String(item.RouteNo || item.Code || item.RouteCode || value || '');

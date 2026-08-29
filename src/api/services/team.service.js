@@ -111,7 +111,7 @@ export const teamService = {
       TeamCode: teamCode,
       UserCode: userCode,
     };
-    console.log('AssignTeam:', JSON.stringify(payload, null, 2));
+    console.log('AssignTeam:', JSON.stringify(payload));
     const response = await post('AssignTeam', payload);
     console.log('AssignTeam response:', response.data);
     return response.data;
@@ -133,7 +133,7 @@ export const teamService = {
       Status: status,
       Remarks: remarks || '',
     };
-    console.log('📤 UpdateTeamStatus:', JSON.stringify(payload, null, 2));
+    console.log('📤 UpdateTeamStatus:', JSON.stringify(payload));
     const response = await post('UpdateTeamStatus', payload);
     console.log('📥 UpdateTeamStatus response:', response.data);
     return response.data;

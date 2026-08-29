@@ -20,6 +20,7 @@ import {
   RefreshControl,
   TextInput as RNTextInput,
   Alert,
+  Image,
 } from 'react-native';
 import { Text, Button, Chip, TextInput, Divider, ActivityIndicator } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
@@ -30,7 +31,7 @@ import ModalSelector from '../../../shared/components/ModalSelector';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { mechanicService, masterService, storeService } from '../../../api/services';
+import { mechanicService, masterService, storeService, lineBreakdownService, workEntryService } from '../../../api/services';
 import {
   setWorkEntries,
   addWorkEntry as addWorkEntryAction,
@@ -42,6 +43,8 @@ import { PART_REQUEST_STATUS } from '../../../constants/config';
 import { formatDateTime } from '../../../utils/helpers';
 
 const isApiSuccess = (res) => res?.Success === true || res?.Status === true;
+const EMPTY_LIST = [];
+const MAX_IMAGES_PER_PHASE = 2;
 
 const isAwaitingVerificationStatus = (value) => {
   const status = String(value || '').trim().toUpperCase();
@@ -118,7 +121,7 @@ const groupPartRequestsByWorkEntry = (rawItems = [], jobCardDocEntry) => {
 };
 
 const WorkEntryScreen = ({ route, navigation }) => {
-  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', depot: routeDepot = '' } = route.params || {};
+  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, fault: routeFault = null, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', depot: routeDepot = '' } = route.params || {};
   const dispatch = useDispatch();
 
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
@@ -126,8 +129,8 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
 
-  const storeEntries = useSelector(state => state.workEntry.workEntries[String(workOrderDocEntry)] || []);
-  const storePartsRequests = useSelector(state => state.workEntry.partsRequests[String(workOrderDocEntry)] || []);
+  const storeEntries = useSelector(state => state.workEntry.workEntries[String(workOrderDocEntry)] || EMPTY_LIST);
+  const storePartsRequests = useSelector(state => state.workEntry.partsRequests[String(workOrderDocEntry)] || EMPTY_LIST);
 
   const mechanicCode = user?.Code || user?.code || user?.User || '';
   const mechanicName = user?.FirstName || user?.Name || user?.name || '';
@@ -142,8 +145,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [showWorkListModal, setShowWorkListModal] = useState(false);
   const [selectedWork, setSelectedWork] = useState(null);   // { Code, Name }
+  const [incidentFault, setIncidentFault] = useState(routeFault);
   const [customDescription, setCustomDescription] = useState('');
   const [entryRemarks, setEntryRemarks] = useState('');
+  const [repairType, setRepairType] = useState('P');
+  const isBreakdownJob = String(routeComplaintType || '').toLowerCase().includes('breakdown');
 
   // Parts Form (per work entry)
   const [showPartsModal, setShowPartsModal] = useState(false);
@@ -155,6 +161,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
   // Inline parts added directly on the work entry (recorded alongside work done)
   const [entryParts, setEntryParts] = useState([]);
   const [showEntryPartsSelector, setShowEntryPartsSelector] = useState(false);
+  const [beforeImageDrafts, setBeforeImageDrafts] = useState([]);
+  const [afterImageDrafts, setAfterImageDrafts] = useState([]);
+  const [savedImages, setSavedImages] = useState([]);
 
   // Line Breakdown specific states
   const [canRepairOnSite, setCanRepairOnSite] = useState(true);
@@ -175,53 +184,126 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
   const resolvedJobCardDocEntry = Number(jobCardDocEntry || workOrderDocEntry) || workOrderDocEntry;
 
+  const faultReference = String(
+    routeFault?.FaultCode
+    || routeFault?.Fault
+    || routeFault?.FaultName
+    || routeFault?.Description
+    || routeFault?.Code
+    || ''
+  ).trim();
+
+  const getWorkEntryRecord = (response) => {
+    const data = response?.Data ?? response?.data ?? response;
+    if (Array.isArray(data)) return data[0] || null;
+    if (!data || typeof data !== 'object') return null;
+    return data?.WorkEntry || data?.WorkEntryDetails || data?.Record || data;
+  };
+
   // ─── Load data ───────────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [workListRes, sparePartsRes, approvedRes, requestsRes, depotsRes] = await Promise.all([
-        masterService.getWorkList(dbName || 'MUTSPL_TEST'),
-        masterService.getSpareParts(dbName || 'MUTSPL_TEST'),
+      const [faultDetailsResult, sparePartsResult, approvedResult, requestsResult, depotsResult, workEntryResult] = await Promise.allSettled([
+        masterService.getFaultDetails(companyDb),
+        masterService.getSpareParts(companyDb),
         storeService.getApprovedJobCardParts(companyDb, mechanicCode),
         storeService.getMechanicPartRequests(companyDb),
-        masterService.getDepots(dbName || 'MUTSPL_TEST'),
+        masterService.getDepots(companyDb),
+        routeWorkEntryDocEntry
+          ? workEntryService.getWorkEntry(companyDb, routeWorkEntryDocEntry)
+          : Promise.resolve(null),
       ]);
 
-      if (isApiSuccess(workListRes)) {
-        setWorkList(extractApiRows(workListRes));
+      if (workEntryResult.status === 'fulfilled' && routeWorkEntryDocEntry) {
+        const acceptedEntry = getWorkEntryRecord(workEntryResult.value);
+        if (acceptedEntry && typeof acceptedEntry === 'object') {
+          dispatch(setWorkEntries({
+            docEntry: workOrderDocEntry,
+            entries: [{
+              ...acceptedEntry,
+              ...(existingWorkEntry || {}),
+              WorkEntryDocEntry: acceptedEntry?.WorkEntryDocEntry
+                || acceptedEntry?.DocEntry
+                || routeWorkEntryDocEntry,
+            }],
+          }));
+        }
+      } else if (workEntryResult.status === 'rejected') {
+        console.warn('GetWorkEntry failed:', workEntryResult.reason);
       }
-      if (isApiSuccess(sparePartsRes)) {
-        setSpareParts(extractApiRows(sparePartsRes));
+
+      if (faultDetailsResult.status === 'fulfilled') {
+        const rows = extractApiRows(faultDetailsResult.value);
+        const matchingFault = rows.find((row) => [row?.FaultCode, row?.Fault, row?.Description]
+          .some(value => String(value || '').trim().toLowerCase() === faultReference.toLowerCase()));
+        const resolvedFault = matchingFault || routeFault;
+        if (resolvedFault) {
+          setIncidentFault({ ...routeFault, ...resolvedFault });
+        }
+        const resolvedFaultCode = String(matchingFault?.FaultCode || faultReference).trim();
+        let workItems = [];
+        if (resolvedFaultCode) {
+          try {
+            const faultResponse = await masterService.getFaultByCode(companyDb, resolvedFaultCode);
+            workItems = extractApiRows(faultResponse).map((row) => ({
+              ...row,
+              Code: row?.WorkCode || row?.Code || row?.WorkListCode || '',
+              Name: row?.WorkName || row?.WorkDone || row?.Description || row?.Dscription || row?.Name || row?.Code || '',
+            })).filter((row) => row.Code || row.Name);
+          } catch (faultLookupError) {
+            console.warn('GetFaultByCode failed:', faultLookupError?.message || faultLookupError);
+          }
+        }
+        if (workItems.length === 0) {
+          workItems = rows.map((row) => ({
+          ...row,
+          Code: row?.FaultCode || row?.Code || row?.WorkCode || '',
+          Name: row?.FaultName || row?.Description || row?.Fault || row?.Name || row?.Code || '',
+          })).filter((row) => row.Code || row.Name);
+        }
+        setWorkList([...workItems, { Code: 'OTHER', Name: 'Other Work' }]);
+      } else {
+        console.warn('GetFaultDetails failed:', faultDetailsResult.reason);
+        setWorkList([{ Code: 'OTHER', Name: 'Other Work' }]);
       }
-      if (isApiSuccess(approvedRes)) {
-        const approvedRows = extractApiRows(approvedRes);
+
+      if (sparePartsResult.status === 'fulfilled') {
+        setSpareParts(extractApiRows(sparePartsResult.value));
+      } else {
+        console.warn('GetSpareParts failed:', sparePartsResult.reason);
+        setSpareParts([]);
+      }
+
+      if (approvedResult.status === 'fulfilled' && isApiSuccess(approvedResult.value)) {
+        const approvedRows = extractApiRows(approvedResult.value);
         setIssuedItems(normalizeApprovedItems(approvedRows, resolvedJobCardDocEntry));
       }
-      if (isApiSuccess(requestsRes)) {
-        const requestRows = extractApiRows(requestsRes);
+
+      if (requestsResult.status === 'fulfilled' && isApiSuccess(requestsResult.value)) {
+        const requestRows = extractApiRows(requestsResult.value);
         const groupedRequests = groupPartRequestsByWorkEntry(requestRows, resolvedJobCardDocEntry);
         dispatch(setPartsRequests({ docEntry: workOrderDocEntry, requests: groupedRequests }));
       }
 
-      // Depots
-      if (isApiSuccess(depotsRes)) {
-        const depotRows = extractApiRows(depotsRes);
+      if (depotsResult.status === 'fulfilled' && isApiSuccess(depotsResult.value)) {
+        const depotRows = extractApiRows(depotsResult.value);
         setDepotsList(depotRows || []);
         if (!selectedTowDepot && (routeDepot || (Array.isArray(depotRows) && depotRows.length > 0))) {
-          // Prefer routeDepot if provided, otherwise pick first depot's identifier
           const first = depotRows[0];
           const candidate = routeDepot || first?.Depot || first?.Name || first?.DepotName || '';
           setSelectedTowDepot(candidate);
         }
+      } else {
+        setDepotsList([]);
       }
     } catch (err) {
       console.error('WorkEntryScreen loadData error:', err);
-      Toast.show({ type: 'error', text1: 'Failed to load work data', text2: err?.message || 'Backend request failed' });
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dbName, workOrderDocEntry, dispatch, mechanicCode, resolvedJobCardDocEntry]);
+  }, [dbName, workOrderDocEntry, dispatch, mechanicCode, resolvedJobCardDocEntry, routeDepot, selectedTowDepot, routeWorkEntryDocEntry, existingWorkEntry, routeFault, faultReference]);
 
   useEffect(() => {
     loadData();
@@ -239,7 +321,72 @@ const WorkEntryScreen = ({ route, navigation }) => {
     setCustomDescription('');
     setEntryRemarks('');
     setEntryParts([]);
+    setBeforeImageDrafts([]);
     setShowAddEntry(false);
+  };
+
+  const pickWorkEntryImage = async (phase, useCamera = false) => {
+    let ImagePicker;
+    try {
+      ImagePicker = require('expo-image-picker');
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Image picker unavailable', text2: 'Rebuild the Android app after installing native modules.' });
+      return;
+    }
+
+    const permission = useCamera
+      ? await ImagePicker.requestCameraPermissionsAsync()
+      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission?.granted) {
+      Toast.show({ type: 'error', text1: 'Permission denied', text2: `${useCamera ? 'Camera' : 'Media library'} permission is required.` });
+      return;
+    }
+
+    const result = useCamera
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7 })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsMultipleSelection: false, selectionLimit: 1, quality: 0.7 });
+    if (result?.canceled) return;
+
+    const selected = (result?.assets || []).slice(0, 1).filter((asset) => asset?.uri).map((asset) => ({
+      id: `${Date.now()}-${asset.uri}`,
+      uri: asset.uri,
+      name: asset.fileName || `work-entry-${Date.now()}.jpg`,
+      mimeType: asset.mimeType || 'image/jpeg',
+    }));
+    const updater = phase === 'BF' ? setBeforeImageDrafts : setAfterImageDrafts;
+    updater((previous) => [...previous, ...selected].slice(0, MAX_IMAGES_PER_PHASE));
+  };
+
+  const removeImageDraft = (phase, id) => {
+    const updater = phase === 'BF' ? setBeforeImageDrafts : setAfterImageDrafts;
+    updater((previous) => previous.filter((image) => image.id !== id));
+  };
+
+  const persistWorkEntryImages = async (phase, drafts, workEntryDocEntry) => {
+    if (!workEntryDocEntry || drafts.length === 0) return;
+    const uploadResponse = await workEntryService.uploadImages(drafts);
+    const fileNames = Array.isArray(uploadResponse?.FileNames)
+      ? uploadResponse.FileNames
+      : String(uploadResponse?.FileName || '').split(',').map((name) => name.trim()).filter(Boolean);
+    if (fileNames.length === 0) throw new Error(uploadResponse?.Message || 'No uploaded image filename returned.');
+
+    const existingCount = savedImages.filter((image) => image.phase === phase).length;
+    const records = [];
+    for (let index = 0; index < Math.min(fileNames.length, MAX_IMAGES_PER_PHASE - existingCount); index += 1) {
+      const fileName = fileNames[index];
+      const response = await workEntryService.saveWorkEntryImage({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        FaultLine: Number(routeFaultLine) || 0,
+        ImgType: phase,
+        ImgNo: existingCount + index + 1,
+        ImgPath: fileName,
+        Remarks: entryRemarks || completeRemarks || '',
+      });
+      if (!isApiSuccess(response)) throw new Error(response?.Message || `Failed to save ${phase === 'BF' ? 'before' : 'after'} image.`);
+      records.push({ fileName, phase, uri: drafts[index]?.uri || '' });
+    }
+    setSavedImages((previous) => [...previous, ...records]);
   };
 
   // ─── Submit work entry ────────────────────────────────────────────────────────
@@ -254,9 +401,70 @@ const WorkEntryScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Please select or enter a work description' });
       return;
     }
+    if (isBreakdownJob && beforeImageDrafts.length === 0) {
+      Toast.show({ type: 'error', text1: 'Before image required', text2: 'Upload a before image before saving breakdown work.' });
+      return;
+    }
 
     try {
       setSubmitting(true);
+      if (isBreakdownJob) {
+        const breakdownPayload = {
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
+          FaultLine: Number(routeFaultLine) || 1,
+          UserCode: mechanicCode,
+          RepairType: repairType,
+          FinalRemarks: entryRemarks || '',
+          Details: [
+            {
+              WorkCode: selectedWork?.Code || 'OTHER',
+              WorkDone: selectedWork?.Code === 'OTHER' ? description : (selectedWork?.Name || description),
+              OtherDescription: selectedWork?.Code === 'OTHER' ? description : '',
+              Remarks: entryRemarks || '',
+            },
+          ],
+        };
+
+        const breakdownRes = await lineBreakdownService.createLineBreakdownWorkEntry(breakdownPayload);
+        if (!breakdownRes?.Success && !breakdownRes?.Status) {
+          throw new Error(breakdownRes?.Message || 'Failed to create breakdown work entry');
+        }
+
+        const createdEntry = breakdownRes?.Data || breakdownRes || {};
+        const createdEntryId = createdEntry?.WorkEntryDocEntry || createdEntry?.DocEntry || createdEntry?.Code;
+
+        if (createdEntryId && entryParts.length > 0) {
+          await storeService.requestWorkEntryParts({
+            CompanyDB: dbName || 'MUTSPL_TEST',
+            WorkEntryDocEntry: Number(createdEntryId) || createdEntryId,
+            UserCode: mechanicCode,
+            Parts: entryParts.map((p) => ({
+              ItemCode: p.ItemCode || p.Code || '',
+              ItemName: p.ItemName || p.Name || '',
+              ReqQty: parseFloat(p.Qty) || 1,
+              Warehouse: p.Warehouse || '',
+              Remarks: p.Remarks || '',
+            })),
+          });
+        }
+
+        if (createdEntryId && beforeImageDrafts.length > 0) {
+          await persistWorkEntryImages('BF', beforeImageDrafts, createdEntryId);
+        }
+        if (createdEntryId) {
+          dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: { ...createdEntry, WorkEntryDocEntry: createdEntryId } }));
+        }
+
+        Toast.show({
+          type: 'success',
+          text1: 'Breakdown work entry created',
+          text2: `Repair selected: ${repairType === 'P' ? 'Permanent' : 'Temporary'}`,
+        });
+        resetEntryForm();
+        return;
+      }
+
       const payload = {
         CompanyDB: dbName || 'MUTSPL_TEST',
         JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
@@ -278,7 +486,6 @@ const WorkEntryScreen = ({ route, navigation }) => {
           Warehouse: p.Warehouse || '',
           Remarks: p.Remarks || '',
         })),
-        // Mark source type so Line Breakdown entries remain distinct
         ComplaintType: (String(routeComplaintType || '')).includes('Breakdown') || (String(routeComplaintType || '').toLowerCase().includes('breakdown')) ? 'Breakdown' : undefined,
       };
 
@@ -445,6 +652,33 @@ const WorkEntryScreen = ({ route, navigation }) => {
       if (!workEntryDocEntry) {
         throw new Error('No work entry found. Create and save a work entry first.');
       }
+
+      if (isBreakdownJob) {
+        if (afterImageDrafts.length === 0) {
+          throw new Error('Upload an after image before completing the breakdown work.');
+        }
+        await persistWorkEntryImages('AF', afterImageDrafts, workEntryDocEntry);
+        const res = await lineBreakdownService.completeLineBreakdownWorkEntry({
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+          FinalRemarks: completeRemarks || '',
+        });
+
+        if (!res?.Success && !res?.Status) {
+          throw new Error(res?.Message || 'Failed to complete breakdown work entry');
+        }
+
+        Toast.show({
+          type: 'success',
+          text1: 'Breakdown work completed',
+          text2: 'Supervisor verification is now pending.',
+          visibilityTime: 5000,
+        });
+        setAwaitingVerification(true);
+        setAfterImageDrafts([]);
+        return;
+      }
+
       const res = await mechanicService.completeWork({
         CompanyDB: dbName || 'MUTSPL_TEST',
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
@@ -497,6 +731,16 @@ const WorkEntryScreen = ({ route, navigation }) => {
     return <Loader />;
   }
 
+  const faultCode = String(incidentFault?.FaultCode || incidentFault?.Fault || '').trim();
+  const faultName = String(
+    incidentFault?.FaultName
+    || incidentFault?.Description
+    || incidentFault?.Dscption
+    || incidentFault?.Fault
+    || faultCode
+    || 'Fault'
+  ).trim();
+
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
       <ScrollView
@@ -507,9 +751,13 @@ const WorkEntryScreen = ({ route, navigation }) => {
       >
         {/* Header Card */}
         <View style={[styles.card, { backgroundColor: colors.white }]}>
-          <Text style={[styles.cardTitle, { color: colors.dark }]}>
-            Work Entry
-          </Text>
+          <View style={styles.sectionHeader}>
+            <MaterialIcons name="warning" size={20} color="#E65100" />
+            <Text style={[styles.cardTitle, { color: colors.dark, marginLeft: 8 }]}>{faultName}</Text>
+          </View>
+          {faultCode && faultCode !== faultName ? (
+            <Text style={[styles.cardSubtitle, { color: colors.gray }]}>{faultCode}</Text>
+          ) : null}
           <Text style={[styles.cardSubtitle, { color: colors.gray }]}>
             WO #{workOrderDocEntry}{jobCardNo ? `  ·  JC #${jobCardNo}` : ''}
           </Text>
@@ -521,47 +769,107 @@ const WorkEntryScreen = ({ route, navigation }) => {
           )}
         </View>
 
-        {/* Line Breakdown: On-site repair decision */}
-        {String(routeComplaintType || '').toLowerCase().includes('breakdown') && (
-          <View style={[styles.card, { backgroundColor: colors.white }]}>
-            <Text style={[styles.sectionTitle, { color: colors.dark }]}>Line Breakdown — Can repair on site?</Text>
-            <View style={{ flexDirection: 'row', marginTop: 8 }}>
-              <Button mode={canRepairOnSite ? 'contained' : 'outlined'} onPress={() => setCanRepairOnSite(true)} compact>
-                Yes
-              </Button>
-              <Button mode={!canRepairOnSite ? 'contained' : 'outlined'} onPress={() => setCanRepairOnSite(false)} compact style={{ marginLeft: 8 }}>
-                No
-              </Button>
+        {/* Breakdown repair type section */}
+        {isBreakdownJob && (
+          <View style={[styles.card, { backgroundColor: colors.white, borderWidth: 1, borderColor: '#FDBA74' }]}> 
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="build" size={18} color="#F97316" />
+              <Text style={[styles.sectionTitle, { color: '#C2410C' }]}>Breakdown Repair</Text>
             </View>
+            <Text style={[styles.completeHint, { color: colors.gray, marginBottom: 10 }]}>Choose how this breakdown will be handled.</Text>
 
-            {!canRepairOnSite && (
-              <View style={{ marginTop: 12 }}>
-                <Text style={{ color: colors.gray, marginBottom: 6 }}>Select depot for tow</Text>
-                <View style={{ flexDirection: 'row' }}>
-                  <Button mode={towDepotMode === 'default' ? 'contained' : 'outlined'} onPress={() => { setTowDepotMode('default'); setSelectedTowDepot(routeDepot || selectedTowDepot); }} compact>
-                    Default depot
-                  </Button>
-                  <Button mode={towDepotMode === 'other' ? 'contained' : 'outlined'} onPress={() => setTowDepotMode('other')} compact style={{ marginLeft: 8 }}>
-                    Other depot
-                  </Button>
-                </View>
-
-                {towDepotMode === 'other' && (
-                  <TouchableOpacity style={[styles.addLineBtn, { marginTop: 8 }]} onPress={() => setShowDepotsModal(true)}>
-                    <Text style={{ color: colors.primary }}>{selectedTowDepot || 'Select depot'}</Text>
-                  </TouchableOpacity>
-                )}
-
-                <Button mode="contained" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={{ marginTop: 12 }}>
-                  Request Tow & Close Work Entry
+            <View style={styles.breakdownSection}>
+              <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginBottom: 6 }]}>Repair Type</Text>
+              <View style={styles.breakdownToggleRow}>
+                <Button
+                  mode={repairType === 'P' ? 'contained' : 'outlined'}
+                  onPress={() => setRepairType('P')}
+                  style={styles.breakdownToggleButton}
+                  labelStyle={styles.breakdownButtonLabel}
+                  compact
+                >
+                  Permanent Repair
+                </Button>
+                <Button
+                  mode={repairType === 'T' ? 'contained' : 'outlined'}
+                  onPress={() => setRepairType('T')}
+                  style={styles.breakdownToggleButton}
+                  labelStyle={styles.breakdownButtonLabel}
+                  compact
+                >
+                  Temporary Repair
                 </Button>
               </View>
-            )}
+
+              <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginTop: 10, marginBottom: 6 }]}>Field Decision</Text>
+              <View style={styles.breakdownToggleRow}>
+                <Button
+                  mode={canRepairOnSite ? 'contained' : 'outlined'}
+                  onPress={() => setCanRepairOnSite(true)}
+                  style={styles.breakdownToggleButton}
+                  labelStyle={styles.breakdownButtonLabel}
+                  compact
+                >
+                  Repair on Site
+                </Button>
+                <Button
+                  mode={!canRepairOnSite ? 'contained' : 'outlined'}
+                  onPress={() => setCanRepairOnSite(false)}
+                  style={styles.breakdownToggleButton}
+                  labelStyle={styles.breakdownButtonLabel}
+                  compact
+                >
+                  Tow to Depot
+                </Button>
+              </View>
+
+              {!canRepairOnSite && (
+                <View style={[styles.breakdownTowBox, { backgroundColor: '#FFF7ED', borderColor: '#FDBA74' }]}> 
+                  <Text style={{ color: '#9A4A00', fontWeight: '700', marginBottom: 8 }}>Select depot for tow</Text>
+                  <View style={styles.breakdownToggleRow}>
+                    <Button
+                      mode={towDepotMode === 'default' ? 'contained' : 'outlined'}
+                      onPress={() => {
+                        setTowDepotMode('default');
+                        setSelectedTowDepot(routeDepot || selectedTowDepot);
+                      }}
+                      compact
+                      labelStyle={styles.breakdownButtonLabel}
+                      style={styles.breakdownToggleButton}
+                    >
+                      Default depot
+                    </Button>
+                    <Button
+                      mode={towDepotMode === 'other' ? 'contained' : 'outlined'}
+                      onPress={() => setTowDepotMode('other')}
+                      compact
+                      labelStyle={styles.breakdownButtonLabel}
+                      style={{ marginLeft: 8, minHeight: 32 }}
+                    >
+                      Other depot
+                    </Button>
+                  </View>
+
+                  {towDepotMode === 'other' && (
+                    <TouchableOpacity style={[styles.selectorBtn, { marginTop: 8, borderColor: '#FDBA74', backgroundColor: colors.white }]} onPress={() => setShowDepotsModal(true)}>
+                      <Text style={[styles.selectorBtnText, { color: selectedTowDepot ? colors.dark : colors.gray }]} numberOfLines={1}>
+                        {selectedTowDepot || 'Select depot'}
+                      </Text>
+                      <MaterialIcons name="expand-more" size={20} color={colors.gray} />
+                    </TouchableOpacity>
+                  )}
+
+                  <Button mode="contained" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={{ marginTop: 12 }}>
+                    Request Tow & Close Work Entry
+                  </Button>
+                </View>
+              )}
+            </View>
           </View>
         )}
 
-        {/* ── Work Entries ── */}
-        <View style={[styles.card, { backgroundColor: colors.white }]}>
+        {/* Work Entries */}
+        <View style={[styles.card, { backgroundColor: colors.white }]}> 
           <View style={styles.sectionHeader}>
             <MaterialIcons name="assignment" size={18} color="#0070F2" />
             <Text style={[styles.sectionTitle, { color: colors.dark }]}>Work Entries</Text>
@@ -749,6 +1057,33 @@ const WorkEntryScreen = ({ route, navigation }) => {
             numberOfLines={3}
             style={styles.remarksInput}
           />
+          {isBreakdownJob && (
+            <View style={[styles.imageBox, { borderColor: colors.border || '#E0E0E0' }]}>
+              <View style={styles.imageHeaderRow}>
+                <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13 }}>After Image</Text>
+                <Text style={{ color: colors.gray, fontSize: 12 }}>{afterImageDrafts.length}/{MAX_IMAGES_PER_PHASE}</Text>
+              </View>
+              <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 8 }}>Required before completing breakdown work.</Text>
+              <View style={styles.imageActions}>
+                <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('AF')}>
+                  <MaterialIcons name="photo-library" size={16} color="#00689E" />
+                  <Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload Image</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('AF', true)}>
+                  <MaterialIcons name="photo-camera" size={16} color="#007A5A" />
+                  <Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
+                </TouchableOpacity>
+              </View>
+              {afterImageDrafts.map((image) => (
+                <View key={image.id} style={styles.imageRow}>
+                  <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
+                  <TouchableOpacity onPress={() => removeImageDraft('AF', image.id)}>
+                    <MaterialIcons name="close" size={18} color="#BB0000" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
           <Button
             mode="contained"
             onPress={() => {
@@ -805,6 +1140,34 @@ const WorkEntryScreen = ({ route, navigation }) => {
               numberOfLines={2}
               style={styles.modalInput}
             />
+
+            {isBreakdownJob && (
+              <View style={[styles.imageBox, { borderColor: colors.border || '#E0E0E0' }]}>
+                <View style={styles.imageHeaderRow}>
+                  <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13 }}>Before Image</Text>
+                  <Text style={{ color: colors.gray, fontSize: 12 }}>{beforeImageDrafts.length}/{MAX_IMAGES_PER_PHASE}</Text>
+                </View>
+                <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 8 }}>Required before saving breakdown work.</Text>
+                <View style={styles.imageActions}>
+                  <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('BF')}>
+                    <MaterialIcons name="photo-library" size={16} color="#00689E" />
+                    <Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload Image</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('BF', true)}>
+                    <MaterialIcons name="photo-camera" size={16} color="#007A5A" />
+                    <Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
+                  </TouchableOpacity>
+                </View>
+                {beforeImageDrafts.map((image) => (
+                  <View key={image.id} style={styles.imageRow}>
+                    <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
+                    <TouchableOpacity onPress={() => removeImageDraft('BF', image.id)}>
+                      <MaterialIcons name="close" size={18} color="#BB0000" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
 
             {/* ── Parts used in this work entry ── */}
             <View style={{ marginTop: 8, marginBottom: 4 }}>
@@ -1023,6 +1386,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
         displayKey={depotsList && depotsList.length && Object.prototype.hasOwnProperty.call(depotsList[0], 'Depot') ? 'Depot' : 'Name'}
         valueKey={depotsList && depotsList.length && Object.prototype.hasOwnProperty.call(depotsList[0], 'Depot') ? 'Depot' : 'Name'}
         searchKeys={[ 'Depot', 'Name', 'DepotName' ]}
+        renderItem={(item) => (
+          <Text style={{ color: colors.dark, fontSize: 15, fontWeight: '600' }}>
+            {item?.Depot || item?.Name || item?.DepotName || '-'}
+          </Text>
+        )}
       />
 
       {/* Complete Work confirmation */}
@@ -1048,14 +1416,14 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
     elevation: 2,
   },
-  cardTitle: { fontSize: 18, fontWeight: 'bold' },
-  cardSubtitle: { fontSize: 13, marginTop: 2 },
+  cardTitle: { fontSize: 16, fontWeight: 'bold' },
+  cardSubtitle: { fontSize: 12, marginTop: 2 },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: SPACING.sm,
   },
-  sectionTitle: { fontSize: 16, fontWeight: '700', flex: 1, marginLeft: 8 },
+  sectionTitle: { fontSize: 14, fontWeight: '700', flex: 1, marginLeft: 8 },
   addBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1063,8 +1431,8 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: BORDER_RADIUS.sm,
   },
-  addBtnText: { color: '#FFF', fontSize: 13, fontWeight: '600', marginLeft: 3 },
-  emptyText: { fontSize: 13, fontStyle: 'italic', textAlign: 'center', paddingVertical: SPACING.sm },
+  addBtnText: { color: '#FFF', fontSize: 12, fontWeight: '600', marginLeft: 3 },
+  emptyText: { fontSize: 12, fontStyle: 'italic', textAlign: 'center', paddingVertical: SPACING.sm },
   entryRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1074,9 +1442,9 @@ const styles = StyleSheet.create({
   },
   entryLeft: { flexDirection: 'row', alignItems: 'flex-start', flex: 1 },
   entryText: { flex: 1, marginLeft: 8 },
-  entryDesc: { fontSize: 14, fontWeight: '600' },
-  entryRemarks: { fontSize: 12, marginTop: 2 },
-  entryDate: { fontSize: 11, marginTop: 2 },
+  entryDesc: { fontSize: 13, fontWeight: '600' },
+  entryRemarks: { fontSize: 11, marginTop: 2 },
+  entryDate: { fontSize: 10, marginTop: 2 },
   partsBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1108,9 +1476,51 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.sm,
   },
   receiveBtnText: { color: '#FFF', fontSize: 13, fontWeight: '700', marginLeft: 6 },
-  completeHint: { fontSize: 13, marginBottom: SPACING.sm, lineHeight: 18 },
+  completeHint: { fontSize: 12, marginBottom: SPACING.sm, lineHeight: 18 },
   remarksInput: { marginBottom: SPACING.sm },
   completeBtn: { borderRadius: BORDER_RADIUS.md },
+  breakdownToggleRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  breakdownToggleButton: {
+    marginRight: 8,
+    marginBottom: 8,
+    minHeight: 30,
+  },
+  breakdownButtonLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  breakdownTowBox: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.md,
+  },
+  imageBox: {
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.sm,
+    marginTop: SPACING.sm,
+    padding: SPACING.sm,
+  },
+  imageHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  imageActions: { flexDirection: 'row', alignItems: 'center' },
+  imageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginTop: 6,
+  },
   awaitingPill: {
     marginTop: 10,
     alignSelf: 'flex-start',

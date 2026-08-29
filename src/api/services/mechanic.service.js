@@ -19,10 +19,56 @@ import { get, post, handleApiError } from '../client';
  *   progresses), requests parts if needed (see store.service.js), and finally
  *   closes it out with CompleteWork once done.
  */
+const normalizeJobType = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const normalized = raw.toLowerCase();
+  if (normalized.includes('breakdown')) return 'Breakdown';
+  if (normalized.includes('driver') || normalized.includes('complaint')) return 'Driver Complaint';
+  if (normalized === 'b') return 'Breakdown';
+  if (normalized === 'd') return 'Driver Complaint';
+  return raw;
+};
+
+const normalizeDashboardData = (payload) => {
+  if (!payload || typeof payload !== 'object') return payload;
+
+  const rawItems = Array.isArray(payload) ? payload : Array.isArray(payload.Data) ? payload.Data : [];
+  if (!Array.isArray(rawItems)) return payload;
+
+  const transformed = rawItems.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    const resolvedJobType = normalizeJobType(
+      item?.JobType
+      || item?.FormType
+      || item?.ComplaintType
+      || item?.IncidentType
+      || item?.Type
+      || item?.TypeName
+      || item?.JobTypeName
+    ) || (
+      String(item?.BreakdownNo || item?.BreakdownId || item?.ComplaintNo || item?.CmplaintNo || '').trim()
+        ? 'Breakdown'
+        : 'Driver Complaint'
+    );
+
+    return {
+      ...item,
+      JobType: resolvedJobType,
+    };
+  });
+
+  if (Array.isArray(payload.Data)) {
+    return { ...payload, Data: transformed };
+  }
+
+  return transformed;
+};
+
 export const mechanicService = {
   getMyJobs: async (companyDB, empCode) => {
     const response = await get(`GetMyJobs?CompanyDB=${companyDB}&EmpCode=${encodeURIComponent(empCode)}`, { suppressErrorLog: true });
-    return response.data;
+    return normalizeDashboardData(response.data);
   },
 
   rejectWork: async (companyDB, jobCardNo, faultCode, empCode, reason) => {
@@ -36,11 +82,16 @@ export const mechanicService = {
    */
   getMechanicDashboard: async (companyDB, userCode) => {
     try {
-      const response = await get(
-        `GetMechanicDashboard?CompanyDB=${companyDB}&UserCode=${encodeURIComponent(userCode)}`
-      );
-      console.log('🔧 GetMechanicDashboard response:', JSON.stringify(response.data));
-      return response.data;
+      const endpoint = `GetMechanicDashboard?CompanyDB=${companyDB}&UserCode=${encodeURIComponent(userCode)}`;
+      const fullUrl = `http://116.202.223.120:6069/BMSSystem/${endpoint}`;
+      console.log('LOG     🔗 URL:', fullUrl);
+      const response = await get(endpoint);
+      const normalized = normalizeDashboardData(response.data);
+      const items = Array.isArray(normalized?.Data) ? normalized.Data : Array.isArray(normalized) ? normalized : [];
+      console.log('LOG     🔧 GetMechanicDashboard count:', items.length);
+      console.log('LOG     🔗 URL:', fullUrl);
+      console.log('LOG     🔧 GetMechanicDashboard raw response:', JSON.stringify(normalized).replace(/\s+/g, ' '));
+      return normalized;
     } catch (error) {
       console.warn('GetMechanicDashboard failed:', error?.message);
       throw new Error(handleApiError(error));
@@ -61,7 +112,7 @@ export const mechanicService = {
       FaultLine: Number(faultLine) || 0,
       UserCode: userCode,
     };
-    console.log('📤 AcceptFault:', JSON.stringify(payload, null, 2));
+    console.log('📤 AcceptFault:', JSON.stringify(payload));
     const response = await post('AcceptFault', payload);
     return response.data;
   },
@@ -80,7 +131,7 @@ export const mechanicService = {
       FaultLine: Number(faultLine) || 0,
       UserCode: userCode,
     };
-    console.log('📤 StartWork:', JSON.stringify(payload, null, 2));
+    console.log('📤 StartWork:', JSON.stringify(payload));
     const response = await post('StartWork', payload);
     return response.data;
   },
@@ -96,7 +147,7 @@ export const mechanicService = {
    * @param {Array}  payload.Details - [{ WorkCode, WorkDone, OtherDescription, Remarks }]
    */
   createWorkEntry: async (payload) => {
-    console.log('📝 CreateWorkEntry:', JSON.stringify(payload, null, 2));
+    console.log('📝 CreateWorkEntry:', JSON.stringify(payload));
     const response = await post('CreateWorkEntry', payload);
     console.log('📝 CreateWorkEntry response:', response.data);
     return response.data;
@@ -112,7 +163,7 @@ export const mechanicService = {
    * @param {Array}  payload.Details
    */
   updateWorkEntry: async (payload) => {
-    console.log('📝 UpdateWorkEntry:', JSON.stringify(payload, null, 2));
+    console.log('📝 UpdateWorkEntry:', JSON.stringify(payload));
     const response = await post('UpdateWorkEntry', payload);
     console.log('📝 UpdateWorkEntry response:', response.data);
     return response.data;
@@ -127,7 +178,7 @@ export const mechanicService = {
    * @param {string} payload.FinalRemarks
    */
   completeWork: async (payload) => {
-    console.log('🏁 CompleteWork:', JSON.stringify(payload, null, 2));
+    console.log('🏁 CompleteWork:', JSON.stringify(payload));
     const response = await post('CompleteWork', payload);
     console.log('🏁 CompleteWork response:', response.data);
     return response.data;

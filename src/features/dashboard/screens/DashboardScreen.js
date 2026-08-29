@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
+import { useFocusEffect } from '@react-navigation/native';
 import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
@@ -17,7 +18,7 @@ import { StatusBadge } from '../../../shared/components/Badge';
 import FAB from '../../../shared/components/FAB';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { complaintService, jobCardService, maintenanceService, teamService, mechanicService } from '../../../api/services';
+import { complaintService, dashboardService, jobCardService, maintenanceService, teamService, mechanicService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
 import { isMechanicUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
 
@@ -112,6 +113,24 @@ const isAwaitingVerificationStatus = (statusValue) => {
   return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION', 'V', 'VERIFY'].includes(status);
 };
 
+const isSupervisorVerificationNotification = (item) => {
+  const text = String(item?.Message || item?.message || item?.Title || item?.title || '').toLowerCase();
+  return text.includes('work entry') && (
+    text.includes('supervisor inspection')
+    || text.includes('inspection is required')
+    || text.includes('awaiting verification')
+  );
+};
+
+const getWorkEntryNotificationId = (item) => String(
+  item?.WorkEntryDocEntry
+  || item?.WorkEntryNo
+  || item?.DocEntry
+  || item?.ReferenceDocEntry
+  || item?.RefDocEntry
+  || ''
+).trim();
+
 const extractArrayItems = (data) => {
   if (Array.isArray(data)) return data;
   if (!data || typeof data !== 'object') return [];
@@ -130,18 +149,16 @@ const extractArrayItems = (data) => {
 
 const isBreakdownAssignmentItem = (item) => {
   if (!item || typeof item !== 'object') return false;
-  const complaintType = String(
-    item?.ComplaintType
-    ?? item?.IncidentType
-    ?? item?.FormType
-    ?? item?.Type
-    ?? item?.JobCardType
-    ?? item?.BreakdownType
-    ?? ''
-  ).trim().toUpperCase();
+  const complaintTypes = [
+    item?.ComplaintType,
+    item?.IncidentType,
+    item?.FormType,
+    item?.Type,
+    item?.JobCardType,
+    item?.BreakdownType,
+  ].map(value => String(value || '').trim().toUpperCase());
   const description = String(item?.Description ?? item?.Fault ?? item?.FaultName ?? item?.JobDescription ?? '').trim().toLowerCase();
-  return complaintType.includes('BREAKDOWN')
-    || complaintType === 'B'
+  return complaintTypes.some(type => type.includes('BREAKDOWN') || ['B', 'JCA', 'JCT'].includes(type))
     || description.includes('breakdown')
     || Boolean(
       item?.BreakdownDocEntry
@@ -189,6 +206,7 @@ const DashboardScreen = ({ navigation }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
+  const storedNotifications = useSelector(state => state.notification?.notifications || []);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const mechanicUser = isMechanicUser(user);
   const supervisorUser = isSupervisorUser(user);
@@ -234,9 +252,9 @@ const DashboardScreen = ({ navigation }) => {
     completed: 0,
   });
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     fetchDashboardData();
-  }, []);
+  }, [dbName, user?.Code, user?.code, user?.User, user?.user, user?.username, user?.name]));
 
   const fetchDashboardData = async () => {
     try {
@@ -363,11 +381,51 @@ const DashboardScreen = ({ navigation }) => {
 
       if (supervisorUser) {
         try {
-          const verificationResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
+          const companyDb = dbName || 'MUTSPL_TEST';
+          const identityCandidates = [...new Set([
+            user?.User,
+            user?.user,
+            user?.username,
+            user?.Code,
+            user?.code,
+            user?.UserCode,
+            user?.Name,
+            user?.name,
+          ].map((value) => String(value || '').trim()).filter(Boolean))];
+          const [verificationResponse, ...notificationResults] = await Promise.all([
+            jobCardService.getJobCards(companyDb, null),
+            ...identityCandidates.map(async (identity) => {
+              try {
+                return await dashboardService.getNotifications(companyDb, identity);
+              } catch (error) {
+                return null;
+              }
+            }),
+          ]);
           const verificationCards = Array.isArray(verificationResponse?.Data) ? verificationResponse.Data : [];
-          setPendingVerificationCount(
-            verificationCards.filter((card) => isAwaitingVerificationStatus(card?.Status || card?.WorkStatus || card?.FaultStatus)).length,
+          const apiNotificationRows = notificationResults.flatMap((response) => (
+            Array.isArray(response?.Data)
+              ? response.Data
+              : (Array.isArray(response?.data) ? response.data : [])
+          ));
+          const notificationRows = [...apiNotificationRows, ...storedNotifications];
+          const pendingNotifications = notificationRows.filter(isSupervisorVerificationNotification);
+          const cardCount = verificationCards.filter((card) => (
+            isAwaitingVerificationStatus(card?.Status || card?.WorkStatus || card?.FaultStatus)
+          )).length;
+          const pendingVerificationKeys = new Set(
+            verificationCards
+              .filter((card) => isAwaitingVerificationStatus(card?.Status || card?.WorkStatus || card?.FaultStatus))
+              .map((card) => String(card?.JobCardDocEntry || card?.DocEntry || card?.JobCardNo || '').trim())
+              .filter(Boolean)
+              .map((key) => `card:${key}`),
           );
+          pendingNotifications.forEach((item) => {
+            const jobCardRef = String(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || item?.jobCardNo || '').trim();
+            const workEntryRef = getWorkEntryNotificationId(item);
+            pendingVerificationKeys.add(jobCardRef ? `card:${jobCardRef}` : `entry:${workEntryRef}`);
+          });
+          setPendingVerificationCount(Math.max(cardCount, pendingVerificationKeys.size));
         } catch (verificationError) {
           console.warn('Supervisor verification count fetch failed:', verificationError?.message || verificationError);
           setPendingVerificationCount(0);
@@ -699,13 +757,17 @@ const DashboardScreen = ({ navigation }) => {
                     onPress={() => {
                       const firstBreakdown = breakdownWorkItems[0];
                       const { complaintNo, jobCardDocEntry, busNo, depot } = getBreakdownTarget(firstBreakdown);
-                      navigation.navigate('LineBreakdownWorkEntry', {
-                        complaintNo,
+                      navigation.navigate('FaultWork', {
+                        docEntry: jobCardDocEntry,
+                        dbName: dbName || 'MUTSPL_TEST',
+                        jobCardNo: jobCardDocEntry,
                         jobCardDocEntry,
+                        complaintType: 'Breakdown',
+                        complaintNo,
+                        fault: firstBreakdown,
                         faultLine: 1,
                         busNo,
                         depot,
-                        dbName: dbName || 'MUTSPL_TEST',
                       });
                     }}
                     activeOpacity={0.7}

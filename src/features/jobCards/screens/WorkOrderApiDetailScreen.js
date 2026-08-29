@@ -134,6 +134,7 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
           PartLine: Number(part?.PartLine) || 0,
           ApprovedQty: approve ? (Number(part?.ReqQty) || 0) : 0,
           Approved: approve,
+          StoreWarehouse: String(part?.Warehouse || '').trim(),
           StoreItemStatus: 'Direct',
           Remarks: String(part?.Remarks || '').trim(),
         })),
@@ -236,13 +237,12 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
                   <Text style={[styles.acceptedText, { color: '#2B7D2B' }]}>Job Accepted</Text>
                 </View>
                 <Button mode="contained" icon="assignment"
-                  onPress={() => navigation.navigate('WorkEntry', {
-                    workOrderDocEntry,
+                  onPress={() => navigation.navigate('FaultWork', {
+                    docEntry: workOrderDocEntry,
                     dbName: dbName || 'MUTSPL_TEST',
                     jobCardNo: workOrderDetail?.JCDocNum || jobCardNo,
-                    jobCardDocEntry: workOrderDetail?.JCDocEnt || workOrderDetail?.JobCardDocEntry || workOrderDocEntry,
-                    complaintType: workOrderDetail?.ComplaintType || workOrderDetail?.Complaint || '',
-                    depot: workOrderDetail?.Depot || workOrderDetail?.DepotName || ''
+                    fault: workOrderDetail?.Faults?.[0],
+                    faultLine: workOrderDetail?.Faults?.[0]?.FaultLine || workOrderDetail?.Faults?.[0]?.LineNum || 0,
                   })}
                   style={[styles.actionBtn, { backgroundColor: '#0070F2', marginTop: 8 }]}
                   contentStyle={{ paddingVertical: 6 }}>

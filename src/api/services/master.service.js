@@ -76,6 +76,17 @@ export const masterService = {
     }
   },
 
+  getMechanicList: async (companyDB, depot) => {
+    try {
+      const response = await get(
+        `GetMechanicList?CompanyDB=${encodeURIComponent(companyDB)}&Depot=${encodeURIComponent(depot)}`,
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   /**
    * Get fault details master — includes DueHours per fault code
    * Expected response: { Success, Data: [{ FaultCode, FaultName, DueHours, ... }] }
@@ -84,7 +95,7 @@ export const masterService = {
   getFaultDetails: async (companyDB) => {
     try {
       const response = await get(`GetFaultDetails?CompanyDB=${companyDB}`);
-      console.log('🔧 Fault details response:', JSON.stringify(response.data?.Data?.[0], null, 2));
+      console.log('🔧 Fault details response:', JSON.stringify(response.data?.Data?.[0]));
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -100,20 +111,6 @@ export const masterService = {
   getFaultMaster: async (companyDB) => {
     try {
       const response = await get(`GetFaultMaster?CompanyDB=${companyDB}`);
-      return response.data;
-    } catch (error) {
-      throw new Error(handleApiError(error));
-    }
-  },
-
-  /**
-   * Get Work List — dropdown options for mechanic work entry description.
-   * Expected: { Success, Data: [{ Code, Name/Description }] }
-   * @param {string} companyDB
-   */
-  getWorkList: async (companyDB) => {
-    try {
-      const response = await get(`GetWorkList?CompanyDB=${companyDB}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -264,7 +261,7 @@ export const masterService = {
         CompanyDB: companyDB,
         ...payload,
       };
-      console.log('📤 RespondBreakdownTeamAssignment payload:', JSON.stringify(body, null, 2));
+      console.log('📤 RespondBreakdownTeamAssignment payload:', JSON.stringify(body));
       const response = await post('RespondBreakdownTeamAssignment', body);
       return response.data;
     } catch (error) {

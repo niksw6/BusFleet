@@ -87,9 +87,9 @@ const LoginScreen = ({ navigation }) => {
         // MCheckLogin response shape: { Success:true, Data:{ Role, Depot, TeamCode, ... } }
         const userFromApi = response.Data || response.data || response.user || response.User || { name: values.username };
         const detectedRole =
-          userFromApi?.role ||
-          userFromApi?.Role ||
-          mapUsertypeToRole(response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype);
+          mapUsertypeToRole(response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype)
+          || userFromApi?.role
+          || userFromApi?.Role;
         const mechanicCode = userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || userFromApi?.UserCode || userFromApi?.User || values.username;
         const user = {
           ...userFromApi,

@@ -1,7 +1,8 @@
 import React, { useEffect } from 'react';
-import { StatusBar, View, Text } from 'react-native';
+import { StatusBar, View, Text, StyleSheet } from 'react-native';
 import { Provider as PaperProvider, MD3LightTheme, MD3DarkTheme } from 'react-native-paper';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import Constants from 'expo-constants';
 import { Provider as ReduxProvider, useSelector } from 'react-redux';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -60,6 +61,27 @@ const darkTheme = {
   },
 };
 
+const getLicenseExpiry = () => Constants.expoConfig?.extra?.license?.expiresAt || null;
+
+const LicenseGate = ({ children }) => {
+  const expiresAt = getLicenseExpiry();
+  const isExpired = expiresAt && Date.now() >= new Date(expiresAt).getTime();
+
+  if (isExpired) {
+    return (
+      <View style={styles.expiredContainer}>
+        <MaterialCommunityIcons name="calendar-remove" size={56} color={COLORS.danger} />
+        <Text style={styles.expiredTitle}>Application validity expired</Text>
+        <Text style={styles.expiredMessage}>
+          This client APK was valid for two months. Please install a renewed APK.
+        </Text>
+      </View>
+    );
+  }
+
+  return children;
+};
+
 const renderPaperIcon = ({ name, source, color, size, ...rest }) => {
   const resolvedSource = name ?? source;
 
@@ -96,12 +118,38 @@ function AppContent() {
       }}
     >
       <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <OfflineBanner />
-      <AppNavigator />
+      <LicenseGate>
+        <OfflineBanner />
+        <AppNavigator />
+      </LicenseGate>
       <Toast />
     </PaperProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  expiredContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 28,
+    backgroundColor: COLORS.light,
+  },
+  expiredTitle: {
+    marginTop: 16,
+    color: COLORS.dark,
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  expiredMessage: {
+    marginTop: 10,
+    color: COLORS.gray,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+});
 
 class AppErrorBoundary extends React.Component {
   constructor(props) {

@@ -35,7 +35,7 @@ export const lineBreakdownService = {
    */
   createLineBreakdownWorkEntry: async (payload) => {
     try {
-      console.log('🔧 Creating Line Breakdown Work Entry:', JSON.stringify(payload, null, 2));
+      console.log('🔧 Creating Line Breakdown Work Entry:', JSON.stringify(payload));
       const response = await post('CreateLineBreakdownWorkEntry', payload);
       console.log('🔧 Work Entry created:', response.data);
       return response.data;
@@ -60,7 +60,7 @@ export const lineBreakdownService = {
    */
   completeLineBreakdownWorkEntry: async (payload) => {
     try {
-      console.log('✅ Completing Line Breakdown Work Entry:', JSON.stringify(payload, null, 2));
+      console.log('✅ Completing Line Breakdown Work Entry:', JSON.stringify(payload));
       const response = await post('CompleteLineBreakdownWorkEntry', payload);
       console.log('✅ Work Entry completed:', response.data);
       return response.data;
@@ -89,7 +89,7 @@ export const lineBreakdownService = {
       }
 
       const normalizedPayload = { ...payload, Status: normalizedStatus };
-      console.log('🔍 Verifying Line Breakdown Work Entry:', JSON.stringify(normalizedPayload, null, 2));
+      console.log('🔍 Verifying Line Breakdown Work Entry:', JSON.stringify(normalizedPayload));
       const response = await post('VerifyLineBreakdownWorkEntry', normalizedPayload);
       console.log('🔍 Work Entry verified:', response.data);
       return response.data;
@@ -132,7 +132,7 @@ export const lineBreakdownService = {
    */
   saveWorkEntryImage: async (payload) => {
     try {
-      console.log('🖼️  Saving work entry image:', JSON.stringify(payload, null, 2));
+      console.log('🖼️  Saving work entry image:', JSON.stringify(payload));
       const response = await post('SaveWorkEntryImage', payload);
       console.log('🖼️  Image saved:', response.data);
       return response.data;

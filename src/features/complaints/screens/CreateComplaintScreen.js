@@ -199,22 +199,22 @@ const CreateComplaintScreen = ({ navigation }) => {
         return;
       }
 
-      console.log('Sending complaint data:', JSON.stringify(complaintData, null, 2));
-      console.log('Faults array:', JSON.stringify(complaintData.Faults, null, 2));
+      console.log('Sending complaint data:', JSON.stringify(complaintData));
+      console.log('Faults array:', JSON.stringify(complaintData.Faults));
       
       // Generate curl command for testing
       const curlCommand = `curl -X POST "http://116.202.223.120:6069/BMSSystem/CreateDriverComplaint" \\
   -H "Content-Type: application/json" \\
   -H "Accept: application/json" \\
   -H "DBName: ${complaintData.CompanyDB}" \\
-  -d '${JSON.stringify(complaintData, null, 2)}'`;
+  -d '${JSON.stringify(complaintData)}'`;
       
       console.log('🔧 CURL Command for Postman/Testing:');
       console.log(curlCommand);
 
       const response = await complaintService.createComplaint(complaintData);
 
-      console.log('Complaint response:', JSON.stringify(response, null, 2));
+      console.log('Complaint response:', JSON.stringify(response));
 
       // Handle different API response formats
       if (response && (response.Success === true || response.success === true)) {

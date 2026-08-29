@@ -9,7 +9,7 @@ import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { mechanicService } from '../../../api/services';
+import { dashboardService, mechanicService } from '../../../api/services';
 import { getUserRole } from '../../../utils/roleAccess';
 
 /**
@@ -36,10 +36,21 @@ const TABS = [
   { key: BUCKET.COMPLETED, label: 'Completed', icon: 'check-circle' },
 ];
 
-const deriveBucket = (item) => {
-  const raw = String(
-    item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? ''
+const getEffectiveStatus = (item) => {
+  const workEntries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
+  const submittedEntry = workEntries.find((entry) => entry?.Status || entry?.WorkStatus);
+  return String(
+    submittedEntry?.Status
+    || submittedEntry?.WorkStatus
+    || item?.Status
+    || item?.FaultStatus
+    || item?.WorkStatus
+    || ''
   ).trim().toUpperCase();
+};
+
+const deriveBucket = (item) => {
+  const raw = getEffectiveStatus(item);
   if (['COMPLETED', 'COMPLETE', 'C', 'CM', 'SV', 'CL', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(raw)) return BUCKET.COMPLETED;
   // WC is the backend's mechanic-complete state: work is finished but must
   // remain in progress until the Supervisor verifies/closes the job card.
@@ -48,11 +59,24 @@ const deriveBucket = (item) => {
 };
 
 const isAwaitingVerification = (item) => ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(
-  String(item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? '').trim().toUpperCase()
+  getEffectiveStatus(item)
 );
 
+const normalizeJobType = (item) => {
+  const raw = String(item?.JobType ?? item?.FormType ?? item?.ComplaintType ?? item?.IncidentType ?? item?.Type ?? '').trim();
+  if (!raw) {
+    const hasBreakdownRef = Boolean(item?.BreakdownNo || item?.BreakdownId || item?.ComplaintNo || item?.CmplaintNo || item?.BreakdownDocEntry);
+    return hasBreakdownRef ? 'Breakdown' : 'Driver Complaint';
+  }
+
+  const normalized = raw.toLowerCase();
+  if (normalized.includes('breakdown') || normalized === 'b' || normalized === 'jca' || normalized === 'jct') return 'Breakdown';
+  if (normalized.includes('driver') || normalized.includes('complaint') || normalized === 'd') return 'Driver Complaint';
+  return raw;
+};
+
 const getMechanicStatusLabel = (item, bucket, awaitingVerification) => {
-  const raw = String(item?.Status ?? item?.FaultStatus ?? item?.WorkStatus ?? '').trim().toUpperCase();
+  const raw = getEffectiveStatus(item);
 
   if (bucket === BUCKET.COMPLETED) {
     if (raw === 'SV' || raw === 'SUPERVISOR VERIFIED') return 'Supervisor Verified';
@@ -102,10 +126,13 @@ const getBreakdownJobCardDocEntry = (item) => Number(
 ) || 0;
 const itemKey = (item) => `${getDocEntry(item)}-${getFaultLine(item)}`;
 const isBreakdownAssignment = (item) => {
-  const complaintType = String(item?.ComplaintType ?? item?.IncidentType ?? item?.FormType ?? item?.Type ?? '').trim().toUpperCase();
+  const jobType = normalizeJobType(item);
+  if (jobType === 'Breakdown') return true;
+
+  const complaintTypes = [item?.ComplaintType, item?.IncidentType, item?.FormType, item?.Type, item?.JobType]
+    .map(value => String(value || '').trim().toUpperCase());
   const description = String(item?.Description ?? item?.Fault ?? item?.FaultName ?? '').trim().toLowerCase();
-  return complaintType.includes('BREAKDOWN')
-    || complaintType === 'B'
+  return complaintTypes.some(type => type.includes('BREAKDOWN') || ['B', 'JCA', 'JCT'].includes(type))
     || description.includes('breakdown')
     || Boolean(item?.BreakdownDocEntry || item?.BreakdownNo || item?.BreakdownId || item?.ComplaintNo || item?.CmplaintNo);
 };
@@ -131,6 +158,43 @@ const getBusLabel = (item) => (
     || ''
   ).trim() || 'Bus -'
 );
+
+const getNotificationQueueItems = (notifications) => (Array.isArray(notifications) ? notifications : [])
+  .filter((notification) => String(notification?.Type || notification?.type || '').trim().toUpperCase() === 'JCA')
+  .map((notification) => ({
+    ...notification,
+    Type: 'JCA',
+    Status: 'P',
+    DocEntry: notification?.JobCardDocEntry
+      || notification?.jobCardDocEntry
+      || notification?.DocEntry
+      || notification?.docEntry
+      || notification?.ReferenceDocEntry,
+    JobCardDocEntry: notification?.JobCardDocEntry
+      || notification?.jobCardDocEntry
+      || notification?.DocEntry
+      || notification?.docEntry,
+    JobCardNo: notification?.JobCardNo || notification?.jobCardNo || notification?.DocEntry || notification?.docEntry,
+    FaultLine: notification?.FaultLine || notification?.faultLine || 1,
+    ComplaintType: 'Breakdown',
+    FaultCode: notification?.FaultCode || notification?.faultCode || '',
+    FaultName: notification?.FaultName || notification?.faultName || notification?.Description || 'Line Breakdown',
+    ComplaintNo: notification?.ComplaintNo || notification?.complaintNo || notification?.BreakdownNo || notification?.IncidentNo,
+  }))
+  .filter((item) => getDocEntry(item));
+
+const mergeQueueItems = (apiItems, notificationItems) => {
+  const merged = Array.isArray(apiItems) ? [...apiItems] : [];
+  const existingKeys = new Set(merged.map(item => itemKey(item)));
+  notificationItems.forEach((item) => {
+    const key = itemKey(item);
+    if (!existingKeys.has(key)) {
+      merged.push(item);
+      existingKeys.add(key);
+    }
+  });
+  return merged;
+};
 
 const MechanicDashboardScreen = ({ navigation }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
@@ -158,7 +222,16 @@ const MechanicDashboardScreen = ({ navigation }) => {
       } catch (apiError) {
         res = await mechanicService.getMechanicDashboard(companyDb, userCode);
       }
-      setItems(extractItems(res?.Data ?? res));
+      const apiItems = extractItems(res?.Data ?? res);
+      let notificationItems = [];
+      try {
+        const notificationResponse = await dashboardService.getNotifications(companyDb, userCode);
+        const notificationData = notificationResponse?.Data ?? notificationResponse?.data ?? notificationResponse;
+        notificationItems = getNotificationQueueItems(notificationData);
+      } catch (notificationError) {
+        console.warn('Unable to load JCA notifications for work queue:', notificationError?.message || notificationError);
+      }
+      setItems(mergeQueueItems(apiItems, notificationItems));
     } catch (error) {
       console.error('❌ Error loading Mechanic Dashboard:', error);
       Toast.show({ type: 'error', text1: 'Error', text2: error?.message || 'Failed to load your work queue' });
@@ -197,9 +270,29 @@ const MechanicDashboardScreen = ({ navigation }) => {
         userCode,
       );
       if (response?.Success !== false) {
-        Toast.show({ type: 'success', text1: 'Fault accepted', text2: 'Head to "In Progress" to start work.' });
+        const breakdownAssignment = isBreakdownAssignment(item);
+        const responseData = response?.Data ?? response?.data ?? response;
+        const acceptedEntry = Array.isArray(responseData)
+          ? responseData[0] || {}
+          : responseData?.WorkEntry
+            || responseData?.WorkEntryDetails
+            || responseData
+            || {};
+        const acceptedWorkEntryDocEntry = acceptedEntry?.WorkEntryDocEntry
+          || acceptedEntry?.WorkEntryNo
+          || acceptedEntry?.DocEntry
+          || response?.WorkEntryDocEntry
+          || response?.WorkEntryNo
+          || null;
+
         setItems(prev => prev.map(i => (itemKey(i) === key ? { ...i, Status: 'A' } : i)));
-        setActiveTab(BUCKET.IN_PROGRESS);
+        if (breakdownAssignment) {
+          Toast.show({ type: 'success', text1: 'Breakdown accepted', text2: 'Opening work entry.' });
+          openBreakdownWorkEntry(item, acceptedWorkEntryDocEntry, acceptedEntry);
+        } else {
+          Toast.show({ type: 'success', text1: 'Fault accepted', text2: 'Head to "In Progress" to start work.' });
+          setActiveTab(BUCKET.IN_PROGRESS);
+        }
       } else {
         Toast.show({ type: 'error', text1: 'Failed', text2: response?.Message || 'Could not accept fault' });
       }
@@ -224,14 +317,20 @@ const MechanicDashboardScreen = ({ navigation }) => {
     });
   };
 
-  const openBreakdownWorkEntry = (item) => {
-    navigation.navigate('LineBreakdownWorkEntry', {
+  const openBreakdownWorkEntry = (item, acceptedWorkEntryDocEntry = null, acceptedWorkEntry = null) => {
+    const jobCardDocEntry = getBreakdownJobCardDocEntry(item);
+    navigation.navigate('FaultWork', {
+      docEntry: jobCardDocEntry,
+      dbName: dbName || 'MUTSPL_TEST',
+      jobCardNo: item?.JobCardNo || item?.DocNum || jobCardDocEntry,
+      complaintType: 'Breakdown',
       complaintNo: getBreakdownComplaintNo(item),
-      jobCardDocEntry: getBreakdownJobCardDocEntry(item),
+      fault: item,
       faultLine: getFaultLine(item) || 1,
+      workEntryDocEntry: acceptedWorkEntryDocEntry || getActiveWorkEntry(item)?.WorkEntryDocEntry || getActiveWorkEntry(item)?.DocEntry || null,
+      existingWorkEntry: acceptedWorkEntry || getActiveWorkEntry(item) || null,
       busNo: getBusLabel(item),
       depot: item?.Depot || item?.BranchNm || item?.Branch || item?.Location || '',
-      dbName: dbName || 'MUTSPL_TEST',
     });
   };
 
@@ -239,6 +338,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
     const key = itemKey(item);
     const bucket = deriveBucket(item);
     const breakdownAssignment = isBreakdownAssignment(item);
+    const itemJobType = normalizeJobType(item);
     const faultName = item?.Fault || item?.FaultName || item?.Description || (breakdownAssignment ? 'Line Breakdown' : 'Fault');
     const busNo = getBusLabel(item);
     const displayNo = item?.JobCardNo || item?.DocNum || getDocEntry(item);
@@ -258,6 +358,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
         activeOpacity={0.7}
         onPress={() => {
           if (breakdownAssignment) {
+            if (bucket === BUCKET.TO_ACCEPT) return;
             openBreakdownWorkEntry(item);
             return;
           }
@@ -275,12 +376,22 @@ const MechanicDashboardScreen = ({ navigation }) => {
             <Text style={[styles.faultName, { color: colors.dark }]}>{faultName}</Text>
             <Text style={[styles.assigneeText, { color: colors.primary }]}>Assigned to: {assignedName}</Text>
             <Text style={[styles.cardSub, { color: colors.gray }]}>
-              Job Card #{displayNo} • {busNo} • {item?.Priority || 'Medium'}
+              {itemJobType} • Job Card #{displayNo} • {busNo} • {item?.Priority || 'Medium'}
             </Text>
           </View>
         </View>
 
-        {breakdownAssignment ? (
+        {breakdownAssignment && bucket === BUCKET.TO_ACCEPT ? (
+          <TouchableOpacity
+            style={[styles.acceptBtn, { backgroundColor: colors.primary }]}
+            onPress={() => handleAccept(item)}
+            activeOpacity={0.8}
+            disabled={submittingKey === key}
+          >
+            <MaterialIcons name="check" size={16} color="#FFF" />
+            <Text style={styles.acceptBtnText}>{submittingKey === key ? 'Accepting...' : 'Accept Fault'}</Text>
+          </TouchableOpacity>
+        ) : breakdownAssignment ? (
           <View style={styles.rowBetween}>
             <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}> 
               <Text style={[styles.statusPillText, { color: statusColor }]}>

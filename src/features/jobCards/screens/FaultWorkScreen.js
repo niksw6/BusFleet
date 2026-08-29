@@ -8,7 +8,7 @@ import MaterialIcons from '../../../components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { mechanicService, storeService, masterService, jobCardService, workEntryService } from '../../../api/services';
+import { mechanicService, storeService, masterService, jobCardService, workEntryService, lineBreakdownService } from '../../../api/services';
 
 /**
  * FaultWorkScreen — Mechanic/Electrician's step-by-step work flow for ONE fault line.
@@ -90,7 +90,7 @@ const extractSpecialToolsForFault = (workEntry, faultItem) => {
 };
 
 const FaultWorkScreen = ({ route, navigation }) => {
-  const { docEntry, faultLine, fault, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, isWorkStarted } = route.params || {};
+  const { docEntry, faultLine, fault, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, isWorkStarted, complaintType: routeComplaintType = '', jobCardNo, complaintNo, depot: routeDepot = '' } = route.params || {};
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
@@ -134,8 +134,15 @@ const FaultWorkScreen = ({ route, navigation }) => {
 
   const [workList, setWorkList] = useState([]);
   const [spareParts, setSpareParts] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
   const [approvedParts, setApprovedParts] = useState([]);
   const [resolvedFaultCode, setResolvedFaultCode] = useState('');
+  const isBreakdownJob = String(routeComplaintType || '').toLowerCase().includes('breakdown');
+  const [repairType, setRepairType] = useState('P');
+  const [canRepairOnSite, setCanRepairOnSite] = useState(true);
+  const [selectedTowDepot, setSelectedTowDepot] = useState(routeDepot || '');
+  const [depotsList, setDepotsList] = useState([]);
+  const [showDepotsModal, setShowDepotsModal] = useState(false);
 
   // Work entry form
   const [finalRemarks, setFinalRemarks] = useState(existingWorkEntry?.FinalRemarks || '');
@@ -159,13 +166,13 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const [showToolsModal, setShowToolsModal] = useState(false);
   const [specialToolRemarks, setSpecialToolRemarks] = useState('');
   const [showPartsModal, setShowPartsModal] = useState(false);
+  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
+  const [warehouseTargetCode, setWarehouseTargetCode] = useState(null);
   const [receiveTarget, setReceiveTarget] = useState(null);
   const [receivedQty, setReceivedQty] = useState('');
   // Return parts
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [returnDraft, setReturnDraft] = useState([]); // [{ part, LineId, ReturnQty, ReturnReason, Remarks }]
-  const [showReturnToolModal, setShowReturnToolModal] = useState(false);
-  const [returnToolDraft, setReturnToolDraft] = useState([]); // [{ tool, LineId, Remarks }]
   const [beforeImageDrafts, setBeforeImageDrafts] = useState([]);
   const [afterImageDrafts, setAfterImageDrafts] = useState([]);
   const [savedImages, setSavedImages] = useState(getInitialSavedImages);
@@ -267,10 +274,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [faultDetailsResult, sparePartsResult, approvedResults, jobCardResult] = await Promise.all([
+      const [faultDetailsResult, sparePartsResult, warehousesResult, approvedResults, jobCardResult] = await Promise.all([
         Promise.allSettled([
         masterService.getFaultDetails(companyDb),
         masterService.getSpareParts(companyDb),
+        masterService.getWarehouses(companyDb),
         ]),
         Promise.allSettled(partIdentityCandidates.map(identity => storeService.getApprovedJobCardParts(companyDb, identity))),
         Promise.allSettled([
@@ -294,8 +302,27 @@ const FaultWorkScreen = ({ route, navigation }) => {
       }
       const workItems = faultWorkItems;
       const partItems = sparePartsResult.status === 'fulfilled' ? normalizeParts(extractRows(sparePartsResult.value)) : [];
+      const warehouseRows = warehousesResult.status === 'fulfilled' ? extractRows(warehousesResult.value) : [];
+      setWarehouses(warehouseRows.map((row) => ({
+        ...row,
+        WarehouseCode: String(row?.WarehouseCode || row?.WhsCode || row?.Code || '').trim(),
+        WarehouseName: String(row?.WarehouseName || row?.WhsName || row?.Name || row?.WarehouseCode || row?.WhsCode || '').trim(),
+      })).filter(row => row.WarehouseCode || row.WarehouseName));
       setWorkList([...workItems, { Code: 'OTHER', Name: 'Other work (enter manually)' }]);
       setSpareParts([...partItems, { ItemCode: 'OTHER', ItemName: 'Other part (enter manually)' }]);
+
+      if (isBreakdownJob) {
+        try {
+          const depotResponse = await masterService.getDepots(companyDb);
+          const depotRows = extractRows(depotResponse);
+          setDepotsList(depotRows);
+          if (!selectedTowDepot && depotRows.length > 0) {
+            setSelectedTowDepot(depotRows[0]?.Depot || depotRows[0]?.Name || depotRows[0]?.DepotName || '');
+          }
+        } catch (depotError) {
+          console.warn('GetDepots failed:', depotError?.message || depotError);
+        }
+      }
 
       const approvedFromQueue = approvedResults.flatMap(result => (
         result.status === 'fulfilled' ? extractRows(result.value) : []
@@ -376,7 +403,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
     } finally {
       setLoading(false);
     }
-  }, [dbName, userCode, docEntry, faultReference, faultLine, workEntryDocEntry, existingWorkEntry, partIdentityCandidates.join('|')]);
+  }, [dbName, userCode, docEntry, faultReference, faultLine, workEntryDocEntry, existingWorkEntry, partIdentityCandidates.join('|'), isBreakdownJob, selectedTowDepot]);
 
   useEffect(() => {
     loadData();
@@ -763,7 +790,12 @@ const FaultWorkScreen = ({ route, navigation }) => {
           FinalRemarks: finalRemarks,
           Details: detailsPayload,
         };
-        const response = await mechanicService.createWorkEntry(payload);
+        const response = isBreakdownJob
+          ? await lineBreakdownService.createLineBreakdownWorkEntry({
+              ...payload,
+              RepairType: repairType,
+            })
+          : await mechanicService.createWorkEntry(payload);
         if (isApiSuccess(response)) {
           const newDocEntry = response?.Data?.WorkEntryDocEntry || response?.Data?.DocEntry || response?.WorkEntryDocEntry;
           if (!newDocEntry) {
@@ -827,6 +859,54 @@ const FaultWorkScreen = ({ route, navigation }) => {
     }
   };
 
+  const handleRequestTow = async () => {
+    if (workEntryLocked) return;
+    if (!selectedTowDepot) {
+      Toast.show({ type: 'error', text1: 'Select a tow depot first' });
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      const response = await lineBreakdownService.createLineBreakdownWorkEntry({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        JobCardDocEntry: Number(docEntry) || docEntry,
+        FaultLine: Number(faultLine) || 1,
+        UserCode: userCode,
+        RepairType: repairType,
+        FinalRemarks: finalRemarks || 'Tow requested',
+        Details: [{
+          WorkCode: 'TOW_REQUEST',
+          WorkDone: 'Tow requested - vehicle to be moved to depot',
+          OtherDescription: '',
+          Remarks: finalRemarks || '',
+        }],
+        TowRequested: true,
+        TowDepot: selectedTowDepot,
+        CanRepairOnSite: false,
+      });
+      if (!isApiSuccess(response)) throw new Error(response?.Message || 'Could not request tow.');
+
+      const created = response?.Data || response;
+      const createdEntry = created?.WorkEntryDocEntry || created?.DocEntry || response?.WorkEntryDocEntry;
+      if (createdEntry) {
+        await lineBreakdownService.completeLineBreakdownWorkEntry({
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          WorkEntryDocEntry: Number(createdEntry) || createdEntry,
+          FinalRemarks: 'Tow requested and vehicle moved',
+        });
+        setWorkEntryDocEntry(createdEntry);
+      }
+      setAwaitingVerification(true);
+      setStep(STEP.DONE);
+      Toast.show({ type: 'success', text1: 'Tow requested', text2: 'Supervisor verification is now pending.' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Tow request failed', text2: error?.message || 'Unable to request tow.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleCompleteWork = async () => {
     if (workEntryLocked) {
       Toast.show({ type: 'info', text1: 'Work already completed', text2: 'Completion action is no longer available.' });
@@ -853,12 +933,18 @@ const FaultWorkScreen = ({ route, navigation }) => {
       const companyDb = dbName || 'MUTSPL_TEST';
       await persistSelectedImages('AF', afterImageDrafts, workEntryDocEntry);
       setAfterImageDrafts([]);
-      const response = await mechanicService.completeWork({
-        CompanyDB: companyDb,
-        WorkEntryDocEntry: workEntryDocEntry,
-        UserCode: userCode,
-        FinalRemarks: finalRemarks,
-      });
+      const response = isBreakdownJob
+        ? await lineBreakdownService.completeLineBreakdownWorkEntry({
+            CompanyDB: companyDb,
+            WorkEntryDocEntry: workEntryDocEntry,
+            FinalRemarks: finalRemarks,
+          })
+        : await mechanicService.completeWork({
+            CompanyDB: companyDb,
+            WorkEntryDocEntry: workEntryDocEntry,
+            UserCode: userCode,
+            FinalRemarks: finalRemarks,
+          });
       if (isApiSuccess(response)) {
         Toast.show({ type: 'success', text1: 'Work completed!', text2: 'Supervisor has been notified to inspect.' });
         setAwaitingVerification(true);
@@ -883,6 +969,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
       ItemCode: item.ItemCode || item.Code || '',
       ItemName: item.ItemName || item.Name || '',
       ReqQty: '1',
+      Warehouse: '',
       Remarks: '',
     }]);
     setShowPartsModal(false);
@@ -920,6 +1007,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
           ItemCode: p.ItemCode,
           ItemName: p.ItemName,
           ReqQty: parseFloat(p.ReqQty) || 1,
+          Warehouse: p.Warehouse || '',
           Remarks: p.Remarks || '',
         })),
       });
@@ -1158,10 +1246,12 @@ const FaultWorkScreen = ({ route, navigation }) => {
     }
     const companyDb = dbName || 'MUTSPL_TEST';
     const mechCode = user?.Code || user?.UserCode || user?.MechanicCode || userCode;
+    const jobCardDocEntry = docEntry;
     setSubmitting(true);
     try {
       const response = await storeService.requestPartReturn({
         CompanyDB: companyDb,
+        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
         MechanicCode: mechCode,
         Parts: returnDraft
@@ -1187,47 +1277,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
     }
   };
 
-  const openReturnSpecialTools = () => {
-    const returnable = existingSpecialTools.filter((tool) => {
-      const status = String(tool?.Status || '').trim().toUpperCase();
-      return ['RC', 'RECEIVED'].includes(status) && resolveToolLineId(tool) >= 0;
-    });
-    if (returnable.length === 0) {
-      Toast.show({ type: 'info', text1: 'No received tools to return' });
-      return;
-    }
-    setReturnToolDraft(returnable.map((tool) => ({ tool, LineId: resolveToolLineId(tool), Remarks: '' })));
-    setShowReturnToolModal(true);
-  };
-
-  const handleReturnSpecialTools = async () => {
-    if (!workEntryDocEntry || returnToolDraft.length === 0) return;
-    try {
-      setSubmitting(true);
-      const response = await storeService.returnSpecialTool({
-        CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        MechanicCode: String(user?.Code || user?.UserCode || user?.MechanicCode || userCode || '').trim(),
-        Tools: returnToolDraft.map(({ LineId, Remarks }) => ({ LineId, Remarks: String(Remarks || '').trim() })),
-      });
-      if (isApiSuccess(response)) {
-        const returnedLines = new Set(returnToolDraft.map((item) => item.LineId));
-        setExistingSpecialTools((prev) => prev.map((tool) => (
-          returnedLines.has(resolveToolLineId(tool)) ? { ...tool, Status: 'RT' } : tool
-        )));
-        setShowReturnToolModal(false);
-        setReturnToolDraft([]);
-        Toast.show({ type: 'success', text1: 'Special tool return submitted' });
-      } else {
-        Toast.show({ type: 'error', text1: 'Failed', text2: response?.Message || 'Could not return special tools' });
-      }
-    } catch (error) {
-      Toast.show({ type: 'error', text1: 'Error', text2: error?.message || 'Could not return special tools' });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   if (loading) {
     return <Loader visible />;
   }
@@ -1246,7 +1295,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
           </Text>
           {awaitingVerification && (
             <View style={[styles.awaitingStatusPill, { backgroundColor: '#6D28D915' }]}>
-              <MaterialIcons name="check-circle" size={14} color="#6D28D9" />
+              <MaterialIcons name="assignment-turned-in" size={14} color="#6D28D9" />
               <Text style={{ color: '#6D28D9', fontWeight: '700', fontSize: 12 }}>
                 Awaiting Verification
               </Text>
@@ -1431,6 +1480,67 @@ const FaultWorkScreen = ({ route, navigation }) => {
               </TouchableOpacity>
             </View>
 
+            {isBreakdownJob && (
+              <View style={[styles.card, styles.breakdownCard, { backgroundColor: colors.white, borderColor: '#FDBA74' }]}> 
+                <View style={styles.faultHeaderRow}>
+                  <MaterialIcons name="build" size={18} color="#F97316" />
+                  <Text style={[styles.sectionTitle, { color: '#C2410C' }]}>Breakdown Repair</Text>
+                </View>
+                <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 8 }}>Choose how this breakdown will be handled.</Text>
+                <Text style={[styles.breakdownLabel, { color: colors.dark }]}>Repair Type</Text>
+                <View style={styles.breakdownToggleRow}>
+                  <TouchableOpacity
+                    style={[styles.breakdownToggle, repairType === 'P' && { backgroundColor: colors.primary }]}
+                    onPress={() => setRepairType('P')}
+                  >
+                    <Text style={{ color: repairType === 'P' ? '#FFF' : colors.primary, fontSize: 12 }}>Permanent Repair</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.breakdownToggle, repairType === 'T' && { backgroundColor: colors.primary }]}
+                    onPress={() => setRepairType('T')}
+                  >
+                    <Text style={{ color: repairType === 'T' ? '#FFF' : colors.primary, fontSize: 12 }}>Temporary Repair</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={[styles.breakdownLabel, { color: colors.dark, marginTop: 8 }]}>Field Decision</Text>
+                <View style={styles.breakdownToggleRow}>
+                  <TouchableOpacity
+                    style={[styles.breakdownToggle, canRepairOnSite && { backgroundColor: colors.primary }]}
+                    onPress={() => setCanRepairOnSite(true)}
+                  >
+                    <Text style={{ color: canRepairOnSite ? '#FFF' : colors.primary, fontSize: 12 }}>Repair on Site</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.breakdownToggle, !canRepairOnSite && { backgroundColor: colors.primary }]}
+                    onPress={() => setCanRepairOnSite(false)}
+                  >
+                    <Text style={{ color: !canRepairOnSite ? '#FFF' : colors.primary, fontSize: 12 }}>Tow to Depot</Text>
+                  </TouchableOpacity>
+                </View>
+                {!canRepairOnSite && (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.towDepotSelector, { borderColor: '#FDBA74', backgroundColor: colors.white }]}
+                      onPress={() => setShowDepotsModal(true)}
+                    >
+                      <Text style={{ color: selectedTowDepot ? colors.dark : colors.gray, fontSize: 13 }} numberOfLines={1}>
+                        {selectedTowDepot || 'Select depot for tow'}
+                      </Text>
+                      <MaterialIcons name="expand-more" size={20} color={colors.gray} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.primaryBtn, { backgroundColor: colors.primary, marginTop: 8 }]}
+                      onPress={handleRequestTow}
+                      disabled={submitting}
+                    >
+                      <MaterialIcons name="local-shipping" size={18} color="#FFF" />
+                      <Text style={styles.primaryBtnText}>{submitting ? 'Requesting...' : 'Request Tow'}</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            )}
+
             {/* Parts */}
             <View style={[styles.card, { backgroundColor: colors.white }]}>
               <Text style={[styles.sectionTitle, { color: colors.dark }]}>Request Parts</Text>
@@ -1458,6 +1568,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
                         keyboardType="numeric"
                         style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
                       />
+                      <TouchableOpacity onPress={() => { setWarehouseTargetCode(p.ItemCode); setShowWarehouseModal(true); }} style={[styles.warehousePicker, { borderColor: colors.border || '#CCC' }]}>
+                        <Text numberOfLines={1} style={{ color: p.Warehouse ? colors.dark : colors.gray, fontSize: 13 }}>{p.Warehouse || 'Select warehouse'}</Text>
+                        <MaterialIcons name="arrow-drop-down" size={18} color={colors.gray} />
+                      </TouchableOpacity>
                     </View>
                   </View>
                   <TouchableOpacity onPress={() => removePartDraft(p.ItemCode)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -1544,18 +1658,17 @@ const FaultWorkScreen = ({ route, navigation }) => {
               )}
 
               {existingSpecialTools.length > 0 && (
-                <View style={[styles.approvedBox, { borderColor: '#7C3AED40', backgroundColor: '#7C3AED0D', marginBottom: SPACING.sm }]}>
+                <View style={[styles.approvedBox, { borderColor: '#7C3AED40', backgroundColor: '#7C3AED0D', marginBottom: SPACING.sm }]}> 
                   <Text style={{ color: '#5B21B6', fontWeight: '700', fontSize: 13 }}>Current special tool requests</Text>
                   {existingSpecialTools.map((tool, index) => {
                     const rawStatus = String(tool?.Status || '').trim().toUpperCase();
-                    const isReturned = ['RT', 'RETURNED'].includes(rawStatus);
                     const statusLabel = rawStatus === 'AP' || rawStatus === 'APPROVED' || rawStatus === 'A'
                       ? 'Approved'
                       : rawStatus === 'RJ' || rawStatus === 'REJECTED' || rawStatus === 'R'
                         ? 'Rejected'
                         : rawStatus === 'RC' || rawStatus === 'RECEIVED'
                           ? 'Received'
-                          : isReturned ? 'Returned' : 'Awaiting approval';
+                          : 'Awaiting approval';
                     const isApproved = ['AP', 'A', 'APPROVED'].includes(rawStatus);
                     const isReceived = ['RC', 'RECEIVED'].includes(rawStatus);
                     return (
@@ -1580,17 +1693,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
                     );
                   })}
                 </View>
-              )}
-
-              {existingSpecialTools.some((tool) => ['RC', 'RECEIVED'].includes(String(tool?.Status || '').trim().toUpperCase())) && !workEntryLocked && (
-                <TouchableOpacity
-                  style={[styles.addLineBtn, { borderColor: '#B45309', marginBottom: SPACING.sm }]}
-                  onPress={openReturnSpecialTools}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="undo" size={16} color="#B45309" />
-                  <Text style={{ color: '#B45309', fontWeight: '600', marginLeft: 4 }}>Return Special Tool</Text>
-                </TouchableOpacity>
               )}
 
               <TouchableOpacity
@@ -1753,6 +1855,27 @@ const FaultWorkScreen = ({ route, navigation }) => {
         searchKeys={['Name', 'Code']}
       />
 
+      <ModalSelector
+        visible={showDepotsModal}
+        onClose={() => setShowDepotsModal(false)}
+        onSelect={(value, item) => {
+          setSelectedTowDepot(item?.Depot || item?.Name || item?.DepotName || value);
+          setShowDepotsModal(false);
+        }}
+        title="Select Depot"
+        data={depotsList}
+        loading={false}
+        searchPlaceholder="Search depots..."
+        displayKey="Depot"
+        valueKey="Depot"
+        searchKeys={['Depot', 'Name', 'DepotName']}
+        renderItem={(item) => (
+          <Text style={{ color: colors.dark, fontSize: 15, fontWeight: '600' }}>
+            {item?.Depot || item?.Name || item?.DepotName || '-'}
+          </Text>
+        )}
+      />
+
       <RNModal visible={Boolean(receiveTarget)} transparent animationType="fade" onRequestClose={() => setReceiveTarget(null)}>
         <View style={styles.receiveOverlay}>
           <View style={[styles.receiveBox, { backgroundColor: colors.white }]}>
@@ -1815,7 +1938,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
                     <View style={{ flex: 1 }}>
                       <Text style={{ color: colors.gray, fontSize: 11, marginBottom: 2 }}>Reason</Text>
                       <TouchableOpacity
-                        style={[styles.dropdownPicker, { borderColor: colors.border || '#CCC' }]}
+                        style={[styles.warehousePicker, { borderColor: colors.border || '#CCC' }]}
                         onPress={() => {
                           const reasons = ['Unused Parts', 'Wrong Issue', 'Excess Quantity', 'Defective Part'];
                           const next = reasons[(reasons.indexOf(d.ReturnReason) + 1) % reasons.length];
@@ -1848,36 +1971,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
               >
                 <Text style={styles.smallBtnText}>{submitting ? 'Submitting…' : 'Submit Return'}</Text>
               </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </RNModal>
-
-      <RNModal visible={showReturnToolModal} transparent animationType="slide" onRequestClose={() => setShowReturnToolModal(false)}>
-        <View style={styles.receiveOverlay}>
-          <View style={[styles.receiveBox, { backgroundColor: colors.white, maxHeight: '85%' }]}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.sm }}>
-              <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: 0 }]}>Return Special Tools</Text>
-              <TouchableOpacity onPress={() => setShowReturnToolModal(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}><MaterialIcons name="close" size={22} color={colors.gray} /></TouchableOpacity>
-            </View>
-            <Text style={{ color: colors.gray, fontSize: 12, marginBottom: SPACING.sm }}>Add a return remark for each received tool.</Text>
-            <ScrollView style={{ maxHeight: 340 }} keyboardShouldPersistTaps="handled">
-              {returnToolDraft.map((item, idx) => (
-                <View key={`${item.LineId}-${idx}`} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0', flexDirection: 'column', alignItems: 'stretch', gap: 6 }]}>
-                  <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{item.tool?.ToolName || item.tool?.ToolCode || 'Special tool'}</Text>
-                  <RNTextInput
-                    value={item.Remarks}
-                    onChangeText={(value) => setReturnToolDraft((prev) => prev.map((entry, i) => i === idx ? { ...entry, Remarks: value } : entry))}
-                    placeholder="Returned in good condition"
-                    placeholderTextColor={colors.gray}
-                    style={[styles.inlineInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
-                  />
-                </View>
-              ))}
-            </ScrollView>
-            <View style={[styles.receiveActions, { marginTop: SPACING.sm }]}>
-              <TouchableOpacity style={[styles.smallBtn, { backgroundColor: colors.gray }]} onPress={() => setShowReturnToolModal(false)}><Text style={styles.smallBtnText}>Cancel</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.smallBtn, { backgroundColor: '#B45309' }]} onPress={handleReturnSpecialTools} disabled={submitting}><Text style={styles.smallBtnText}>{submitting ? 'Submitting…' : 'Submit Return'}</Text></TouchableOpacity>
             </View>
           </View>
         </View>
@@ -1963,6 +2056,22 @@ const FaultWorkScreen = ({ route, navigation }) => {
         searchKeys={['ToolName', 'ToolCode']}
       />
 
+      <ModalSelector
+        visible={showWarehouseModal}
+        onClose={() => { setShowWarehouseModal(false); setWarehouseTargetCode(null); }}
+        onSelect={(value, item) => {
+          if (warehouseTargetCode !== null) updatePartDraftField(warehouseTargetCode, 'Warehouse', item?.WarehouseCode || value);
+          setShowWarehouseModal(false);
+          setWarehouseTargetCode(null);
+        }}
+        title="Select Warehouse"
+        data={warehouses}
+        loading={false}
+        searchPlaceholder="Search warehouses..."
+        displayKey="WarehouseName"
+        valueKey="WarehouseCode"
+        searchKeys={['WarehouseName', 'WarehouseCode']}
+      />
 
       <Loader visible={submitting} text="Please wait..." />
     </View>
@@ -1979,6 +2088,11 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   faultHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  breakdownCard: { borderWidth: 1, padding: SPACING.md },
+  breakdownLabel: { fontSize: 13, fontWeight: '700', marginBottom: 6 },
+  breakdownToggleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  breakdownToggle: { borderWidth: 1, borderColor: '#64748B', borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 },
+  towDepotSelector: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderRadius: BORDER_RADIUS.sm, paddingHorizontal: SPACING.sm, paddingVertical: 12, marginTop: 8 },
   faultTitle: { fontSize: 16, fontWeight: '700' },
   sectionTitle: { fontSize: 15, fontWeight: '700', marginBottom: 10 },
   primaryBtn: {
@@ -2014,6 +2128,7 @@ const styles = StyleSheet.create({
     width: 50,
     textAlign: 'center',
   },
+  warehousePicker: { flex: 1, minHeight: 36, borderWidth: 1, borderRadius: 4, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   addLineBtn: {
     flexDirection: 'row',
     alignItems: 'center',

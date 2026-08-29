@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿import React, { useState, useEffect } from 'react';
+﻿﻿import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -542,7 +542,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
       if (busesResponse.Success) {
         console.log('✅ Setting buses:', busesResponse.Data?.length || 0, 'items');
         if (busesResponse.Data && busesResponse.Data.length > 0) {
-          console.log('🚌 First bus structure:', JSON.stringify(busesResponse.Data[0], null, 2));
+          console.log('🚌 First bus structure:', JSON.stringify(busesResponse.Data[0]));
         }
         setBuses(busesResponse.Data || []);
       } else {
@@ -739,7 +739,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
           Tasks: normalizedSchedulerTasks,
         };
 
-        console.log('📤 Sending preventive scheduler payload:', JSON.stringify(schedulerPayload, null, 2));
+        console.log('📤 Sending preventive scheduler payload:', JSON.stringify(schedulerPayload));
         const schedulerResponse = await maintenanceService.createServiceScheduler(schedulerPayload);
 
         if (!schedulerResponse?.Success) {
@@ -761,7 +761,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
         return;
       }
 
-      console.log('📤 Sending incident data:', JSON.stringify(incidentData, null, 2));
+      console.log('📤 Sending incident data:', JSON.stringify(incidentData));
       console.log('🔍 Incident Type:', isBreakdown ? 'Breakdown' : 'Driver Complaint');
       console.log('🔍 ComplaintType (API):', complaintTypeForApi, '| Selected:', values.incidentType);
       console.log('🔍 Date format:', formattedDate);
@@ -1520,7 +1520,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               displayKey="BusRegistrationNo"
               searchKeys={['BusRegistrationNo', 'BusCode', 'AssignedDepot']}
               onSelect={(item) => {
-                console.log('✅ Vehicle selected:', JSON.stringify(item, null, 2));
+                console.log('✅ Vehicle selected:', JSON.stringify(item));
                 setFieldValue('vehicleNumber', item.BusCode);
                 setShowVehicleModal(false);
               }}
@@ -1609,7 +1609,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
               displayKey="RouteNo"
               searchKeys={['RouteNo', 'RouteName']}
               onSelect={(item) => {
-                console.log('✅ Route selected:', JSON.stringify(item, null, 2));
+                console.log('✅ Route selected:', JSON.stringify(item));
                 setFieldValue('routeNo', item.RouteNo || '');
                 setFieldValue('routeName', item.RouteNo || '');
                 setFieldValue('location', item.RouteName || '');

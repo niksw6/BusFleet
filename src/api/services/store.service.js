@@ -34,7 +34,7 @@ export const storeService = {
    * @param {Array}  payload.Parts - [{ FaultLine, ItemCode, ItemName, ReqQty, ReqBy, ReqDate, ReqTime }]
    */
   requestJobCardParts: async (payload) => {
-    console.log('📦 RequestJobCardParts:', JSON.stringify(payload, null, 2));
+    console.log('📦 RequestJobCardParts:', JSON.stringify(payload));
     const response = await post('RequestJobCardParts', payload);
     console.log('📦 RequestJobCardParts response:', response.data);
     return response.data;
@@ -65,7 +65,7 @@ export const storeService = {
    * @param {Array}  payload.Parts - [{ PartLine, ReceivedQty }]
    */
   receiveJobCardParts: async (payload) => {
-    console.log('📦 ReceiveJobCardParts:', JSON.stringify(payload, null, 2));
+    console.log('📦 ReceiveJobCardParts:', JSON.stringify(payload));
     const response = await post('ReceiveJobCardParts', payload);
     console.log('📦 ReceiveJobCardParts response:', response.data);
     return response.data;
@@ -79,7 +79,7 @@ export const storeService = {
    * @param {Array}  payload.Parts - [{ LineId, ReceivedQty }]
    */
   receiveWorkEntryParts: async (payload) => {
-    console.log('📦 ReceiveWorkEntryParts:', JSON.stringify(payload, null, 2));
+    console.log('📦 ReceiveWorkEntryParts:', JSON.stringify(payload));
     const response = await post('ReceiveWorkEntryParts', payload);
     console.log('📦 ReceiveWorkEntryParts response:', response.data);
     return response.data;
@@ -94,7 +94,7 @@ export const storeService = {
    * @param {Array}  payload.Parts - [{ ItemCode, ItemName, ReqQty, Warehouse, Remarks }]
    */
   requestWorkEntryParts: async (payload) => {
-    console.log('📦 RequestWorkEntryParts:', JSON.stringify(payload, null, 2));
+    console.log('📦 RequestWorkEntryParts:', JSON.stringify(payload));
     const response = await post('RequestWorkEntryParts', payload);
     console.log('📦 RequestWorkEntryParts response:', response.data);
     return response.data;
@@ -138,7 +138,7 @@ export const storeService = {
    * @param {Array}  payload.Parts - [{ PartLine, ApprovedQty, Approved, StoreWarehouse, Remarks }]
    */
   approveMechanicPartRequest: async (payload) => {
-    console.log('✅ ApproveMechanicPartRequest:', JSON.stringify(payload, null, 2));
+    console.log('✅ ApproveMechanicPartRequest:', JSON.stringify(payload));
     const response = await post('ApproveMechanicPartRequest', payload);
     console.log('✅ ApproveMechanicPartRequest response:', response.data);
     return response.data;
@@ -153,7 +153,7 @@ export const storeService = {
    * @param {Array}  payload.Tools - [{ ToolCode, ToolName, Remarks }]
    */
   requestSpecialTool: async (payload) => {
-    console.log('🧰 RequestSpecialTool:', JSON.stringify(payload, null, 2));
+    console.log('🧰 RequestSpecialTool:', JSON.stringify(payload));
     const response = await post('RequestSpecialTool', payload);
     console.log('🧰 RequestSpecialTool response:', response.data);
     return response.data;
@@ -168,7 +168,7 @@ export const storeService = {
    * @param {Array}  payload.Tools - [{ LineId, ToolCode }]
    */
   receiveSpecialTool: async (payload) => {
-    console.log('🧰 ReceiveSpecialTool:', JSON.stringify(payload, null, 2));
+    console.log('🧰 ReceiveSpecialTool:', JSON.stringify(payload));
     const response = await post('ReceiveSpecialTool', payload);
     console.log('🧰 ReceiveSpecialTool response:', response.data);
     return response.data;
@@ -199,7 +199,7 @@ export const storeService = {
    * @param {Array}  payload.Tools - [{ LineId, Approved, Remarks }]
    */
   approveSpecialToolRequest: async (payload) => {
-    console.log('✅ ApproveSpecialToolRequest:', JSON.stringify(payload, null, 2));
+    console.log('✅ ApproveSpecialToolRequest:', JSON.stringify(payload));
     const response = await post('ApproveSpecialToolRequest', payload);
     console.log('✅ ApproveSpecialToolRequest response:', response.data);
     return response.data;
@@ -215,15 +215,9 @@ export const storeService = {
    * @param {Array}  payload.Parts - [{ LineId, ReturnQty, ReturnReason, Remarks }]
    */
   requestPartReturn: async (payload) => {
-    console.log('📦 RequestPartReturn:', JSON.stringify(payload, null, 2));
+    console.log('📦 RequestPartReturn:', JSON.stringify(payload));
     const response = await post('RequestPartReturn', payload);
     console.log('📦 RequestPartReturn response:', response.data);
-    return response.data;
-  },
-
-  /** Mechanic returns received special tools for a work entry. */
-  returnSpecialTool: async (payload) => {
-    const response = await post('ReturnSpecialTool', payload);
     return response.data;
   },
 };

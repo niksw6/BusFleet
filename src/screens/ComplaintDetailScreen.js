@@ -41,6 +41,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const [loading, setLoading] = useState(true);
   const [closingIncident, setClosingIncident] = useState(false);
+  const [closingJobCard, setClosingJobCard] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [complaint, setComplaint] = useState(null);
   const [schedulerLines, setSchedulerLines] = useState([]);
@@ -52,8 +53,11 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     workOrderDocEntry: null,
     inProgress: false,
     closed: false,
+    jobCardClosed: false,
     workOrderCount: 0,
     canSupervisorClose: false,
+    canCloseJobCard: false,
+    canCloseIncident: false,
   });
 
   const formatSchedulerRepeatType = (repeatTypeValue) => {
@@ -120,7 +124,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const isWorkEntryCompletionStatus = (statusValue) => {
     const status = normalizeStatus(statusValue);
-    return status === 'C' || status === 'CM' || status === 'COMPLETE' || status === 'COMPLETED' || status === 'WC' || status === 'WORK COMPLETED';
+    return status === 'C' || status === 'CM' || status === 'COMPLETE' || status === 'COMPLETED' || status === 'WC' || status === 'WORK COMPLETED' || status === 'SV';
   };
 
   // Work Entries are the operational history for a Job Card.  Work Orders are
@@ -136,7 +140,12 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     try {
       const jobCardRef = linkedJobCardNo || linkedJobCardDocEntry;
       const workEntriesResponse = await workEntryService.getWorkHistory(dbName || 'MUTSPL_TEST', jobCardRef);
-      const workEntries = Array.isArray(workEntriesResponse?.Data) ? workEntriesResponse.Data : [];
+      const responseData = workEntriesResponse?.Data ?? workEntriesResponse?.data ?? workEntriesResponse;
+      const workEntries = Array.isArray(responseData)
+        ? responseData
+        : (responseData && typeof responseData === 'object'
+          ? Object.values(responseData).find(Array.isArray) || []
+          : []);
       const hasCompletionSignal = workEntries.some((entry) => (
         isWorkEntryCompletionStatus(entry?.Status || entry?.WorkStatus)
         || Boolean(String(entry?.CompleteDate || entry?.CompletedDate || '').trim())
@@ -248,6 +257,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     const workOrderCreated = workOrderCount > 0;
     const workOrderSubmitted = workOrderCreated;
     const closed = isClosedStatus(incidentStatus);
+    const jobCardClosed = isClosedStatus(jobCardStatus);
     const verificationPending = isVerificationPendingStatus(jobCardStatus) || hasCompletionSignal;
     const inProgress = !closed && (
       incidentStatus === 'I'
@@ -266,9 +276,42 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       inProgress,
       verificationPending,
       closed,
+      jobCardClosed,
       workOrderCount,
       canSupervisorClose: supervisorUser && !isPreventive && jobCardCreated && workOrderCreated && allWorkEntriesCompleted && !closed,
+      canCloseJobCard: supervisorUser && !isPreventive && jobCardCreated && !jobCardClosed,
+      canCloseIncident: supervisorUser && !isPreventive && jobCardCreated && !closed,
     });
+  };
+
+  const handleCloseJobCard = async () => {
+    if (!complaint) return;
+
+    const linkedJobCardDocEntry = Number(
+      complaint?.JobCardDocEntry || complaint?.JobCardEntry || routeJobCardDocEntry || 0,
+    );
+    const linkedJobCardNo = String(
+      complaint?.JobCardNo || complaint?.JobcardNo || routeJobCardNo || '',
+    ).trim();
+    const jobCardTarget = linkedJobCardDocEntry > 0 ? linkedJobCardDocEntry : linkedJobCardNo;
+    if (!jobCardTarget) {
+      Toast.show({ type: 'error', text1: 'Job card unavailable', text2: 'Unable to identify the linked job card.' });
+      return;
+    }
+
+    try {
+      setClosingJobCard(true);
+      const response = await jobCardService.closeJobCard(dbName || 'MUTSPL_TEST', jobCardTarget);
+      if (!response?.Success) {
+        throw new Error(response?.Message || 'Unable to close job card');
+      }
+      Toast.show({ type: 'success', text1: 'Job Card Closed', text2: response?.Message || 'Job card closed successfully.' });
+      await fetchComplaintDetail();
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Close Failed', text2: error?.message || 'Unable to close job card' });
+    } finally {
+      setClosingJobCard(false);
+    }
   };
 
   const handleCloseIncident = async () => {
@@ -279,10 +322,9 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       const formType = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
       const docEntry = complaint?.ComplaintNo || complaintNo;
 
-      const response = await complaintService.updateComplaintStatus(
+      const response = await complaintService.closeIncident(
         dbName || 'MUTSPL_TEST',
         Number(docEntry) || docEntry,
-        'CM',
         formType,
       );
 
@@ -525,11 +567,10 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       const extractFaultRowsFromRecord = (record) => {
         if (!record || typeof record !== 'object') return [];
 
-        // 1) Preferred: explicit Faults array
         const inlineRows = Array.isArray(record?.Faults) ? record.Faults : [];
         const meaningfulInline = inlineRows.filter((faultRow) => {
-          const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || faultRow?.fault || faultRow?.faultName || '').trim();
-          const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || faultRow?.description || '').trim();
+          const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || '').trim();
+          const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || '').trim();
           return Boolean(faultName || faultDesc);
         });
 
@@ -537,30 +578,13 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
           return meaningfulInline;
         }
 
-        // 2) Heuristic: scan other array properties that may contain fault rows
-        for (const key of Object.keys(record || {})) {
-          const val = record[key];
-          if (!Array.isArray(val) || val.length === 0) continue;
-          // consider arrays of objects
-          if (!val.every(item => item && typeof item === 'object')) continue;
-
-          const candidate = val.filter((faultRow) => {
-            const faultName = String(faultRow?.Fault || faultRow?.FaultName || faultRow?.FaultCode || faultRow?.fault || faultRow?.faultName || '').trim();
-            const faultDesc = String(faultRow?.Description || faultRow?.Dscption || faultRow?.FaultDescription || faultRow?.FaultDesc || faultRow?.description || '').trim();
-            return Boolean(faultName || faultDesc);
-          });
-
-          if (candidate.length > 0) return candidate;
-        }
-
-        // 3) Fallback: top-level fault fields
-        const topFaultName = String(record?.FaultName || record?.Fault || record?.FaultCode || record?.fault || '').trim();
-        const topFaultDesc = String(record?.FaultDescription || record?.Description || record?.Dscption || record?.description || '').trim();
+        const topFaultName = String(record?.FaultName || record?.Fault || record?.FaultCode || '').trim();
+        const topFaultDesc = String(record?.FaultDescription || record?.Description || record?.Dscption || '').trim();
         if (!topFaultName && !topFaultDesc) return [];
 
         return [{
           Fault: topFaultName,
-          FaultCode: String(record?.FaultCode || record?.FaultCode || '').trim(),
+          FaultCode: String(record?.FaultCode || '').trim(),
           Description: topFaultDesc,
         }];
       };
@@ -892,21 +916,38 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
             <Text style={[styles.progressText, { color: colors.dark }]}>Closed</Text>
           </View>
 
-          {progressMap.canSupervisorClose && (
-            <Button
-              mode="contained"
-              icon="check-circle"
-              onPress={handleCloseIncident}
-              loading={closingIncident}
-              disabled={closingIncident}
-              style={styles.closeIncidentButton}
-              contentStyle={{ minHeight: 44 }}
-            >
-              Close Incident
-            </Button>
+          {(progressMap.canCloseJobCard || progressMap.canCloseIncident) && (
+            <View style={styles.closeActionsRow}>
+              {progressMap.canCloseJobCard && (
+                <Button
+                  mode="contained"
+                  icon="briefcase-check"
+                  onPress={handleCloseJobCard}
+                  loading={closingJobCard}
+                  disabled={closingJobCard || closingIncident}
+                  style={[styles.closeIncidentButton, styles.closeActionButton]}
+                  contentStyle={{ minHeight: 44 }}
+                >
+                  Close Job Card
+                </Button>
+              )}
+              {progressMap.canCloseIncident && (
+                <Button
+                  mode="contained"
+                  icon="check-circle"
+                  onPress={handleCloseIncident}
+                  loading={closingIncident}
+                  disabled={closingIncident || closingJobCard}
+                  style={[styles.closeIncidentButton, styles.closeActionButton]}
+                  contentStyle={{ minHeight: 44 }}
+                >
+                  Close Incident
+                </Button>
+              )}
+            </View>
           )}
 
-          {!progressMap.canSupervisorClose && supervisorUser && !progressMap.closed && (
+          {!progressMap.canCloseJobCard && !progressMap.canCloseIncident && supervisorUser && !progressMap.closed && (
             <Text style={[styles.progressHint, { color: colors.gray }]}>
               Close button will be enabled after mechanic work is completed and ready for supervisor verification.
             </Text>
@@ -1078,6 +1119,14 @@ const styles = StyleSheet.create({
   closeIncidentButton: {
     marginTop: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
+  },
+  closeActionsRow: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    width: '100%',
+  },
+  closeActionButton: {
+    flex: 1,
   },
   headerRow: {
     flexDirection: 'row',

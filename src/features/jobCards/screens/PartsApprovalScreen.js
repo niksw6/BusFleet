@@ -114,6 +114,7 @@ const groupByWorkEntry = (items) => {
       receivedQty: item?.ReceivedQty ?? 0,
       approvedQty: String(item?.ReqQty ?? item?.Qty ?? 1),
       approved: true,
+      storeWarehouse: item?.Warehouse || '',
       storeItemStatus: String(item?.StoreItemStatus || 'Direct').trim() || 'Direct',
       remarks: '',
       status: String(item?.Status || 'RQ').trim().toUpperCase(),
@@ -305,6 +306,7 @@ const PartsApprovalScreen = ({ navigation, route }) => {
           PartLine: p.partLine,
           ApprovedQty: parseFloat(p.approvedQty) || 0,
           Approved: p.approved,
+          StoreWarehouse: p.storeWarehouse || '',
           StoreItemStatus: p.storeItemStatus || 'Direct',
           Remarks: p.remarks || '',
         })),
@@ -392,6 +394,16 @@ const PartsApprovalScreen = ({ navigation, route }) => {
                         value={p.approvedQty}
                         onChangeText={(v) => updatePartField(groupKey, p.partKey, 'approvedQty', v)}
                         keyboardType="numeric"
+                        style={[styles.smallInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
+                      />
+                    </View>
+                    <View style={{ flex: 1.4, marginLeft: 8 }}>
+                      <Text style={{ color: colors.gray, fontSize: 11 }}>Warehouse</Text>
+                      <RNTextInput
+                        value={p.storeWarehouse}
+                        onChangeText={(v) => updatePartField(groupKey, p.partKey, 'storeWarehouse', v)}
+                        placeholder="e.g. WH01"
+                        placeholderTextColor={colors.gray}
                         style={[styles.smallInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
                       />
                     </View>

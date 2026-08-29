@@ -49,7 +49,7 @@ const DashboardScreen = ({ navigation }) => {
       setLoading(true);
       console.log('📊 Fetching dashboard data for:', dbName || 'MUTSPL_TEST');
       const response = await dashboardService.getDashboardStatus(dbName || 'MUTSPL_TEST');
-      console.log('📊 Dashboard API response:', JSON.stringify(response, null, 2));
+      console.log('📊 Dashboard API response:', JSON.stringify(response));
       
       if (response && response.Success && response.Data) {
         // Transform the nested API response to flat structure

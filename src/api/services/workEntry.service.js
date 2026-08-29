@@ -101,19 +101,19 @@ export const workEntryService = {
 
   /**
    * Add a work entry by mechanic.
-   * Description can come from WorkList dropdown or manual (WorkListCode = 'OTHER').
+  * Description can come from the fault-details dropdown or manual (WorkListCode = 'OTHER').
    *
    * @param {Object} payload
    * @param {string} payload.CompanyDB
    * @param {number} payload.DocEntry       - Work Order DocEntry
    * @param {string} payload.MechanicCode
-   * @param {string} payload.WorkListCode   - Code from GetWorkList, or 'OTHER'
+  * @param {string} payload.WorkListCode   - Code from GetFaultDetails, or 'OTHER'
    * @param {string} payload.Description    - Manual text when WorkListCode = 'OTHER'
    * @param {string} payload.Remarks
    */
   addWorkEntry: async (payload) => {
     try {
-      console.log('📝 AddWorkEntry:', JSON.stringify(payload, null, 2));
+      console.log('📝 AddWorkEntry:', JSON.stringify(payload));
       const response = await post('AddWorkEntry', payload);
       console.log('📝 AddWorkEntry response:', response.data);
       return response.data;
@@ -134,7 +134,7 @@ export const workEntryService = {
    */
   requestParts: async (payload) => {
     try {
-      console.log('🔩 RequestParts:', JSON.stringify(payload, null, 2));
+      console.log('🔩 RequestParts:', JSON.stringify(payload));
       const response = await post('RequestParts', payload);
       console.log('🔩 RequestParts response:', response.data);
       return response.data;
@@ -176,7 +176,7 @@ export const workEntryService = {
         Remarks: remarks,
         ActionDate: new Date().toISOString(),
       };
-      console.log('✅ ApprovePartRequest:', JSON.stringify(payload, null, 2));
+      console.log('✅ ApprovePartRequest:', JSON.stringify(payload));
       const response = await post('ApprovePartRequest', payload);
       return response.data;
     } catch (error) {
@@ -199,7 +199,7 @@ export const workEntryService = {
         MechanicCode: mechanicCode,
         ReceivedAt: new Date().toISOString(),
       };
-      console.log('📦 MarkPartReceived:', JSON.stringify(payload, null, 2));
+      console.log('📦 MarkPartReceived:', JSON.stringify(payload));
       const response = await post('MarkPartReceived', payload);
       return response.data;
     } catch (error) {
