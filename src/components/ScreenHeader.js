@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MaterialIcons from './AppIcon.js';
 import LinearGradient from 'react-native-linear-gradient';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 import { useNavigation } from '@react-navigation/native';
 import { COLORS, DARK_COLORS, SPACING } from '../constants/theme';
+import { dashboardService } from '../api/services';
+import { setNotifications, setUnreadCount } from '../store/slices/notificationSlice';
 
 /**
  * Reusable Screen Header Component
@@ -30,18 +32,40 @@ const ScreenHeader = ({
   const navigation = useNavigation();
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const unreadCount = useSelector(state => state.notification.unreadCount);
+  const dbName = useSelector(state => state.auth.dbName);
+  const user = useSelector(state => state.auth.user);
+  const dispatch = useDispatch();
+  const [loadingNotifications, setLoadingNotifications] = useState(false);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
 
-  const handleNotificationPress = () => {
-    if (typeof onNotificationPress === 'function') {
-      onNotificationPress();
-      return;
-    }
-
+  const handleNotificationPress = async () => {
     try {
-      navigation.navigate('Notifications');
+      setLoadingNotifications(true);
+      const userId = user?.User || user?.user || user?.username || user?.Code || user?.code || '';
+      const response = await dashboardService.getNotifications(dbName || 'MUTSPL_TEST', userId);
+      const rows = Array.isArray(response?.Data) ? response.Data : Array.isArray(response?.data) ? response.data : [];
+      const loadedNotifications = rows.map((item, index) => ({
+        ...item,
+        id: item?.id || item?.Code || item?.DocEntry || `notification-${index}`,
+        code: item?.Code || item?.id || item?.DocEntry,
+        title: item?.Title || item?.title || item?.Message || 'Notification',
+        message: item?.Message || item?.message || '',
+        type: String(item?.Type || item?.type || '').trim().toUpperCase(),
+        read: String(item?.Read || '').trim().toUpperCase() === 'Y',
+        timestamp: item?.Date || item?.timestamp || null,
+      }));
+      dispatch(setNotifications(loadedNotifications));
+      dispatch(setUnreadCount(loadedNotifications.filter(item => !item.read).length));
+      if (typeof onNotificationPress === 'function') {
+        onNotificationPress();
+      } else {
+        navigation.navigate('Notifications');
+      }
     } catch (error) {
+      console.warn('Unable to preload notifications before opening screen:', error?.message || error);
       navigation.navigate('Main', { screen: 'Notifications' });
+    } finally {
+      setLoadingNotifications(false);
     }
   };
 
@@ -64,6 +88,7 @@ const ScreenHeader = ({
       {showNotifications ? (
         <TouchableOpacity
           onPress={handleNotificationPress}
+          disabled={loadingNotifications}
           style={styles.notificationButton}
         >
           <MaterialIcons name="notifications" size={24} color="#fff" />

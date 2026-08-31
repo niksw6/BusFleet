@@ -464,7 +464,7 @@ const CreateComplaintScreen = ({ navigation }) => {
                         { faultType: '', faultDescription: '' },
                       ]);
                     }}
-                    icon="plus"
+                    icon="add"
                     compact
                   >
                     Add Fault

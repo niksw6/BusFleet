@@ -9,14 +9,13 @@ import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { dashboardService, mechanicService } from '../../../api/services';
+import { dashboardService, mechanicService, repairService } from '../../../api/services';
 import { getUserRole } from '../../../utils/roleAccess';
 
 /**
  * MechanicDashboardScreen — Mechanic / Electrician's "My Work" queue.
  *
- * Prefers the documented GetMyJobs endpoint, with the deployed mechanic
- * dashboard retained as a compatibility fallback.
+ * Loads the mechanic queue from the deployed mechanic dashboard endpoint.
  *
  * Flow: once a Team Leader accepts a Job Card, its faults become visible here
  * for the team's Mechanics/Electricians to accept, then
@@ -26,6 +25,7 @@ import { getUserRole } from '../../../utils/roleAccess';
 
 const BUCKET = {
   TO_ACCEPT: 'TO_ACCEPT',
+  REPAIR: 'REPAIR',
   IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
 };
@@ -34,6 +34,7 @@ const TABS = [
   { key: BUCKET.TO_ACCEPT, label: 'New', icon: 'new-releases' },
   { key: BUCKET.IN_PROGRESS, label: 'In Progress', icon: 'engineering' },
   { key: BUCKET.COMPLETED, label: 'Completed', icon: 'check-circle' },
+  { key: BUCKET.REPAIR, label: 'Repair', icon: 'build-circle' },
 ];
 
 const getEffectiveStatus = (item) => {
@@ -106,7 +107,19 @@ const extractItems = (data) => {
   return [];
 };
 
-const getDocEntry = (item) => item?.DocEntry ?? item?.JobCardDocEntry ?? item?.JobCardNo ?? '';
+const getDocEntry = (item) => item?.JobCardEntry
+  ?? item?.JobCardDocEntry
+  ?? item?.JobCardNo
+  ?? item?.DocEntry
+  ?? item?.ReferenceDocEntry
+  ?? '';
+const getNotificationType = (item) => String(
+  item?.Type
+  ?? item?.type
+  ?? item?.NotificationType
+  ?? item?.notificationType
+  ?? '',
+).trim().toUpperCase();
 const getFaultLine = (item) => item?.FaultLine ?? item?.Line ?? item?.LineNum ?? 0;
 const getBreakdownComplaintNo = (item) => String(
   item?.ComplaintNo
@@ -136,9 +149,27 @@ const isBreakdownAssignment = (item) => {
     || description.includes('breakdown')
     || Boolean(item?.BreakdownDocEntry || item?.BreakdownNo || item?.BreakdownId || item?.ComplaintNo || item?.CmplaintNo);
 };
+const isRepairAssignment = (item) => ['JR', 'RJ', 'RJC', 'RJA', 'RJT'].includes(
+  getNotificationType(item),
+);
+const isRepairAccepted = (item) => [
+  item?.AssignmentStatus,
+  item?.MechanicStatus,
+  item?.RepairStatus,
+  item?.Status,
+  ...(Array.isArray(item?.WorkEntries) ? item.WorkEntries.flatMap(entry => [entry?.Status, entry?.WorkStatus, entry?.AssignmentStatus]) : []),
+].some(value => ['A', 'I', 'W', 'C', 'CM', 'ACCEPTED', 'IN PROGRESS', 'WORKING', 'COMPLETED', 'COMPLETE'].includes(
+  String(value || '').trim().toUpperCase(),
+));
+const hasRepairWorkEntry = (item) => Boolean(
+  item?.HasRepairWorkEntry
+  || (Array.isArray(item?.WorkEntries) && item.WorkEntries.some(entry => (
+    entry?.DocEntry || entry?.WorkEntryDocEntry || entry?.WorkEntryEntry
+  ))),
+);
 const getActiveWorkEntry = (item) => {
   const entries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
-  return entries.find(entry => !['C', 'CM', 'SV', 'CL', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(String(entry?.Status || '').trim().toUpperCase()))
+  return entries.find(entry => !['C', 'CM', 'SV', 'CL', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase()))
     || entries[0]
     || null;
 };
@@ -158,36 +189,158 @@ const getBusLabel = (item) => (
     || ''
   ).trim() || 'Bus -'
 );
+const getCardDateTime = (item) => {
+  const date = item?.NotificationDate
+    || item?.notificationDate
+    || item?.Date
+    || item?.date
+    || item?.CreatedDate
+    || item?.RegDate
+    || '';
+  const time = item?.NotificationTime
+    || item?.notificationTime
+    || item?.Time
+    || item?.time
+    || item?.CreatedTime
+    || item?.RegTime
+    || '';
+  const timestamp = item?.timestamp || item?.Timestamp || item?.DateTime || item?.CreatedAt || '';
+  const notificationDateTime = item?.NotificationDateTime
+    || item?.notificationDateTime
+    || item?.CreatedOn
+    || item?.CreatedAt
+    || item?.NotificationOn
+    || '';
+  if (date && time) return `${date} ${time}`;
+  return String(date || timestamp || notificationDateTime || time || '').trim();
+};
+const getRepairAssemblyCode = (item) => String(
+  item?.AssemblyCode
+  || item?.assemblyCode
+  || item?.Assembly
+  || item?.AssemblyNo
+  || item?.AssemblyCodeName
+  || item?.RepairAssemblyCode
+  || item?.RepairAssembly
+  || item?.assembly?.Code
+  || item?.AssemblyDetails?.AssemblyCode
+  || item?.Repair?.AssemblyCode
+  || ''
+).trim();
+const getRepairAssemblyName = (item) => String(
+  item?.AssemblyName
+  || item?.assemblyName
+  || item?.AssemblyDescription
+  || item?.assembly?.Name
+  || item?.AssemblyDetails?.AssemblyName
+  || item?.Repair?.AssemblyName
+  || 'Assembly'
+).trim();
 
-const getNotificationQueueItems = (notifications) => (Array.isArray(notifications) ? notifications : [])
-  .filter((notification) => String(notification?.Type || notification?.type || '').trim().toUpperCase() === 'JCA')
+const getNotificationQueueItems = (notifications) => {
+  const notificationList = Array.isArray(notifications)
+    ? notifications
+    : extractItems(notifications);
+
+  return notificationList
+  .filter((notification) => ['JCA', 'JR'].includes(getNotificationType(notification)))
   .map((notification) => ({
     ...notification,
-    Type: 'JCA',
-    Status: 'P',
-    DocEntry: notification?.JobCardDocEntry
+    Type: getNotificationType(notification),
+    Status: notification?.Status || notification?.AssignmentStatus || 'P',
+    DocEntry: notification?.JobCardEntry
+      || notification?.jobCardEntry
+      || notification?.JobCardDocEntry
       || notification?.jobCardDocEntry
       || notification?.DocEntry
       || notification?.docEntry
       || notification?.ReferenceDocEntry,
-    JobCardDocEntry: notification?.JobCardDocEntry
+    JobCardEntry: notification?.JobCardEntry
+      || notification?.jobCardEntry
+      || notification?.JobCardDocEntry
+      || notification?.jobCardDocEntry
+      || notification?.DocEntry
+      || notification?.docEntry
+      || notification?.ReferenceDocEntry,
+    JobCardDocEntry: notification?.JobCardEntry
+      || notification?.jobCardEntry
+      || notification?.JobCardDocEntry
       || notification?.jobCardDocEntry
       || notification?.DocEntry
       || notification?.docEntry,
-    JobCardNo: notification?.JobCardNo || notification?.jobCardNo || notification?.DocEntry || notification?.docEntry,
+    JobCardNo: notification?.JobCardEntry
+      || notification?.jobCardEntry
+      || notification?.JobCardNo
+      || notification?.jobCardNo
+      || notification?.DocEntry
+      || notification?.docEntry,
     FaultLine: notification?.FaultLine || notification?.faultLine || 1,
-    ComplaintType: 'Breakdown',
+    ComplaintType: getNotificationType(notification) === 'JR'
+      ? 'Repair Incident'
+      : 'Breakdown',
     FaultCode: notification?.FaultCode || notification?.faultCode || '',
     FaultName: notification?.FaultName || notification?.faultName || notification?.Description || 'Line Breakdown',
     ComplaintNo: notification?.ComplaintNo || notification?.complaintNo || notification?.BreakdownNo || notification?.IncidentNo,
+    NotificationDate: notification?.NotificationDate || notification?.notificationDate || notification?.Date || notification?.date,
+    NotificationTime: notification?.NotificationTime || notification?.notificationTime || notification?.Time || notification?.time,
+    NotificationDateTime: notification?.NotificationDateTime || notification?.notificationDateTime || notification?.DateTime || notification?.CreatedAt,
   }))
   .filter((item) => getDocEntry(item));
+};
+
+const getRepairWorkQueueItems = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  const workEntries = Array.isArray(data)
+    ? data
+    : (Array.isArray(data?.WorkEntries) ? data.WorkEntries : []);
+  return workEntries.map((entry) => {
+    const jobCardEntry = entry?.JobCardEntry || entry?.JobCard || entry?.JobCardNo || entry?.JobCardDocEntry || '';
+    return {
+      ...entry,
+      Type: 'JR',
+      JobType: 'Repair',
+      ComplaintType: 'Repair Incident',
+      DocEntry: jobCardEntry,
+      JobCardEntry: jobCardEntry,
+      JobCardDocEntry: jobCardEntry,
+      JobCardNo: jobCardEntry,
+      WorkEntries: [entry],
+      HasRepairWorkEntry: true,
+      FaultName: 'Assembly',
+      Fault: 'Assembly',
+      Status: entry?.Status || entry?.WorkStatus || 'W',
+    };
+  }).filter((item) => getDocEntry(item));
+};
 
 const mergeQueueItems = (apiItems, notificationItems) => {
   const merged = Array.isArray(apiItems) ? [...apiItems] : [];
   const existingKeys = new Set(merged.map(item => itemKey(item)));
   notificationItems.forEach((item) => {
     const key = itemKey(item);
+    const matchingIndex = merged.findIndex((existingItem) => (
+      String(getDocEntry(existingItem)).trim() === String(getDocEntry(item)).trim()
+      && getNotificationType(item) === 'JR'
+    ));
+    if (matchingIndex >= 0) {
+      // A dashboard row may exist before the JR notification is read. Keep
+      // its details, but let the assignment notification control its queue.
+      const existingItem = merged[matchingIndex];
+      const preservedStatus = isRepairAccepted(existingItem)
+        ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.MechanicStatus)
+        : 'P';
+      merged[matchingIndex] = {
+        ...existingItem,
+        ...item,
+        Type: 'JR',
+        JobType: 'Repair',
+        ComplaintType: 'Repair Incident',
+        FaultName: 'Assembly',
+        Fault: 'Assembly',
+        Status: preservedStatus,
+      };
+      return;
+    }
     if (!existingKeys.has(key)) {
       merged.push(item);
       existingKeys.add(key);
@@ -214,24 +367,33 @@ const MechanicDashboardScreen = ({ navigation }) => {
   const fetchData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      // Prefer the documented per-mechanic queue; retain the live dashboard as
-      // a compatibility fallback until every backend deployment is upgraded.
-      let res;
-      try {
-        res = await mechanicService.getMyJobs(companyDb, userCode);
-      } catch (apiError) {
-        res = await mechanicService.getMechanicDashboard(companyDb, userCode);
-      }
-      const apiItems = extractItems(res?.Data ?? res);
+      const [dashboardResult, repairWorkResult] = await Promise.allSettled([
+        mechanicService.getMechanicDashboard(companyDb, userCode),
+        repairService.getMyRepairWorkDashboard(companyDb, userCode),
+      ]);
+      if (dashboardResult.status === 'rejected') throw dashboardResult.reason;
+      const apiItems = extractItems(dashboardResult.value?.Data ?? dashboardResult.value);
+      const repairWorkItems = repairWorkResult.status === 'fulfilled'
+        ? getRepairWorkQueueItems(repairWorkResult.value)
+        : [];
       let notificationItems = [];
       try {
-        const notificationResponse = await dashboardService.getNotifications(companyDb, userCode);
+        const notificationUser = String(
+          user?.User || user?.username || user?.user || userCode || '',
+        ).trim();
+        const notificationResponse = await dashboardService.getNotifications(companyDb, notificationUser);
         const notificationData = notificationResponse?.Data ?? notificationResponse?.data ?? notificationResponse;
         notificationItems = getNotificationQueueItems(notificationData);
       } catch (notificationError) {
-        console.warn('Unable to load JCA notifications for work queue:', notificationError?.message || notificationError);
+        console.warn('Unable to load repair/job notifications for work queue:', notificationError?.message || notificationError);
       }
-      setItems(mergeQueueItems(apiItems, notificationItems));
+      const queueWithRepairWork = mergeQueueItems(apiItems, repairWorkItems);
+      const repairWorkJobCards = new Set(repairWorkItems.map(item => String(getDocEntry(item)).trim()));
+      const pendingNotifications = notificationItems.filter(item => !(
+        isRepairAssignment(item) && repairWorkJobCards.has(String(getDocEntry(item)).trim())
+      ));
+      const queueItems = mergeQueueItems(queueWithRepairWork, pendingNotifications);
+      setItems(queueItems);
     } catch (error) {
       console.error('❌ Error loading Mechanic Dashboard:', error);
       Toast.show({ type: 'error', text1: 'Error', text2: error?.message || 'Failed to load your work queue' });
@@ -253,9 +415,10 @@ const MechanicDashboardScreen = ({ navigation }) => {
   };
 
   const grouped = {
-    [BUCKET.TO_ACCEPT]: items.filter(i => deriveBucket(i) === BUCKET.TO_ACCEPT),
-    [BUCKET.IN_PROGRESS]: items.filter(i => deriveBucket(i) === BUCKET.IN_PROGRESS),
-    [BUCKET.COMPLETED]: items.filter(i => deriveBucket(i) === BUCKET.COMPLETED),
+    [BUCKET.TO_ACCEPT]: items.filter(i => !isRepairAssignment(i) && deriveBucket(i) === BUCKET.TO_ACCEPT),
+    [BUCKET.REPAIR]: items.filter(i => isRepairAssignment(i)),
+    [BUCKET.IN_PROGRESS]: items.filter(i => !isRepairAssignment(i) && deriveBucket(i) === BUCKET.IN_PROGRESS),
+    [BUCKET.COMPLETED]: items.filter(i => !isRepairAssignment(i) && deriveBucket(i) === BUCKET.COMPLETED),
   };
 
   const handleAccept = async (item) => {
@@ -334,22 +497,46 @@ const MechanicDashboardScreen = ({ navigation }) => {
     });
   };
 
+  const openRepairWork = (item) => {
+    const activeWorkEntry = getActiveWorkEntry(item);
+    navigation.navigate('RepairWork', {
+      jobCardEntry: getDocEntry(item),
+      dbName: dbName || 'MUTSPL_TEST',
+      incidentEntry: item?.IncidentEntry || item?.IncidentDocEntry || '',
+      storePersonID: item?.StorePersonID || item?.StorePerson || item?.StoreCode || '',
+      assemblyCode: getRepairAssemblyCode(item),
+      assemblyName: getRepairAssemblyName(item),
+      workEntryDocEntry: activeWorkEntry?.WorkEntryDocEntry || activeWorkEntry?.WorkEntryEntry || activeWorkEntry?.DocEntry || null,
+    });
+  };
+
+  const openRepairAssignment = (item) => {
+    navigation.navigate('RepairJobCardAssignment', {
+      jobCardEntry: getDocEntry(item),
+      dbName: dbName || 'MUTSPL_TEST',
+    });
+  };
+
   const renderItem = (item) => {
     const key = itemKey(item);
-    const bucket = deriveBucket(item);
     const breakdownAssignment = isBreakdownAssignment(item);
-    const itemJobType = normalizeJobType(item);
-    const faultName = item?.Fault || item?.FaultName || item?.Description || (breakdownAssignment ? 'Line Breakdown' : 'Fault');
+    const repairAssignment = isRepairAssignment(item);
+    const bucket = repairAssignment ? BUCKET.REPAIR : deriveBucket(item);
+    const itemJobType = repairAssignment ? 'Repair' : normalizeJobType(item);
+    const faultName = repairAssignment ? 'Assembly' : item?.Fault || item?.FaultName || item?.Description || (breakdownAssignment ? 'Line Breakdown' : 'Fault');
     const busNo = getBusLabel(item);
     const displayNo = item?.JobCardNo || item?.DocNum || getDocEntry(item);
     const assignedName = item?.AssignedMechanic?.UserName || item?.MechanicName || item?.AssignedToName || item?.EmployeeName || item?.EmpName || assigneeName;
+    const cardDateTime = getCardDateTime(item);
 
     const statusColor =
       bucket === BUCKET.COMPLETED ? colors.statusCompleted
       : bucket === BUCKET.IN_PROGRESS ? colors.statusInProgress
       : colors.primary;
     const awaitingVerification = isAwaitingVerification(item);
-    const statusLabel = getMechanicStatusLabel(item, bucket, awaitingVerification);
+    const statusLabel = repairAssignment
+      ? ''
+      : getMechanicStatusLabel(item, bucket, awaitingVerification);
 
     return (
       <TouchableOpacity
@@ -357,6 +544,14 @@ const MechanicDashboardScreen = ({ navigation }) => {
         style={[styles.card, { backgroundColor: colors.white, borderColor: colors.border || '#E0E0E0' }]}
         activeOpacity={0.7}
         onPress={() => {
+          if (repairAssignment) {
+            if (hasRepairWorkEntry(item) || isRepairAccepted(item)) {
+              openRepairWork(item);
+            } else {
+              openRepairAssignment(item);
+            }
+            return;
+          }
           if (breakdownAssignment) {
             if (bucket === BUCKET.TO_ACCEPT) return;
             openBreakdownWorkEntry(item);
@@ -368,6 +563,9 @@ const MechanicDashboardScreen = ({ navigation }) => {
           openFault(item);
         }}
       >
+        {cardDateTime ? (
+          <Text style={[styles.cardDateTime, { color: colors.gray }]}>Date & time: {cardDateTime}</Text>
+        ) : null}
         <View style={styles.cardTop}>
           <View style={[styles.faultIcon, { backgroundColor: `${statusColor}20` }]}>
             <MaterialIcons name="build" size={18} color={statusColor} />
@@ -376,12 +574,20 @@ const MechanicDashboardScreen = ({ navigation }) => {
             <Text style={[styles.faultName, { color: colors.dark }]}>{faultName}</Text>
             <Text style={[styles.assigneeText, { color: colors.primary }]}>Assigned to: {assignedName}</Text>
             <Text style={[styles.cardSub, { color: colors.gray }]}>
-              {itemJobType} • Job Card #{displayNo} • {busNo} • {item?.Priority || 'Medium'}
+              {repairAssignment ? `Assembly • Repair Job Card #${displayNo} • ${item?.Priority || 'Medium'}` : `${itemJobType} • Job Card #${displayNo} • ${busNo} • ${item?.Priority || 'Medium'}`}
             </Text>
           </View>
         </View>
 
-        {breakdownAssignment && bucket === BUCKET.TO_ACCEPT ? (
+        {repairAssignment ? (
+          <View style={styles.rowBetween}>
+            <View />
+            <View style={[styles.repairButton, { backgroundColor: colors.primary }]}> 
+              <MaterialIcons name="build" size={15} color="#FFF" />
+              <Text style={styles.repairButtonText}>Repair</Text>
+            </View>
+          </View>
+        ) : breakdownAssignment && bucket === BUCKET.TO_ACCEPT ? (
           <TouchableOpacity
             style={[styles.acceptBtn, { backgroundColor: colors.primary }]}
             onPress={() => handleAccept(item)}
@@ -485,22 +691,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.sm,
   },
   tab: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
-    paddingHorizontal: 10,
+    paddingHorizontal: 2,
+    justifyContent: 'center',
     gap: 4,
   },
-  tabText: { fontSize: 13, fontWeight: '600' },
+  tabText: { fontSize: 11, fontWeight: '600' },
   scrollContent: { padding: SPACING.md },
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   card: {
+    position: 'relative',
     borderWidth: 1,
     borderRadius: BORDER_RADIUS.lg,
     marginBottom: SPACING.md,
     padding: SPACING.md,
   },
   cardTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  cardDateTime: { position: 'absolute', top: 8, right: 12, fontSize: 10 },
   faultIcon: {
     width: 34,
     height: 34,
@@ -521,6 +731,8 @@ const styles = StyleSheet.create({
   },
   acceptBtnText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  repairButton: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 7, borderRadius: BORDER_RADIUS.md },
+  repairButtonText: { color: '#FFF', fontWeight: '700', fontSize: 12 },
   statusPill: {
     borderRadius: BORDER_RADIUS.sm,
     paddingHorizontal: 8,

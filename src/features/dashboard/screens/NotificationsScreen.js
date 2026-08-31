@@ -19,8 +19,7 @@ import { setNotifications, setUnreadCount, markAsRead, markAllAsRead } from '../
 import { dashboardService, complaintService } from '../../../api/services';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDateTime } from '../../../utils/helpers';
-import { isTeamLeaderUser, isMechanicUser, isFieldStaffUser, isSupervisorUser } from '../../../utils/roleAccess';
-import { useFocusEffect } from '@react-navigation/native';
+import { isTeamLeaderUser, isMechanicUser, isFieldStaffUser, isSupervisorUser, isStoreUser } from '../../../utils/roleAccess';
 
 const NotificationsScreen = ({ navigation }) => {
   const dispatch = useDispatch();
@@ -46,19 +45,11 @@ const NotificationsScreen = ({ navigation }) => {
     Toast.show({ type: 'success', text1: 'Logs copied to clipboard' });
   };
 
-  useFocusEffect(useCallback(() => {
-    fetchNotifications();
-  }, [dbName, user]));
-
   const resolveUserIdCandidates = () => {
     const candidates = [
       user?.User,
-      user?.user,
       user?.username,
-      user?.Code,
-      user?.code,
-      user?.Name,
-      user?.name,
+      user?.user,
     ]
       .map(value => String(value || '').trim())
       .filter(Boolean);
@@ -78,10 +69,12 @@ const NotificationsScreen = ({ navigation }) => {
     if (typeCode === 'JCA') return 'B';
     if (typeCode === 'M') return 'M';
     if (typeCode === 'D') return 'D';
+    if (typeCode === 'R' || typeCode === 'RI' || typeCode === 'A' || typeCode === 'ASSEMBLY') return 'A';
 
     const text = `${item?.title || item?.Title || ''} ${item?.message || item?.Message || ''}`.toLowerCase();
     if (text.includes('breakdown')) return 'B';
     if (text.includes('preventive')) return 'M';
+    if (text.includes('repair') || text.includes('assembly')) return 'A';
     return 'D';
   };
 
@@ -126,7 +119,7 @@ const NotificationsScreen = ({ navigation }) => {
 
   const mapNotificationItem = (item) => {
     const rawType = String(item?.Type || '').trim().toUpperCase();
-    const normalizedType = rawType === 'WE' ? 'V' : rawType;
+    const normalizedType = ['WE', 'WER'].includes(rawType) ? 'V' : rawType;
     const workEntryDoc = String(item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || '').trim();
     const defaultTitle = item?.Message || item?.Title || item?.title || 'Notification';
     const resolvedTitle = rawType === 'WE'
@@ -230,6 +223,7 @@ const NotificationsScreen = ({ navigation }) => {
     if (typeCode === 'JB') return 'Breakdown';
     if (typeCode === 'JCT') return 'Breakdown';
     if (typeCode === 'JCA') return 'Breakdown';
+    if (typeCode === 'R' || typeCode === 'RI') return 'Repair Incident';
     if (typeCode === 'D') return 'Driver Complaint';
 
     const text = `${item?.title || ''} ${item?.message || ''}`.toLowerCase();
@@ -357,17 +351,21 @@ const NotificationsScreen = ({ navigation }) => {
       await handleMarkAsRead(notificationCode, item);
     }
 
+    const rawNotificationType = String(item.Type || '').trim().toUpperCase();
     const type = String(item.type || item.Type || '').trim().toUpperCase();
     const docEntry = item.detailDocEntry || item.docEntry || item.DocEntry;
     const notificationText = String(item?.Message || item?.message || item?.Title || item?.title || '').toLowerCase();
+    const isRepairJobCardAssignment = ['JR', 'RJ', 'RJC', 'RJA', 'RJT'].includes(type)
+      || (notificationText.includes('repair') && (notificationText.includes('job card') || notificationText.includes('assignment')));
+    const isRepairAssemblyIssue = type === 'IRA';
     const isJobCardTransferNotification = notificationText.includes('transfer')
       || notificationText.includes('transferred')
       || ['TRANSFER', 'JOB_CARD_TRANSFER', 'JOBCARDTRANSFER', 'JT', 'JCT'].includes(type)
       || Boolean(item?.TransferJobCard || item?.TransferStatus || item?.ToSupervisorCode || item?.TrnSupCode);
-    const requiresSupervisorVerification = notificationText.includes('work entry') && (
+    const requiresSupervisorVerification = rawNotificationType === 'WER' || type === 'WER' || (notificationText.includes('work entry') && (
       notificationText.includes('supervisor inspection')
       || notificationText.includes('inspection is required')
-    );
+    ));
     const isBreakdownNotification = () => {
       const scanValues = (value, results = []) => {
         if (!value || typeof value === 'function') return results;
@@ -419,6 +417,59 @@ const NotificationsScreen = ({ navigation }) => {
         || Boolean(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.ComplaintNo || item?.complaintNo || item?.BreakdownNo || item?.BreakdownDocEntry || item?.BreakdownId)
       );
 
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && isRepairJobCardAssignment) {
+      const repairJobCardEntry = String(
+        item?.JobCardEntry
+        || item?.JobCardDocEntry
+        || item?.JobCardNo
+        || item?.DocEntry
+        || docEntry
+        || '',
+      ).trim();
+      if (repairJobCardEntry) {
+        navigation.navigate('RepairJobCardAssignment', {
+          jobCardEntry: repairJobCardEntry,
+          dbName: dbName || 'MUTSPL_TEST',
+        });
+        return;
+      }
+    }
+
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && isRepairAssemblyIssue) {
+      navigation.navigate('RepairWork', {
+        jobCardEntry: item?.JobCardEntry || item?.JobCardDocEntry || item?.DocEntry || docEntry || '',
+        dbName: dbName || 'MUTSPL_TEST',
+        assemblyCode: item?.AssemblyCode || item?.assemblyCode || item?.Assembly || item?.AssemblyNo || item?.RepairAssemblyCode || item?.RepairAssembly || '',
+        assemblyName: item?.AssemblyName || item?.assemblyName || item?.AssemblyDescription || item?.Assembly || 'Assembly',
+      });
+      return;
+    }
+
+    if (isStoreUser(user) && isRepairAssemblyIssue) {
+      navigation.navigate('RepairAssemblyIssue', {
+        jobCardEntry: item?.JobCardEntry || item?.JobCardDocEntry || item?.DocEntry || docEntry || '',
+        dbName: dbName || 'MUTSPL_TEST',
+      });
+      return;
+    }
+
+    if (supervisorUser && (type === 'R' || type === 'RI' || type === 'REPAIR_INCIDENT')) {
+      const repairDocEntry = String(
+        item?.DocEntry
+        || item?.ReferenceDocEntry
+        || item?.detailDocEntry
+        || docEntry
+        || '',
+      ).trim();
+      if (repairDocEntry) {
+        navigation.navigate('RepairIncidentReview', {
+          docEntry: repairDocEntry,
+          dbName: dbName || 'MUTSPL_TEST',
+        });
+        return;
+      }
+    }
+
     if (supervisorUser && isJobCardTransferNotification) {
       navigation.navigate('JobCardDetail', {
         jobCardNo: item?.JobCardNo || item?.jobCardNo || '',
@@ -435,6 +486,7 @@ const NotificationsScreen = ({ navigation }) => {
       navigation.navigate('ReviewWorkEntries', {
         focusWorkEntryDocEntry: item?.WorkEntryDocEntry || docEntry,
         focusJobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || '',
+        repair: rawNotificationType === 'WER' || type === 'WER',
       });
       return;
     }
@@ -505,12 +557,12 @@ const NotificationsScreen = ({ navigation }) => {
       return;
     }
 
-    if (item?.workflowDerived && type === 'P') {
+    if (supervisorUser && item?.workflowDerived && type === 'P') {
       navigation.navigate('PartsApproval');
       return;
     }
 
-    if (item?.workflowDerived && type === 'V') {
+    if (supervisorUser && item?.workflowDerived && type === 'V') {
       const workEntryTarget = String(item?.workEntryDocEntry || item?.DocEntry || item?.docEntry || item?.detailDocEntry || '').trim();
       const jobCardTarget = item?.jobCardDocEntry || item?.jobCardNo || docEntry;
       navigation.navigate('ReviewWorkEntries', {
@@ -520,7 +572,7 @@ const NotificationsScreen = ({ navigation }) => {
       return;
     }
 
-    if (type === 'V') {
+    if (supervisorUser && type === 'V') {
       const workEntryTarget = String(item?.workEntryDocEntry || item?.DocEntry || item?.docEntry || item?.detailDocEntry || '').trim();
       const jobCardTarget = item?.jobCardDocEntry || item?.jobCardNo || docEntry;
       navigation.navigate('ReviewWorkEntries', {
@@ -573,6 +625,11 @@ const NotificationsScreen = ({ navigation }) => {
         return 'fact-check';
       case 'P':
         return 'inventory';
+      case 'R':
+      case 'RI':
+        return 'build';
+      case 'RI':
+        return 'build';
       case 'V':
         return 'check-circle';
       default:
@@ -594,6 +651,11 @@ const NotificationsScreen = ({ navigation }) => {
         return '#00689E'; // SAP Teal
       case 'P':
         return '#EA580C'; // Parts request orange
+      case 'R':
+      case 'RI':
+        return '#9333EA'; // Repair incident
+      case 'RI':
+        return '#9333EA'; // Repair incident
       case 'V':
         return '#6D28D9'; // Verification purple
       default:

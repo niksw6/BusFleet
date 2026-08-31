@@ -30,10 +30,19 @@ const push = (entry) => {
   if (logs.length > MAX_LOGS) logs.shift();
 };
 
+const isApiRequestLog = (args) => (
+  typeof args[0] === 'string' && args[0].startsWith('[API] ')
+);
+
 export const initLogger = () => {
-  console.log   = (...args) => { _origLog(...args);   push(formatEntry('LOG',   args)); };
-  console.warn  = (...args) => { _origWarn(...args);  push(formatEntry('WARN',  args)); };
-  console.error = (...args) => { _origError(...args); push(formatEntry('ERROR', args)); };
+  console.log = (...args) => {
+    if (isApiRequestLog(args)) {
+      _origLog(...args);
+      push(formatEntry('LOG', args));
+    }
+  };
+  console.warn = () => {};
+  console.error = () => {};
 };
 
 export const getLogs  = () => [...logs].reverse(); // newest first

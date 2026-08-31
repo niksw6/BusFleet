@@ -237,12 +237,11 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
                   <Text style={[styles.acceptedText, { color: '#2B7D2B' }]}>Job Accepted</Text>
                 </View>
                 <Button mode="contained" icon="assignment"
-                  onPress={() => navigation.navigate('FaultWork', {
-                    docEntry: workOrderDocEntry,
+                  onPress={() => navigation.navigate('WorkEntry', {
+                    workOrderDocEntry,
                     dbName: dbName || 'MUTSPL_TEST',
                     jobCardNo: workOrderDetail?.JCDocNum || jobCardNo,
-                    fault: workOrderDetail?.Faults?.[0],
-                    faultLine: workOrderDetail?.Faults?.[0]?.FaultLine || workOrderDetail?.Faults?.[0]?.LineNum || 0,
+                    jobCardDocEntry: workOrderDetail?.JCDocEnt || workOrderDetail?.JobCardDocEntry || workOrderDocEntry,
                   })}
                   style={[styles.actionBtn, { backgroundColor: '#0070F2', marginTop: 8 }]}
                   contentStyle={{ paddingVertical: 6 }}>

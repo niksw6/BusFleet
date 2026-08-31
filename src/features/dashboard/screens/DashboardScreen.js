@@ -20,7 +20,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { complaintService, dashboardService, jobCardService, maintenanceService, teamService, mechanicService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
-import { isMechanicUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
+import { isMechanicUser, isStoreUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
 
 const looksLikeJobCard = (item) => {
   if (!item || typeof item !== 'object') return false;
@@ -210,6 +210,7 @@ const DashboardScreen = ({ navigation }) => {
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const mechanicUser = isMechanicUser(user);
   const supervisorUser = isSupervisorUser(user);
+  const storeUser = isStoreUser(user);
   const technicalHeadUser = isTechnicalHeadUser(user);
   const depotHeadUser = isDepotHeadUser(user);
   const teamLeaderUser = isTeamLeaderUser(user);
@@ -342,7 +343,7 @@ const DashboardScreen = ({ navigation }) => {
         try {
           const mechanicUserCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || '';
           if (mechanicUserCode) {
-            const mechanicJobsResponse = await mechanicService.getMyJobs(dbName || 'MUTSPL_TEST', mechanicUserCode);
+            const mechanicJobsResponse = await mechanicService.getMechanicDashboard(dbName || 'MUTSPL_TEST', mechanicUserCode);
             const mechanicJobs = extractArrayItems(mechanicJobsResponse?.Data ?? mechanicJobsResponse ?? []);
             breakdownJobs = mechanicJobs.filter(isBreakdownAssignmentItem);
           }
@@ -805,17 +806,17 @@ const DashboardScreen = ({ navigation }) => {
             )}
 
             {/* ── Parts & Tools Requests (Supervisor) ── */}
-            {supervisorUser && (
+            {(supervisorUser || storeUser) && (
               <View style={styles.actionsSection}>
                 <View style={styles.sectionHeader}>
                   <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts & Tools Requests</Text>
                   <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
-                    Approve mechanics' mid-work parts and tool requests
+                      {storeUser ? 'Issue approved repair parts' : 'Approve mechanics\' mid-work parts and tool requests'}
                   </Text>
                 </View>
                 <TouchableOpacity
                   style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#EA580C40' }]}
-                  onPress={() => navigation.navigate('PartsApproval')}
+                  onPress={() => navigation.navigate(storeUser ? 'RepairPartsRequests' : 'PartsApproval')}
                   activeOpacity={0.7}
                 >
                   <View style={styles.overdueLeft}>
@@ -823,29 +824,47 @@ const DashboardScreen = ({ navigation }) => {
                     <View>
                       <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Parts & Tools Requests</Text>
                       <Text style={[styles.overdueSub, { color: colors.gray }]}>
-                        Approve or reject requested quantities
+                        {storeUser ? 'Issue approved repair parts' : 'Approve standard parts requests'}
                       </Text>
                     </View>
                   </View>
                   <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#0F766E40' }]}
-                  onPress={() => navigation.navigate('PartsApproval', { initialSection: 'tools' })}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.overdueLeft}>
-                    <View style={[styles.overdueDot, { backgroundColor: '#0F766E' }]} />
-                    <View>
-                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Approve Special Tools</Text>
-                      <Text style={[styles.overdueSub, { color: colors.gray }]}>
-                        Review and approve mechanics' special tool requests
-                      </Text>
+                {supervisorUser && (
+                  <TouchableOpacity
+                    style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#0284C740' }]}
+                    onPress={() => navigation.navigate('RepairPartsRequests')}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.overdueLeft}>
+                      <View style={[styles.overdueDot, { backgroundColor: '#0284C7' }]} />
+                      <View>
+                        <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Repair Parts</Text>
+                        <Text style={[styles.overdueSub, { color: colors.gray }]}>Approve repair work-entry part requests</Text>
+                      </View>
                     </View>
-                  </View>
-                  <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
-                </TouchableOpacity>
+                    <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                  </TouchableOpacity>
+                )}
+                {supervisorUser && (
+                  <TouchableOpacity
+                    style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#0F766E40' }]}
+                    onPress={() => navigation.navigate('PartsApproval', { initialSection: 'tools' })}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.overdueLeft}>
+                      <View style={[styles.overdueDot, { backgroundColor: '#0F766E' }]} />
+                      <View>
+                        <Text style={[styles.overdueTitle, { color: colors.dark }]}>Approve Special Tools</Text>
+                        <Text style={[styles.overdueSub, { color: colors.gray }]}> 
+                          Review and approve mechanics' special tool requests
+                        </Text>
+                      </View>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                  </TouchableOpacity>
+                )}
                 
                 <TouchableOpacity
                   style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#6D28D940' }]}
@@ -968,6 +987,13 @@ const DashboardScreen = ({ navigation }) => {
         <FAB
           icon="add"
           onPress={() => navigation.navigate('CreateIncident', { type: 'complaint' })}
+        />
+      )}
+      {storeUser && (
+        <FAB
+          icon="add"
+          label="Create Repair Incident"
+          onPress={() => navigation.navigate('CreateIncident', { type: 'repair' })}
         />
       )}
       {driverUser && (

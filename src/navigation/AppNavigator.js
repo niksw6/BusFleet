@@ -8,7 +8,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { LoginScreen } from '../features/auth';
 import { CreateFuelLogScreen, CreateScheduleScreen } from '../features/maintenance';
 import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, WorkEntryScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen, ReviewWorkEntriesScreen } from '../features/jobCards';
-import { CreateIncidentScreen } from '../features/complaints';
+import { CreateIncidentScreen, RepairIncidentReviewScreen, RepairJobCardAssignmentScreen, RepairWorkScreen, RepairAssemblyIssueScreen, RepairPartsRequestsScreen } from '../features/complaints';
 import BreakdownTeamsListScreen from '../features/breakdownTeams/screens/BreakdownTeamsListScreen';
 import BreakdownTeamPortalScreen from '../features/breakdownTeams/screens/BreakdownTeamPortalScreen';
 import DrawerNavigator from './DrawerNavigator';
@@ -21,8 +21,9 @@ import { loginSuccess } from '../store/slices/authSlice';
 import { setUnreadCount } from '../store/slices/notificationSlice';
 import { getUserData, getDBName } from '../utils/storage';
 import { setNavigationRef } from '../api/client';
+import { dashboardService } from '../api/services';
 import { COLORS, DARK_COLORS } from '../constants/theme';
-import { isSupervisorUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser } from '../utils/roleAccess';
+import { isSupervisorUser, isStoreUser, isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser } from '../utils/roleAccess';
 
 const Stack = createNativeStackNavigator();
 
@@ -36,15 +37,26 @@ const AppNavigator = () => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const supervisorUser = isSupervisorUser(user);
+  const storeUser = isStoreUser(user);
   const mechanicUser = isMechanicUser(user);
   const fieldStaffUser = isFieldStaffUser(user);
   const teamLeaderUser = isTeamLeaderUser(user);
   const driverUser = isDriverUser(user);
 
-  const refreshNotificationCount = useCallback(() => {
+  const refreshNotificationCount = useCallback(async () => {
     if (!isAuthenticated || !user) return;
-    dispatch(setUnreadCount(0));
-  }, [dispatch, isAuthenticated, user]);
+    const userId = user?.User || user?.user || user?.username || user?.Code || user?.code || '';
+    try {
+      const response = await dashboardService.getNotificationCount(dbName || 'MUTSPL_TEST', userId);
+      const data = response?.Data ?? response?.data ?? response;
+      const count = typeof data === 'number' ? data : Number(
+        data?.Count ?? data?.UnreadCount ?? response?.Count ?? response?.UnreadCount ?? 0,
+      );
+      if (Number.isFinite(count)) dispatch(setUnreadCount(count));
+    } catch (error) {
+      console.warn('Unable to refresh notification count:', error?.message || error);
+    }
+  }, [dbName, dispatch, isAuthenticated, user]);
 
   const [appIsReady, setAppIsReady] = useState(false);
 
@@ -75,6 +87,12 @@ const AppNavigator = () => {
   useEffect(() => {
     refreshNotificationCount();
   }, [refreshNotificationCount]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !user) return undefined;
+    const interval = setInterval(refreshNotificationCount, 30000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated, refreshNotificationCount, user]);
 
   if (!appIsReady) {
     return null;
@@ -126,7 +144,7 @@ const AppNavigator = () => {
                 headerShown: false,
               }}
             />
-            {(supervisorUser || fieldStaffUser || driverUser) && (
+            {(supervisorUser || storeUser || fieldStaffUser || driverUser) && (
               <Stack.Screen
                 name="CreateIncident"
                 component={CreateIncidentScreen}
@@ -135,6 +153,7 @@ const AppNavigator = () => {
                   let title = 'Create Incident';
                   if (type === 'breakdown') title = 'Report Breakdown';
                   else if (type === 'complaint') title = 'Report Incident';
+                  else if (type === 'repair') title = 'Create Repair Incident';
                   return { title, presentation: 'modal' };
                 }}
               />
@@ -162,6 +181,37 @@ const AppNavigator = () => {
                 title: 'Incident Details',
               }}
             />
+            {supervisorUser && (
+              <Stack.Screen
+                name="RepairIncidentReview"
+                component={RepairIncidentReviewScreen}
+                options={{ title: 'Repair Incident Review' }}
+              />
+            )}
+            {fieldStaffUser && (
+              <Stack.Screen
+                name="RepairJobCardAssignment"
+                component={RepairJobCardAssignmentScreen}
+                options={{ title: 'Repair Job Assignment' }}
+              />
+            )}
+            {fieldStaffUser && (
+              <Stack.Screen
+                name="RepairWork"
+                component={RepairWorkScreen}
+                options={{ title: 'Repair Work' }}
+              />
+            )}
+            {storeUser && (
+              <Stack.Screen
+                name="RepairAssemblyIssue"
+                component={RepairAssemblyIssueScreen}
+                options={{ title: 'Issue Repair Assembly' }}
+              />
+            )}
+            {(supervisorUser || storeUser) && (
+              <Stack.Screen name="RepairPartsRequests" component={RepairPartsRequestsScreen} options={{ headerShown: false }} />
+            )}
             {supervisorUser && (
               <Stack.Screen
                 name="CreateJobCard"

@@ -18,7 +18,7 @@ import MaterialIcons from '../../../components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { dashboardService, jobCardService, mechanicService, storeService, workEntryService } from '../../../api/services';
+import { dashboardService, jobCardService, mechanicService, repairService, storeService, workEntryService } from '../../../api/services';
 import { formatDate, formatTime } from '../../../utils/helpers';
 
 const isAwaitingVerificationStatus = (value) => {
@@ -990,13 +990,17 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
     try {
       setActioningWorkEntry(workEntryDocEntry);
-      const response = await workEntryService.verifyWorkEntry({
+      const reviewPayload = {
         CompanyDB: dbName || 'MUTSPL_TEST',
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
         UserCode: resolveCurrentUserCode(),
         Status: 'SV',
         Remarks: remarks,
-      });
+        JobCardEntry: Number(selected?.entry?.jobCardDocEntry) || selected?.entry?.jobCardDocEntry,
+      };
+      const response = route?.params?.repair
+        ? await repairService.reviewRepairJobCard(reviewPayload)
+        : await workEntryService.verifyWorkEntry(reviewPayload);
       if (response?.Success === false || response?.Status === false) {
         throw new Error(response?.Message || 'Unable to approve work entry.');
       }
@@ -1029,6 +1033,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         focusWorkEntryDocEntry: null,
         focusJobCardDocEntry: null,
         workEntryDocEntry: null,
+        repair: null,
       });
       Toast.show({ type: 'success', text1: 'Work entry approved' });
     } catch (error) {
@@ -1069,13 +1074,17 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
     try {
       setActioningWorkEntry(workEntryDocEntry);
 
-      const response = await workEntryService.verifyWorkEntry({
+      const reviewPayload = {
         CompanyDB: dbName || 'MUTSPL_TEST',
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
         UserCode: resolveCurrentUserCode(),
         Status: 'RW',
         Remarks: reason,
-      });
+        JobCardEntry: Number(selected?.entry?.jobCardDocEntry) || selected?.entry?.jobCardDocEntry,
+      };
+      const response = route?.params?.repair
+        ? await repairService.reviewRepairJobCard(reviewPayload)
+        : await workEntryService.verifyWorkEntry(reviewPayload);
 
       if (response?.Success === false || response?.Status === false) {
         throw new Error(response?.Message || 'Unable to deny work entry.');
@@ -1106,6 +1115,12 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
       setShowDenyModal(false);
       setDenyReason('');
+      navigation.setParams({
+        focusWorkEntryDocEntry: null,
+        focusJobCardDocEntry: null,
+        workEntryDocEntry: null,
+        repair: null,
+      });
       Toast.show({ type: 'success', text1: 'Work entry denied' });
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Deny failed', text2: error?.message || 'Unable to deny work entry.' });

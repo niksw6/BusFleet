@@ -66,11 +66,6 @@ const normalizeDashboardData = (payload) => {
 };
 
 export const mechanicService = {
-  getMyJobs: async (companyDB, empCode) => {
-    const response = await get(`GetMyJobs?CompanyDB=${companyDB}&EmpCode=${encodeURIComponent(empCode)}`, { suppressErrorLog: true });
-    return normalizeDashboardData(response.data);
-  },
-
   rejectWork: async (companyDB, jobCardNo, faultCode, empCode, reason) => {
     const response = await post('RejectWork', { CompanyDB: companyDB, JobCardNo: Number(jobCardNo) || jobCardNo, FaultCode: faultCode, EmpCode: empCode, Reason: reason });
     return response.data;

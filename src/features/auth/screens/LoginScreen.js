@@ -85,12 +85,13 @@ const LoginScreen = ({ navigation }) => {
       if (response && (response.Status === true || response.success === true || response.Success === true)) {
         console.log('Login successful!');
         // MCheckLogin response shape: { Success:true, Data:{ Role, Depot, TeamCode, ... } }
-        const userFromApi = response.Data || response.data || response.user || response.User || { name: values.username };
+        const userFromApi = response.Data || response.data || response.user || response.User || response || { name: values.username };
         const detectedRole =
           mapUsertypeToRole(response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype)
           || userFromApi?.role
           || userFromApi?.Role;
         const mechanicCode = userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || userFromApi?.UserCode || userFromApi?.User || values.username;
+        const numericEmpId = Number(userFromApi?.EmpID || userFromApi?.EmployeeID || userFromApi?.ID || userFromApi?.id || 0);
         const user = {
           ...userFromApi,
           User: userFromApi?.User || userFromApi?.user || values.username,
@@ -99,7 +100,8 @@ const LoginScreen = ({ navigation }) => {
           code: mechanicCode,
           UserCode: userFromApi?.UserCode || userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || mechanicCode,
           EmpCode: userFromApi?.EmpCode || userFromApi?.Code || userFromApi?.code || userFromApi?.UserCode || mechanicCode,
-          id: userFromApi?.id || userFromApi?.ID || userFromApi?.EmpID || null,
+          id: numericEmpId || null,
+          EmpID: numericEmpId || null,
           Usertype: response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype || null,
           role: detectedRole || userFromApi?.role || userFromApi?.Role || 'Supervisor',
           // Maintenance team mapping — foundation of Team Leader accept/reject routing (SOP §1.3)

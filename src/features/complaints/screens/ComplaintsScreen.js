@@ -311,6 +311,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
     const value = String(complaintType || '').toLowerCase();
     if (value.includes('breakdown')) return 'B';
     if (value.includes('preventive')) return 'M';
+    if (value.includes('repair') || value.includes('assembly')) return 'A';
     if (value.includes('driver')) return 'D';
     return 'D';
   };

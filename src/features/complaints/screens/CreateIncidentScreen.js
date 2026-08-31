@@ -21,7 +21,8 @@ import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDate, formatTime } from '../../../utils/helpers';
 import { getData, storeData } from '../../../utils/storage';
-import { isSupervisorUser, isFieldStaffUser, isDriverUser } from '../../../utils/roleAccess';
+import { isStoreUser, isSupervisorUser, isFieldStaffUser, isDriverUser } from '../../../utils/roleAccess';
+import CreateRepairIncidentScreen from './CreateRepairIncidentScreen';
 
 /**
  * Simplified Incident Creation Screen - Matches API Fields Exactly
@@ -439,9 +440,10 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const supervisorUser = isSupervisorUser(user);
+  const storeUser = isStoreUser(user);
   const mechanicUser = isFieldStaffUser(user);
   const driverUser = isDriverUser(user);
-  const canCreateIncident = supervisorUser || driverUser;
+  const canCreateIncident = supervisorUser || driverUser || storeUser;
   const resolvedDriverCode = user?.Code || user?.code || user?.User || user?.user || '';
   const resolvedDriverName = user?.Name || user?.name || user?.FirstName || resolvedDriverCode || 'Driver';
   const inputOutlineColor = colors.border || (isDarkMode ? colors.grayLight : '#D9DCDD');
@@ -504,6 +506,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   ];
 
   useEffect(() => {
+    if (storeUser) return;
     if (!canCreateIncident) {
       Toast.show({
         type: 'error',
@@ -515,7 +518,11 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     }
 
     fetchData();
-  }, [canCreateIncident, navigation]);
+  }, [canCreateIncident, navigation, storeUser]);
+
+  if (storeUser) {
+    return <CreateRepairIncidentScreen navigation={navigation} route={route} />;
+  }
 
   const fetchData = async () => {
     try {
@@ -1372,7 +1379,7 @@ const CreateIncidentScreen = ({ route, navigation }) => {
                           value={selectedFaults.length > 0 ? `${selectedFaults.length} fault(s) selected` : ''}
                           style={styles.input}
                           placeholder="Select faults"
-                          right={<TextInput.Icon icon="plus" />}
+                          right={<TextInput.Icon icon="add" />}
                           outlineColor={inputOutlineColor}
                         />
                       </View>

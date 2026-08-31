@@ -73,7 +73,7 @@ export const dashboardService = {
   getNotifications: async (companyDB, userId) => {
     console.log(`[Notifications] getNotifications called - CompanyDB: "${companyDB}" User: "${userId}"`);
     try {
-      const response = await get(`GetNotifications?CompanyDB=${companyDB}&User=${userId}`);
+      const response = await get(`GetNotifications?CompanyDB=${encodeURIComponent(companyDB)}&User=${encodeURIComponent(userId)}`);
       console.log(`[Notifications] getNotifications response:`, JSON.stringify(response.data).slice(0, 200));
       return response.data;
     } catch (error) {
@@ -91,7 +91,7 @@ export const dashboardService = {
   getNotificationCount: async (companyDB, userId) => {
     console.log(`[Notifications] getNotificationCount called - CompanyDB: "${companyDB}" User: "${userId}"`);
     try {
-      const response = await get(`GetNotificationCount?CompanyDB=${companyDB}&User=${userId}`);
+      const response = await get(`GetNotificationCount?CompanyDB=${encodeURIComponent(companyDB)}&User=${encodeURIComponent(userId)}`);
       console.log(`[Notifications] getNotificationCount response:`, JSON.stringify(response.data));
       return response.data;
     } catch (error) {

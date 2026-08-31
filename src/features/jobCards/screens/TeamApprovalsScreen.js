@@ -570,18 +570,21 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
         const assignmentRows = faultRows.map((fault, index) => {
           const sourceCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
           const code = resolveMasterFaultCode(fault, faultMasters);
-          const member = assignments[sourceCode];
-          return member ? {
+          const members = Array.isArray(assignments[sourceCode]) ? assignments[sourceCode] : [];
+          return members.map(member => ({
             FaultLine: getAssignmentFaultLine(fault, index),
             FaultCode: code,
             FaultName: String(fault?.FaultName || fault?.FaultDescription || fault?.Description || fault?.Dscption || code).trim(),
             MechanicCode: member.ResolvedCode,
             MechanicName: member.DisplayName,
             DueHours: Number(fault?.DueHours || fault?.EstimatedHours || 0),
-          } : null;
-        }).filter(Boolean);
-        if (assignmentRows.length !== faultRows.length) {
-          throw new Error('Assign one mechanic or electrician to every fault before accepting.');
+          }));
+        }).flat().filter(Boolean);
+        if (faultRows.some((fault) => {
+          const sourceCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
+          return !Array.isArray(assignments[sourceCode]) || assignments[sourceCode].length === 0;
+        })) {
+          throw new Error('Assign at least one mechanic or electrician to every fault before accepting.');
         }
         const assignmentResponse = await teamService.assignMechanics(companyDb, getDocEntry(job), assignmentRows);
         if (assignmentResponse?.Success === false) {
@@ -591,10 +594,12 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
           ...previous,
           [jobKey(job)]: {
             ...previous[jobKey(job)],
-            data: faultRows.map(fault => {
+              data: faultRows.map(fault => {
               const sourceCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
-              const member = assignments[sourceCode];
-              return member ? { ...fault, MechanicName: member.DisplayName, MechanicCode: member.ResolvedCode, Status: 'ASSIGNED' } : fault;
+                const members = Array.isArray(assignments[sourceCode]) ? assignments[sourceCode] : [];
+                return members.length > 0
+                  ? { ...fault, AssignedMechanics: members, MechanicName: members.map(member => member.DisplayName).join(', '), MechanicCode: members.map(member => member.ResolvedCode).join(','), Status: 'ASSIGNED' }
+                  : fault;
             }),
           },
         }));
@@ -691,9 +696,12 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
   const confirmAcceptanceWithAssignments = async () => {
     if (!acceptTarget) return;
     const faults = faultsMap[jobKey(acceptTarget)]?.data || [];
-    const missingAssignment = faults.some(fault => !faultAssignments[String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim()]);
+    const missingAssignment = faults.some(fault => {
+      const faultCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || '').trim();
+      return !Array.isArray(faultAssignments[faultCode]) || faultAssignments[faultCode].length === 0;
+    });
     if (missingAssignment) {
-      Toast.show({ type: 'error', text1: 'Assign every fault', text2: 'Select one team member for each fault before accepting.' });
+      Toast.show({ type: 'error', text1: 'Assign every fault', text2: 'Select at least one team member for each fault before accepting.' });
       return;
     }
     setShowAssignmentConfirm(false);
@@ -951,7 +959,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
         <View style={styles.reasonOverlay}>
           <View style={[styles.assignmentBox, { backgroundColor: colors.white }]}>
             <Text style={[styles.reasonTitle, { color: colors.dark }]}>Assign faults before accepting</Text>
-            <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 12 }}>Choose one mechanic or electrician per fault. Only that person receives the work item.</Text>
+            <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 12 }}>Choose one or more mechanics or electricians per fault. Each selected person receives the work item.</Text>
             <ScrollView style={{ maxHeight: 390 }}>
               {(faultsMap[jobKey(acceptTarget)]?.data || []).map((fault, index) => {
                 const faultCode = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || `Fault ${index + 1}`).trim();
@@ -959,8 +967,15 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
                   <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13 }}>{fault?.FaultDescription || faultCode}</Text>
                   <View style={styles.assignmentChoices}>
                     {teamMembers.map(member => {
-                      const selected = faultAssignments[faultCode]?.ResolvedCode === member.ResolvedCode;
-                      return <TouchableOpacity key={member.ResolvedCode || member.DisplayName} onPress={() => setFaultAssignments(previous => ({ ...previous, [faultCode]: member }))}
+                      const selectedMembers = Array.isArray(faultAssignments[faultCode]) ? faultAssignments[faultCode] : [];
+                      const selected = selectedMembers.some(selectedMember => selectedMember.ResolvedCode === member.ResolvedCode);
+                      return <TouchableOpacity key={member.ResolvedCode || member.DisplayName} onPress={() => setFaultAssignments(previous => {
+                        const current = Array.isArray(previous[faultCode]) ? previous[faultCode] : [];
+                        const next = selected
+                          ? current.filter(selectedMember => selectedMember.ResolvedCode !== member.ResolvedCode)
+                          : [...current, member];
+                        return { ...previous, [faultCode]: next };
+                      })}
                         style={[styles.assignmentChoice, { borderColor: selected ? colors.primary : (colors.border || '#E0E0E0'), backgroundColor: selected ? `${colors.primary}18` : 'transparent' }]}>
                         <Text style={{ color: selected ? colors.primary : colors.dark, fontSize: 12 }}>{member.DisplayName}</Text>
                       </TouchableOpacity>;
