@@ -94,8 +94,8 @@ const LoginScreen = ({ navigation }) => {
         const numericEmpId = Number(userFromApi?.EmpID || userFromApi?.EmployeeID || userFromApi?.ID || userFromApi?.id || 0);
         const user = {
           ...userFromApi,
-          User: userFromApi?.User || userFromApi?.user || values.username,
-          username: userFromApi?.username || userFromApi?.User || userFromApi?.user || values.username,
+          User: values.username,
+          username: values.username,
           Code: mechanicCode,
           code: mechanicCode,
           UserCode: userFromApi?.UserCode || userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || mechanicCode,
@@ -106,7 +106,7 @@ const LoginScreen = ({ navigation }) => {
           role: detectedRole || userFromApi?.role || userFromApi?.Role || 'Supervisor',
           // Maintenance team mapping — foundation of Team Leader accept/reject routing (SOP §1.3)
           TeamCode: userFromApi?.TeamCode || userFromApi?.teamCode || userFromApi?.Team || null,
-          Depot: userFromApi?.Depot || userFromApi?.depot || null,
+          Depot: response?.Depot || response?.depot || userFromApi?.Depot || userFromApi?.depot || null,
         };
         const token = response.token || response.Token || response.accessToken || 'mock-token';
         
@@ -166,7 +166,7 @@ const LoginScreen = ({ navigation }) => {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
-          <View style={[styles.logoContainer, { backgroundColor: colors.primary }]}>
+          <View style={[styles.logoContainer, { backgroundColor: colors.primary, borderColor: colors.primaryDark || colors.primary }]}>
             <MaterialIcons name="directions-bus" size={42} color="#fff" />
           </View>
           <Text style={[styles.productLabel, { color: colors.primary }]}>FLEET OPERATIONS</Text>
@@ -176,7 +176,7 @@ const LoginScreen = ({ navigation }) => {
           </Text>
         </View>
 
-        <View style={[styles.formContainer, { backgroundColor: colors.white }]}>
+        <View style={[styles.formContainer, { backgroundColor: colors.white, borderColor: colors.border }]}>
           <Formik
             initialValues={{
               company: lastCompany,
@@ -280,31 +280,32 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingHorizontal: SPACING.lg,
-    paddingVertical: SPACING.xl,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.lg,
     justifyContent: 'center',
   },
   header: {
     alignItems: 'center',
-    marginBottom: SPACING.lg,
+    marginBottom: SPACING.xl,
   },
   logoContainer: {
     width: 82,
     height: 82,
-    borderRadius: 24,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: SPACING.sm,
-    elevation: 4,
+    elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
   },
   title: {
-    fontSize: 25,
-    fontWeight: 'bold',
-    marginBottom: SPACING.xs,
+    fontSize: 26,
+    fontWeight: '700',
+    marginBottom: SPACING.sm,
     textAlign: 'center',
   },
   subtitle: {
@@ -320,9 +321,10 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   formContainer: {
-    padding: SPACING.md,
-    borderRadius: BORDER_RADIUS.xl || BORDER_RADIUS.lg,
-    elevation: 3,
+    padding: SPACING.lg,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+    elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.18,
@@ -337,7 +339,7 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xs,
   },
   pickerContainer: {
-    borderRadius: BORDER_RADIUS.md,
+    borderRadius: BORDER_RADIUS.sm,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#ddd',
@@ -354,7 +356,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   loginButton: {
-    marginTop: SPACING.sm,
+    marginTop: SPACING.xs,
     borderRadius: BORDER_RADIUS.md,
   },
   loginButtonContent: {

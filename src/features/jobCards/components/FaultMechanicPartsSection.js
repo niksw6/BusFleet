@@ -9,6 +9,7 @@ import { Text, Chip, TextInput } from 'react-native-paper';
 import MaterialIcons from '../../../components/AppIcon.js';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
+import { getStaffRoleLabel } from '../../../utils/roleAccess';
 const BUS_LOCATIONS = [
   'FRONT', 'BACK', 'LEFT', 'RIGHT', 'TOP', 'BOTTOM',
   'FRONT_LEFT', 'FRONT_RIGHT', 'BACK_LEFT', 'BACK_RIGHT',
@@ -362,6 +363,7 @@ const FaultMechanicPartsSection = ({
             {item.Code ? (
               <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>Code: {item.Code}</Text>
             ) : null}
+            <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>Role: {getStaffRoleLabel(item)}</Text>
           </View>
         )}
       />

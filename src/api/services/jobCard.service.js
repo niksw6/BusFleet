@@ -12,7 +12,6 @@ export const jobCardService = {
     try {
       const response = await post(API_ENDPOINTS.TRANSFER_JOB_CARD, {
         CompanyDB: companyDB,
-        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
         ToDepot: String(toDepot || '').trim(),
         ToSupervisorCode: String(toSupervisorCode || '').trim(),
         ToSupervisorName: String(toSupervisorName || '').trim(),
@@ -201,10 +200,11 @@ export const jobCardService = {
   /**
    * Get list of all job cards
    */
-  getJobCards: async (companyDB, status = null) => {
+  getJobCards: async (companyDB, status = null, depot = '') => {
     try {
       let url = `GetJobCards?CompanyDB=${companyDB}`;
       if (status) url += `&Status=${status}`;
+      if (depot) url += `&Depot=${encodeURIComponent(depot)}`;
       const response = await get(url);
       return response.data;
     } catch (error) {

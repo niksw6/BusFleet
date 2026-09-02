@@ -5,7 +5,7 @@ import MaterialIcons from './AppIcon.js';
 import LinearGradient from 'react-native-linear-gradient';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigation } from '@react-navigation/native';
-import { COLORS, DARK_COLORS, SPACING } from '../constants/theme';
+import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { dashboardService } from '../api/services';
 import { setNotifications, setUnreadCount } from '../store/slices/notificationSlice';
 
@@ -37,6 +37,7 @@ const ScreenHeader = ({
   const dispatch = useDispatch();
   const [loadingNotifications, setLoadingNotifications] = useState(false);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const depotName = String(user?.Depot || user?.depot || '').trim();
 
   const handleNotificationPress = async () => {
     try {
@@ -83,6 +84,7 @@ const ScreenHeader = ({
         {subtitle && (
           <Text style={styles.headerSubtitle}>{subtitle}</Text>
         )}
+        {depotName ? <Text style={styles.headerSubtitle}>Depot: {depotName}</Text> : null}
       </View>
       
       {showNotifications ? (
@@ -108,9 +110,9 @@ const ScreenHeader = ({
 
   if (useGradient) {
     return (
-      <SafeAreaView edges={['top']} style={{ backgroundColor: '#1E293B' }}>
+      <SafeAreaView edges={['top']} style={{ backgroundColor: colors.primaryDark || colors.primary }}>
         <LinearGradient
-          colors={['#1E293B', '#334155']}
+          colors={[colors.primaryDark || colors.primary, colors.primary]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.header}
@@ -132,13 +134,13 @@ const ScreenHeader = ({
 
 const styles = StyleSheet.create({
   header: {
-    paddingVertical: SPACING.sm,
+    paddingVertical: SPACING.md,
     paddingHorizontal: SPACING.md,
-    elevation: 8,
+    elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowOpacity: 0.16,
+    shadowRadius: 3,
   },
   headerContent: {
     flexDirection: 'row',
@@ -146,15 +148,15 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   menuButton: {
-    padding: 4,
+    padding: SPACING.xs,
   },
   headerCenter: {
     flex: 1,
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '700',
     color: '#fff',
     marginBottom: 2,
   },
@@ -163,8 +165,8 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.85)',
   },
   notificationButton: {
-    padding: 4,
-    minWidth: 30,
+    padding: SPACING.xs,
+    minWidth: 36,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -174,7 +176,7 @@ const styles = StyleSheet.create({
     right: -6,
     minWidth: 16,
     height: 16,
-    borderRadius: 8,
+    borderRadius: BORDER_RADIUS.full,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 3,

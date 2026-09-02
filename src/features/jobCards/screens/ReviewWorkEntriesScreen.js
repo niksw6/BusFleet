@@ -18,7 +18,7 @@ import MaterialIcons from '../../../components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { dashboardService, jobCardService, mechanicService, repairService, storeService, workEntryService } from '../../../api/services';
+import { dashboardService, jobCardService, masterService, mechanicService, repairService, storeService, teamService, workEntryService } from '../../../api/services';
 import { formatDate, formatTime } from '../../../utils/helpers';
 
 const isAwaitingVerificationStatus = (value) => {
@@ -505,6 +505,10 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
   const [actioningWorkEntry, setActioningWorkEntry] = useState(null);
   const [showDenyModal, setShowDenyModal] = useState(false);
   const [denyReason, setDenyReason] = useState('');
+  const [reassignmentTarget, setReassignmentTarget] = useState(null);
+  const [reassignmentTeams, setReassignmentTeams] = useState([]);
+  const [selectedReassignmentTeam, setSelectedReassignmentTeam] = useState(null);
+  const [reassignmentRemarks, setReassignmentRemarks] = useState('');
   const [approvalRemarks, setApprovalRemarks] = useState('');
   const consumedFocusEntryRef = useRef('');
 
@@ -1056,6 +1060,83 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
     setShowDenyModal(true);
   };
 
+  const isDriverComplaintEntry = (selection) => {
+    const type = String(
+      selection?.entry?.complaintType
+      || selection?.parentItem?.ComplaintType
+      || selection?.parentItem?.FormType
+      || ''
+    ).trim().toLowerCase();
+    return type.includes('driver') || type.includes('complaint');
+  };
+
+  const openTeamReassignment = async ({ jobCardEntry, depot, reason = '', excludedTeamCode = '' }) => {
+    const resolvedJobCardEntry = String(jobCardEntry || '').trim();
+    const resolvedDepot = String(depot || '').trim();
+    if (!resolvedJobCardEntry) {
+      Toast.show({ type: 'error', text1: 'Job card is missing', text2: 'Cannot assign another maintenance team.' });
+      return;
+    }
+    if (!resolvedDepot) {
+      Toast.show({ type: 'error', text1: 'Depot is missing', text2: 'Cannot load another maintenance team.' });
+      return;
+    }
+    try {
+      const response = await masterService.getTeamByDepot(dbName || 'MUTSPL_TEST', resolvedDepot);
+      const teams = extractRows(response).filter(team => (
+        String(team?.Active || 'Y').trim().toUpperCase() === 'Y'
+        && String(team?.TeamCode || team?.Code || '').trim() !== String(excludedTeamCode).trim()
+      ));
+      if (teams.length === 0) throw new Error('No active maintenance teams are available for this depot.');
+      setReassignmentTarget({ jobCardEntry: resolvedJobCardEntry, reason, depot: resolvedDepot });
+      setReassignmentTeams(teams);
+      setSelectedReassignmentTeam(null);
+      setReassignmentRemarks(reason);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to load teams', text2: error?.message || 'Please try again.' });
+    }
+  };
+
+  const closeTeamReassignment = () => {
+    setReassignmentTarget(null);
+    setSelectedReassignmentTeam(null);
+    setReassignmentRemarks('');
+    navigation.setParams({ teamRejection: null });
+  };
+
+  const submitTeamReassignment = async () => {
+    const jobCardEntry = reassignmentTarget?.jobCardEntry;
+    const teamCode = selectedReassignmentTeam?.TeamCode || selectedReassignmentTeam?.Code;
+    if (!jobCardEntry || !teamCode) {
+      Toast.show({ type: 'error', text1: 'Select a team', text2: 'Choose the maintenance team for this job card.' });
+      return;
+    }
+    try {
+      setActioningWorkEntry(String(jobCardEntry));
+      const companyDb = dbName || 'MUTSPL_TEST';
+      const response = await teamService.updateAssignTeam(
+        companyDb,
+        jobCardEntry,
+        teamCode,
+        resolveCurrentUserCode(),
+        reassignmentRemarks.trim(),
+      );
+      if (response?.Success === false || response?.Status === false) throw new Error(response?.Message || 'Unable to reassign job card.');
+      closeTeamReassignment();
+      Toast.show({ type: 'success', text1: 'Job card reassigned', text2: 'The new team leader can now accept and assign the faults.' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Reassignment failed', text2: error?.message || 'Please try again.' });
+    } finally {
+      setActioningWorkEntry(null);
+    }
+  };
+
+  useEffect(() => {
+    const notification = route?.params?.teamRejection;
+    if (!notification || reassignmentTarget) return;
+    openTeamReassignment(notification);
+  }, [route?.params?.teamRejection]);
+
   const handleDenyWorkEntry = async () => {
     const selected = selectedWorkEntry;
     const workEntryDocEntry = toCleanString(selected?.entry?.workEntryDocEntry);
@@ -1121,6 +1202,13 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         workEntryDocEntry: null,
         repair: null,
       });
+      if (!route?.params?.repair && isDriverComplaintEntry(selected)) {
+        openTeamReassignment({
+          jobCardEntry: selected?.entry?.jobCardDocEntry,
+          depot: selected?.entry?.depot || selected?.parentItem?.Depot || selected?.parentItem?.Branch,
+          reason,
+        });
+      }
       Toast.show({ type: 'success', text1: 'Work entry denied' });
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Deny failed', text2: error?.message || 'Unable to deny work entry.' });
@@ -1270,6 +1358,36 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
             ) : (
               <Text style={[styles.metaText, { color: colors.gray }]}>Unable to load image.</Text>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!reassignmentTarget} transparent animationType="slide" onRequestClose={closeTeamReassignment}>
+        <View style={styles.previewOverlay}>
+          <View style={[styles.denyModal, { backgroundColor: colors.white }]}>
+            <Text style={[styles.previewTitle, { color: colors.dark }]}>Assign a different team</Text>
+            <Text style={[styles.metaText, { color: colors.gray }]}>Select a team at {reassignmentTarget?.depot} to receive the rejected job card.</Text>
+            {reassignmentTeams.map((team) => {
+              const teamCode = team?.TeamCode || team?.Code;
+              const selected = selectedReassignmentTeam === team;
+              return <TouchableOpacity key={teamCode} onPress={() => setSelectedReassignmentTeam(team)} style={[styles.teamOption, { borderColor: selected ? colors.primary : colors.border || '#E0E0E0', backgroundColor: selected ? `${colors.primary}12` : 'transparent' }]}>
+                <Text style={{ color: colors.dark, fontWeight: '700' }}>{team?.TeamName || teamCode}</Text>
+                <Text style={{ color: colors.gray }}>{team?.Leader || 'Team leader'}{teamCode ? ` - ${teamCode}` : ''}</Text>
+              </TouchableOpacity>;
+            })}
+            <TextInput
+              label="Remarks"
+              mode="outlined"
+              value={reassignmentRemarks}
+              onChangeText={setReassignmentRemarks}
+              multiline
+              numberOfLines={3}
+              style={{ marginTop: SPACING.sm }}
+            />
+            <View style={styles.actionsRow}>
+              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.gray }]} onPress={closeTeamReassignment}><Text style={styles.actionBtnText}>Later</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.primary }]} onPress={submitTeamReassignment} disabled={!selectedReassignmentTeam || !!actioningWorkEntry}><Text style={styles.actionBtnText}>Assign team</Text></TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1726,6 +1844,7 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.lg,
     padding: SPACING.md,
   },
+  teamOption: { borderWidth: 1, borderRadius: 6, padding: 10, marginTop: 10 },
   denyInput: {
     marginTop: 10,
     backgroundColor: 'transparent',

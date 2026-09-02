@@ -8,6 +8,7 @@ import { get, post, handleApiError } from '../client';
  *   GET  GetMyTeamMembers?CompanyDB=...&UserCode=...
  *   GET  GetJobCardFaults?CompanyDB=...&DocEntry=...
  *   POST AssignTeam         { CompanyDB, JobCardDocEntry, TeamCode, UserCode }
+ *   POST UpdateAssignTeam   { CompanyDB, DocEntry, TeamCode, UserCode }
  *   POST UpdateTeamStatus  { CompanyDB, DocEntry, UserCode, Status: 'A'|'R', Remarks }
  *
  * Flow (per SOP + Driver Complaint Incident Flow):
@@ -117,13 +118,27 @@ export const teamService = {
     return response.data;
   },
 
+  updateAssignTeam: async (companyDB, docEntry, teamCode, userCode, remarks = '') => {
+    const payload = {
+      CompanyDB: companyDB,
+      DocEntry: Number(docEntry) || docEntry,
+      TeamCode: teamCode,
+      UserCode: userCode,
+      Remark: remarks,
+    };
+    console.log('UpdateAssignTeam payload:', JSON.stringify(payload));
+    const response = await post('UpdateAssignTeam', payload);
+    console.log('UpdateAssignTeam response:', JSON.stringify(response.data));
+    return response.data;
+  },
+
   /**
    * Team Leader accepts or rejects a Job Card assigned to their team.
    * @param {string} companyDB
    * @param {string|number} docEntry - Job Card DocEntry
    * @param {string} userCode - Team Leader's login code
    * @param {'A'|'R'} status
-   * @param {string} remarks - Required when rejecting
+  * @param {string} remarks - Required when rejecting
    */
   updateTeamStatus: async (companyDB, docEntry, userCode, status, remarks = '') => {
     const payload = {

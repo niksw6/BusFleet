@@ -103,12 +103,15 @@ export const complaintService = {
    * @param {string} type - Optional type filter ('Driver Complaints', 'Breakdown', or null for all)
    * @returns {Promise} List of incidents
    */
-  getIncidents: async (companyDB, status = null, type = null) => {
+  getIncidents: async (companyDB, status = null, type = null, depot = '') => {
     try {
       let url = `GetIncidents?CompanyDB=${companyDB}`;
       if (status) {
         url += `&Status=${status}`;
       }
+        if (depot) {
+          url += `&Depot=${encodeURIComponent(depot)}`;
+        }
       const response = await get(url);
       
       // Filter by type if specified
@@ -128,8 +131,8 @@ export const complaintService = {
    * @param {string} status - Optional status filter (O, I, CM, D)
    * @returns {Promise} List of complaints
    */
-  getComplaints: async (companyDB, status = null) => {
-    return complaintService.getIncidents(companyDB, status, 'Driver Complaints');
+  getComplaints: async (companyDB, status = null, depot = '') => {
+    return complaintService.getIncidents(companyDB, status, 'Driver Complaints', depot);
   },
 
   /**
@@ -170,8 +173,8 @@ export const complaintService = {
    * @param {string} status - Optional status filter
    * @returns {Promise} List of breakdowns
    */
-  getBreakdowns: async (companyDB, status = null) => {
-    return complaintService.getIncidents(companyDB, status, 'Breakdown');
+  getBreakdowns: async (companyDB, status = null, depot = '') => {
+    return complaintService.getIncidents(companyDB, status, 'Breakdown', depot);
   },
 
   /**
@@ -224,11 +227,11 @@ export const complaintService = {
   },
 
   // Master data helpers (delegated to masterService)
-  getActiveBuses: (companyDB) => masterService.getActiveBuses(companyDB),
+  getActiveBuses: (companyDB, depot) => masterService.getActiveBuses(companyDB, depot),
   getJobTypes: (companyDB) => masterService.getJobTypes(companyDB),
-  getDrivers: (companyDB) => masterService.getDrivers(companyDB),
-  getMechanics: (companyDB) => masterService.getMechanics(companyDB),
-  getSupervisors: (companyDB) => masterService.getSupervisors(companyDB),
+  getDrivers: (companyDB, depot) => masterService.getDrivers(companyDB, depot),
+  getMechanics: (companyDB, depot) => masterService.getMechanics(companyDB, depot),
+  getSupervisors: (companyDB, depot) => masterService.getSupervisors(companyDB, depot),
   getRoutes: (companyDB) => masterService.getRoutes(companyDB),
   getFaultDetails: (companyDB) => masterService.getFaultDetails(companyDB),
   getFaultMaster: (companyDB) => masterService.getFaultMaster(companyDB),

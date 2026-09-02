@@ -48,7 +48,7 @@ const StandardListCard = ({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: BORDER_RADIUS.lg,
+    borderRadius: BORDER_RADIUS.md,
     borderLeftWidth: 4,
     borderWidth: 1,
     marginBottom: SPACING.sm,

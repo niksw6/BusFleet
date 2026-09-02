@@ -1,4 +1,4 @@
-﻿import React, { useState, useCallback } from 'react';
+﻿import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -39,6 +39,12 @@ const NotificationsScreen = ({ navigation }) => {
     setLogEntries(getLogs());
     setShowLogs(true);
   };
+
+  useEffect(() => {
+    if (!showLogs) return undefined;
+    const refreshLogs = setInterval(() => setLogEntries(getLogs()), 1000);
+    return () => clearInterval(refreshLogs);
+  }, [showLogs]);
 
   const copyLogs = () => {
     Clipboard.setString(logEntries.join('\n'));
@@ -284,7 +290,7 @@ const NotificationsScreen = ({ navigation }) => {
 
     let matchedIncident = null;
     try {
-      const incidentsResponse = await complaintService.getIncidents(companyDb, null, null);
+      const incidentsResponse = await complaintService.getIncidents(companyDb, null, null, user?.Depot || user?.depot || '');
       const incidents = Array.isArray(incidentsResponse?.Data) ? incidentsResponse.Data : [];
       matchedIncident = incidents.find((row) => {
         const rowDocEntry = String(row?.DocEntry || row?.ComplaintNo || '').trim();
@@ -478,6 +484,20 @@ const NotificationsScreen = ({ navigation }) => {
         complaintType: item?.ComplaintType || item?.complaintType || 'Breakdown',
         dbName: dbName || 'MUTSPL_TEST',
         focusTransfer: true,
+      });
+      return;
+    }
+
+    if (supervisorUser && type === 'JCR') {
+      const jobCardEntry = String(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || item?.jobCardNo || docEntry || '').trim();
+      navigation.navigate('ReviewWorkEntries', {
+        teamRejection: {
+          jobCardEntry,
+          depot: item?.Depot || item?.depot || item?.Branch || item?.BranchCode || user?.Depot || user?.depot || '',
+          excludedTeamCode: item?.TeamCode || item?.teamCode || item?.Team || '',
+          reason: item?.Remarks || item?.RejectReason || item?.Message || '',
+          notificationKey: `${notificationCode || jobCardEntry}-${Date.now()}`,
+        },
       });
       return;
     }

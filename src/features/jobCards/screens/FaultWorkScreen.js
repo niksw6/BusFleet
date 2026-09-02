@@ -134,7 +134,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
 
   const [workList, setWorkList] = useState([]);
   const [spareParts, setSpareParts] = useState([]);
-  const [warehouses, setWarehouses] = useState([]);
   const [approvedParts, setApprovedParts] = useState([]);
   const [resolvedFaultCode, setResolvedFaultCode] = useState('');
 
@@ -153,15 +152,14 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const [showWorkListModal, setShowWorkListModal] = useState(false);
 
   // Parts request form
-  const [partsDraft, setPartsDraft] = useState([]); // [{ ItemCode, ItemName, ReqQty, Warehouse, Remarks }]
+  const [partsDraft, setPartsDraft] = useState([]); // [{ ItemCode, ItemName, ReqQty, Remarks }]
   const [toolsDraft, setToolsDraft] = useState([]); // [{ ToolCode, ToolName, Remarks }]
   const [existingSpecialTools, setExistingSpecialTools] = useState(() => normalizeSpecialToolRows(extractSpecialToolsForFault(existingWorkEntry, fault)));
   const [availableTools, setAvailableTools] = useState([]);
   const [showToolsModal, setShowToolsModal] = useState(false);
+  const [showReturnToolsModal, setShowReturnToolsModal] = useState(false);
   const [specialToolRemarks, setSpecialToolRemarks] = useState('');
   const [showPartsModal, setShowPartsModal] = useState(false);
-  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
-  const [warehouseTargetCode, setWarehouseTargetCode] = useState(null);
   const [receiveTarget, setReceiveTarget] = useState(null);
   const [receivedQty, setReceivedQty] = useState('');
   // Return parts
@@ -268,11 +266,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [faultDetailsResult, sparePartsResult, warehousesResult, approvedResults, jobCardResult] = await Promise.all([
+      const [faultDetailsResult, sparePartsResult, approvedResults, jobCardResult] = await Promise.all([
         Promise.allSettled([
         masterService.getFaultDetails(companyDb),
         masterService.getSpareParts(companyDb),
-        masterService.getWarehouses(companyDb),
         ]),
         Promise.allSettled(partIdentityCandidates.map(identity => storeService.getApprovedJobCardParts(companyDb, identity))),
         Promise.allSettled([
@@ -296,14 +293,8 @@ const FaultWorkScreen = ({ route, navigation }) => {
       }
       const workItems = faultWorkItems;
       const partItems = sparePartsResult.status === 'fulfilled' ? normalizeParts(extractRows(sparePartsResult.value)) : [];
-      const warehouseRows = warehousesResult.status === 'fulfilled' ? extractRows(warehousesResult.value) : [];
-      setWarehouses(warehouseRows.map((row) => ({
-        ...row,
-        WarehouseCode: String(row?.WarehouseCode || row?.WhsCode || row?.Code || '').trim(),
-        WarehouseName: String(row?.WarehouseName || row?.WhsName || row?.Name || row?.WarehouseCode || row?.WhsCode || '').trim(),
-      })).filter(row => row.WarehouseCode || row.WarehouseName));
       setWorkList([...workItems, { Code: 'OTHER', Name: 'Other work (enter manually)' }]);
-      setSpareParts([...partItems, { ItemCode: 'OTHER', ItemName: 'Other part (enter manually)' }]);
+      setSpareParts(partItems);
 
       const approvedFromQueue = approvedResults.flatMap(result => (
         result.status === 'fulfilled' ? extractRows(result.value) : []
@@ -377,7 +368,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
           ...t,
           ToolCode: String(t?.ToolCode || t?.Code || '').trim(),
           ToolName: String(t?.ToolName || t?.Name || t?.Description || '').trim(),
-        })).filter(t => t.ToolCode));
+        })).filter((tool) => (
+          tool.ToolCode
+          && tool.ToolCode.toUpperCase() !== 'OTHER'
+          && tool.ToolName.toUpperCase() !== 'OTHER'
+        )));
       } catch (_) {
         // Non-critical; mechanic can still proceed
       }
@@ -891,7 +886,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
       ItemCode: item.ItemCode || item.Code || '',
       ItemName: item.ItemName || item.Name || '',
       ReqQty: '1',
-      Warehouse: '',
       Remarks: '',
     }]);
     setShowPartsModal(false);
@@ -929,7 +923,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
           ItemCode: p.ItemCode,
           ItemName: p.ItemName,
           ReqQty: parseFloat(p.ReqQty) || 1,
-          Warehouse: p.Warehouse || '',
           Remarks: p.Remarks || '',
         })),
       });
@@ -1139,16 +1132,15 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const openReturnParts = () => {
-    // Only parts where backend has explicitly set an approved status (ignores SupervisorProvided shortcut)
-    const returnable = approvedParts.filter(p => isPartReturnEligible(p) && getReceiveLineId(p) !== null);
+    const returnable = approvedParts.filter(p => getIssuedQty(p) > 0 && getReceiveLineId(p) !== null);
     if (returnable.length === 0) {
-      Toast.show({ type: 'info', text1: 'No returnable parts', text2: 'No supervisor-approved parts found for this work entry.' });
+      Toast.show({ type: 'info', text1: 'No returnable parts', text2: 'Only issued parts can be returned.' });
       return;
     }
     setReturnDraft(returnable.map(p => {
       const issued = getIssuedQty(p);
       const received = getReceivedQty(p);
-      const defaultQty = Math.max(issued - received, 1);
+      const defaultQty = Math.max(issued - received, 0);
       return {
         part: p,
         LineId: getReceiveLineId(p),
@@ -1197,6 +1189,40 @@ const FaultWorkScreen = ({ route, navigation }) => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleReturnSpecialTool = async (tool) => {
+    if (!workEntryDocEntry) {
+      Toast.show({ type: 'error', text1: 'Save work entry first', text2: 'Tool return is tied to your active work entry.' });
+      return;
+    }
+    try {
+      setSubmitting(true);
+      const response = await storeService.returnSpecialTool({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        MechanicCode: String(userCode || '').trim(),
+        Tools: [{ LineId: resolveToolLineId(tool), Remarks: String(tool?.Remarks || 'Returned in good condition').trim() }],
+      });
+      if (!isApiSuccess(response)) throw new Error(response?.Message || 'Could not return special tool.');
+      setExistingSpecialTools((prev) => prev.map((entry) => (
+        getToolIdentity(entry) === getToolIdentity(tool) ? { ...entry, Status: 'RT' } : entry
+      )));
+      Toast.show({ type: 'success', text1: 'Special tool returned' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Tool return failed', text2: error?.message || 'Please try again.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const openReturnSpecialTools = () => {
+    const returnableTools = existingSpecialTools.filter((tool) => ['RC', 'RECEIVED'].includes(String(tool?.Status || '').trim().toUpperCase()));
+    if (returnableTools.length === 0) {
+      Toast.show({ type: 'info', text1: 'No returnable tools', text2: 'Only received special tools can be returned.' });
+      return;
+    }
+    setShowReturnToolsModal(true);
   };
 
   if (loading) {
@@ -1422,17 +1448,13 @@ const FaultWorkScreen = ({ route, navigation }) => {
                 <View key={i} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
                   <View style={{ flex: 1 }}>
                     <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{p.ItemName}</Text>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
                       <RNTextInput
                         value={String(p.ReqQty)}
                         onChangeText={(v) => updatePartDraftField(p.ItemCode, 'ReqQty', v)}
                         keyboardType="numeric"
                         style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
                       />
-                      <TouchableOpacity onPress={() => { setWarehouseTargetCode(p.ItemCode); setShowWarehouseModal(true); }} style={[styles.warehousePicker, { borderColor: colors.border || '#CCC' }]}>
-                        <Text numberOfLines={1} style={{ color: p.Warehouse ? colors.dark : colors.gray, fontSize: 13 }}>{p.Warehouse || 'Select warehouse'}</Text>
-                        <MaterialIcons name="arrow-drop-down" size={18} color={colors.gray} />
-                      </TouchableOpacity>
                     </View>
                   </View>
                   <TouchableOpacity onPress={() => removePartDraft(p.ItemCode)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -1453,6 +1475,17 @@ const FaultWorkScreen = ({ route, navigation }) => {
                 <MaterialIcons name="add" size={16} color="#2B7D2B" />
                 <Text style={{ color: '#2B7D2B', fontWeight: '600', marginLeft: 4 }}>Add Part</Text>
               </TouchableOpacity>
+
+              {approvedParts.length > 0 && !workEntryLocked && (
+                <TouchableOpacity
+                  style={[styles.addLineBtn, { borderColor: '#B45309', marginTop: SPACING.sm }]}
+                  onPress={openReturnParts}
+                  activeOpacity={0.7}
+                >
+                  <MaterialIcons name="undo" size={16} color="#B45309" />
+                  <Text style={{ color: '#B45309', fontWeight: '600', marginLeft: 4 }}>Return Unused Parts</Text>
+                </TouchableOpacity>
+              )}
 
               {partsDraft.length > 0 && (
                 <TouchableOpacity
@@ -1497,17 +1530,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
                 </View>
               )}
 
-              {/* Return Unused Parts — shown whenever there are any approved parts and work is active */}
-              {approvedParts.length > 0 && !workEntryLocked && (
-                <TouchableOpacity
-                  style={[styles.addLineBtn, { borderColor: '#B45309', marginTop: SPACING.sm }]}
-                  onPress={openReturnParts}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="undo" size={16} color="#B45309" />
-                  <Text style={{ color: '#B45309', fontWeight: '600', marginLeft: 4 }}>Return Unused Parts</Text>
-                </TouchableOpacity>
-              )}
             </View>
 
             <View style={[styles.card, { backgroundColor: colors.white }]}>
@@ -1550,6 +1572,16 @@ const FaultWorkScreen = ({ route, navigation }) => {
                             <Text style={styles.smallBtnText}>Receive Tool</Text>
                           </TouchableOpacity>
                         )}
+                        {isReceived && (
+                          <TouchableOpacity
+                            style={[styles.smallBtn, { backgroundColor: '#B45309', marginTop: 6, alignSelf: 'flex-start' }]}
+                            onPress={() => handleReturnSpecialTool(tool)}
+                            activeOpacity={0.8}
+                            disabled={submitting || workEntryLocked}
+                          >
+                            <Text style={styles.smallBtnText}>Return Tool</Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
                     );
                   })}
@@ -1569,6 +1601,16 @@ const FaultWorkScreen = ({ route, navigation }) => {
                 <Text style={{ color: '#7C3AED', fontWeight: '600', marginLeft: 4 }}>
                   {availableTools.length > 0 ? 'Select Tool from List' : 'Select Tool'}
                 </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.addLineBtn, { borderColor: workEntryLocked ? '#94A3B8' : '#B45309', marginTop: SPACING.sm }]}
+                onPress={openReturnSpecialTools}
+                activeOpacity={0.7}
+                disabled={submitting || workEntryLocked}
+              >
+                <MaterialIcons name="undo" size={16} color={workEntryLocked ? '#94A3B8' : '#B45309'} />
+                <Text style={{ color: workEntryLocked ? '#94A3B8' : '#B45309', fontWeight: '600', marginLeft: 4 }}>Return Special Tool</Text>
               </TouchableOpacity>
 
               {toolsDraft.map((tool, index) => (
@@ -1897,20 +1939,19 @@ const FaultWorkScreen = ({ route, navigation }) => {
       />
 
       <ModalSelector
-        visible={showWarehouseModal}
-        onClose={() => { setShowWarehouseModal(false); setWarehouseTargetCode(null); }}
+        visible={showReturnToolsModal}
+        onClose={() => setShowReturnToolsModal(false)}
         onSelect={(value, item) => {
-          if (warehouseTargetCode !== null) updatePartDraftField(warehouseTargetCode, 'Warehouse', item?.WarehouseCode || value);
-          setShowWarehouseModal(false);
-          setWarehouseTargetCode(null);
+          setShowReturnToolsModal(false);
+          handleReturnSpecialTool(item);
         }}
-        title="Select Warehouse"
-        data={warehouses}
+        title="Return Special Tool"
+        data={existingSpecialTools.filter((tool) => ['RC', 'RECEIVED'].includes(String(tool?.Status || '').trim().toUpperCase()))}
         loading={false}
-        searchPlaceholder="Search warehouses..."
-        displayKey="WarehouseName"
-        valueKey="WarehouseCode"
-        searchKeys={['WarehouseName', 'WarehouseCode']}
+        searchPlaceholder="Search received tools..."
+        displayKey="ToolName"
+        valueKey="ToolCode"
+        searchKeys={['ToolName', 'ToolCode']}
       />
 
       <Loader visible={submitting} text="Please wait..." />

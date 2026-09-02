@@ -42,7 +42,11 @@ import {
 import { PART_REQUEST_STATUS } from '../../../constants/config';
 import { formatDateTime } from '../../../utils/helpers';
 
-const isApiSuccess = (res) => res?.Success === true || res?.Status === true;
+const isApiSuccess = (res) => {
+  if (Array.isArray(res) || !res || typeof res !== 'object') return Array.isArray(res);
+  const hasStatus = Object.prototype.hasOwnProperty.call(res, 'Success') || Object.prototype.hasOwnProperty.call(res, 'Status');
+  return !hasStatus || res?.Success === true || res?.Status === true;
+};
 const EMPTY_LIST = [];
 const MAX_IMAGES_PER_PHASE = 2;
 
@@ -56,6 +60,14 @@ const extractApiRows = (res) => {
   if (Array.isArray(res?.Data)) return res.Data;
   if (Array.isArray(res?.data)) return res.data;
   if (Array.isArray(res?.Data?.Parts)) return res.Data.Parts;
+  if (Array.isArray(res?.Data?.Requests)) return res.Data.Requests;
+  if (Array.isArray(res?.Data?.Items)) return res.Data.Items;
+  if (res?.Data && typeof res.Data === 'object') {
+    const rows = Object.values(res.Data).filter((item) => item && typeof item === 'object');
+    if (rows.length > 0) return rows.flatMap((item) => Array.isArray(item?.Parts)
+      ? item.Parts.map((part) => ({ ...item, ...part }))
+      : [item]);
+  }
   return [];
 };
 
@@ -66,7 +78,7 @@ const normalizeApprovedItems = (rows = [], jobCardDocEntry) => {
   return list
     .map((item) => ({
       JobCardDocEntry: item?.JobCardDocEntry ?? item?.JCDocEnt ?? item?.DocEntry ?? '',
-      WorkEntryDocEntry: item?.WorkEntryDocEntry ?? item?.WorkEntryDocEntryNo ?? item?.WorkEntry ?? '',
+      WorkEntryDocEntry: item?.WorkEntryDocEntry ?? item?.WorkEntryDocEntryNo ?? item?.WorkEntry ?? item?.DocEntry ?? '',
       PartLine: Number(item?.PartLine ?? item?.Line ?? item?.LineNum ?? 0) || 0,
       ItemCode: String(item?.ItemCode || '').trim(),
       ItemName: String(item?.ItemName || item?.Dscription || item?.ItemCode || '').trim(),
@@ -86,16 +98,19 @@ const groupPartRequestsByWorkEntry = (rawItems = [], jobCardDocEntry) => {
   const list = Array.isArray(rawItems) ? rawItems : [];
   const target = String(jobCardDocEntry || '').trim();
   const filtered = target
-    ? list.filter((item) => String(item?.JobCardDocEntry ?? item?.JCDocEnt ?? '').trim() === target)
+    ? list.filter((item) => {
+      const itemJobCard = item?.JobCardDocEntry ?? item?.JCDocEnt ?? item?.JobCardNo ?? item?.JobCardEntry;
+      return itemJobCard === undefined || itemJobCard === null || String(itemJobCard).trim() === target;
+    })
     : list;
 
   const grouped = new Map();
   filtered.forEach((item, idx) => {
-    const workEntryKey = String(item?.WorkEntryDocEntry ?? item?.WorkEntry ?? `UNKNOWN-${idx}`);
+    const workEntryKey = String(item?.WorkEntryDocEntry ?? item?.WorkEntryDocEntryNo ?? item?.WorkEntry ?? item?.DocEntry ?? `UNKNOWN-${idx}`);
     const existing = grouped.get(workEntryKey) || {
       RequestCode: workEntryKey,
-      WorkEntryDocEntry: item?.WorkEntryDocEntry ?? null,
-      JobCardDocEntry: item?.JobCardDocEntry ?? jobCardDocEntry,
+      WorkEntryDocEntry: item?.WorkEntryDocEntry ?? item?.WorkEntryDocEntryNo ?? item?.WorkEntry ?? item?.DocEntry ?? null,
+      JobCardDocEntry: item?.JobCardDocEntry ?? item?.JCDocEnt ?? jobCardDocEntry,
       RequestedBy: item?.MechanicName || item?.MechanicCode || item?.UserCode || '',
       Status: item?.Status || 'P',
       Parts: [],
@@ -132,7 +147,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const storeEntries = useSelector(state => state.workEntry.workEntries[String(workOrderDocEntry)] || EMPTY_LIST);
   const storePartsRequests = useSelector(state => state.workEntry.partsRequests[String(workOrderDocEntry)] || EMPTY_LIST);
 
-  const mechanicCode = user?.Code || user?.code || user?.User || '';
+  const mechanicCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || user?.name || '';
   const mechanicName = user?.FirstName || user?.Name || user?.name || '';
 
   // ─── Local state ─────────────────────────────────────────────────────────────
@@ -443,7 +458,6 @@ const WorkEntryScreen = ({ route, navigation }) => {
               ItemCode: p.ItemCode || p.Code || '',
               ItemName: p.ItemName || p.Name || '',
               ReqQty: parseFloat(p.Qty) || 1,
-              Warehouse: p.Warehouse || '',
               Remarks: p.Remarks || '',
             })),
           });
@@ -592,7 +606,6 @@ const WorkEntryScreen = ({ route, navigation }) => {
           ItemCode: p.ItemCode || p.Code,
           ItemName: p.ItemName || p.Name || '',
           ReqQty: parseFloat(p.ReqQty) || 1,
-          Warehouse: String(p.Warehouse || '').trim(),
           Remarks: p.Remarks || '',
         })),
       };
@@ -1347,7 +1360,6 @@ const WorkEntryScreen = ({ route, navigation }) => {
                 ItemCode: item.ItemCode || item.Code || '',
                 ItemName: item.ItemName || item.Name || item.Dscription || '',
                 ReqQty: '1',
-                Warehouse: '',
                 Remarks: '',
               },
             ]);

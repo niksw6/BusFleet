@@ -71,7 +71,8 @@ const JobCardsScreen = ({ navigation, route }) => {
 
   const fetchJobCards = async () => {
     try {
-      const response = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST');
+      const depot = user?.Depot || user?.depot || '';
+      const response = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null, depot);
       console.log('📋 Job cards response:', response);
       if (response.Success && response.Data) {
         setJobCards(response.Data);

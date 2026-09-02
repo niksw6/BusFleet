@@ -1,5 +1,6 @@
 import { API_BASE_URL } from '../constants/config';
-import { getDBName, getSessionCookie, storeSessionCookie } from '../utils/storage';
+import { getDBName, getSessionCookie, getUserData, storeSessionCookie } from '../utils/storage';
+import { logApi } from '../utils/logger';
 
 // Navigation ref for programmatic navigation from API errors
 let navigationRef = null;
@@ -24,6 +25,23 @@ const normalizeApiResult = (payload) => {
   }
   return payload;
 };
+
+const getActionName = (url) => {
+  const path = String(url || '').split('?')[0];
+  return path.split('/').filter(Boolean).pop() || 'UnknownAction';
+};
+
+const getLoggedInUser = async () => {
+  const user = await getUserData();
+  return String(user?.User || user?.username || user?.UserCode || user?.Code || user?.name || 'Unknown').trim();
+};
+
+const formatApiLog = ({ method, result, user, action, status, url, payload, responseBody, message }) => [
+  `${String(method).toUpperCase()} | ${result} | User: ${user} | Action: ${action}${status ? ` | Status: ${status}` : ''}`,
+  `URL: ${url || 'Unavailable'}`,
+  payload ? `Payload: ${payload}` : '',
+  responseBody ? `Response: ${responseBody}` : message ? `Message: ${message}` : '',
+].filter(Boolean).join('\n');
 
 // Fetch-based API client (native to React Native)
 const request = async (url, options = {}) => {
@@ -50,11 +68,8 @@ const request = async (url, options = {}) => {
     
     const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
     const method = options.method || 'GET';
-    
-    const requestLog = method === 'GET'
-      ? `[API] GET ${fullUrl}`
-      : `[API] ${method} ${fullUrl} payload: ${options.body || '{}'}`;
-    console.log(requestLog);
+    const action = getActionName(fullUrl);
+    const user = await getLoggedInUser();
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), options.timeout || 60000);
@@ -87,17 +102,47 @@ const request = async (url, options = {}) => {
     }
     
     if (!response.ok) {
-      throw new Error(data.Message || data.message || 'Request failed');
+      const message = data?.Message || data?.message || `Request failed (${response.status})`;
+      logApi('ERROR', formatApiLog({
+        method,
+        result: 'Error',
+        user,
+        action,
+        status: response.status,
+        url: fullUrl,
+        payload: method === 'GET' ? '' : options.body || '',
+        message,
+      }), method);
+      const apiError = new Error(message);
+      apiError.apiLogged = true;
+      throw apiError;
     }
 
-    if (method === 'POST') {
-      console.log(`[API] POST ${fullUrl} response: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
-    }
+    const message = typeof data === 'object' ? (data?.Message || '') : '';
+    const isEmptyResult = /no data found|no records found|no data available|no completed work entr(?:y|ies) found/i.test(String(message));
+    const result = !isEmptyResult && (data?.Success === false || data?.Status === false) ? 'ERROR' : 'SUCCESS';
+    logApi(result, formatApiLog({
+      method,
+      result: result === 'SUCCESS' ? 'Success' : 'Error',
+      user,
+      action,
+      status: response.status,
+      url: fullUrl,
+      payload: method === 'GET' ? '' : options.body || '',
+      responseBody: method === 'POST' ? JSON.stringify(data) : '',
+      message,
+    }), method);
     
     return { data, status: response.status, ok: response.ok };
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new Error('Request timeout');
+      logApi('ERROR', 'Error | Action: Request | Message: Request timeout');
+      const timeoutError = new Error('Request timeout');
+      timeoutError.apiLogged = true;
+      throw timeoutError;
+    }
+    if (!error?.apiLogged) {
+      logApi('ERROR', `Error | Action: Request | Message: ${error?.message || 'Unexpected request error'}`);
     }
     throw error;
   }

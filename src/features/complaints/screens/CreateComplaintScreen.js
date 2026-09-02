@@ -62,11 +62,12 @@ const CreateComplaintScreen = ({ navigation }) => {
       try {
         setLoadingData(true);
         console.log('🔷 Fetching data from 6 APIs...');
+        const depot = user?.Depot || user?.depot || '';
         const [busesResponse, jobTypesResponse, supervisorsResponse, driversResponse, faultDetailsResponse] = await Promise.all([
-          complaintService.getActiveBuses(dbName || 'MUTSPL_TEST'),
+          complaintService.getActiveBuses(dbName || 'MUTSPL_TEST', depot),
           complaintService.getJobTypes(dbName || 'MUTSPL_TEST'),
-          complaintService.getSupervisors(dbName || 'MUTSPL_TEST'),
-          complaintService.getDrivers(dbName || 'MUTSPL_TEST'),
+          complaintService.getSupervisors(dbName || 'MUTSPL_TEST', depot),
+          complaintService.getDrivers(dbName || 'MUTSPL_TEST', depot),
           complaintService.getFaultDetails(dbName || 'MUTSPL_TEST'),
         ]);
         

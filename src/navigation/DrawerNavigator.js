@@ -14,6 +14,7 @@ import { JobCardsScreen, TeamApprovalsScreen, MechanicDashboardScreen, PartsAppr
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { logout } from '../store/slices/authSlice';
 import { isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isSupervisorUser, isDriverUser, getUserRole } from '../utils/roleAccess';
+import { clearAuthData } from '../utils/storage';
 
 const Drawer = createDrawerNavigator();
 
@@ -114,7 +115,8 @@ const CustomDrawerContent = (props) => {
     return true;
   });
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await clearAuthData();
     dispatch(logout());
   };
 

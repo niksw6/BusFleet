@@ -17,7 +17,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { teamService, masterService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
-import { getUserTeamCode } from '../../../utils/roleAccess';
+import { getStaffRoleLabel, getUserTeamCode } from '../../../utils/roleAccess';
 
 /**
  * TeamApprovalsScreen — Team Leader's queue.
@@ -350,7 +350,7 @@ const normalizeTeamMembers = (members = []) => (
         DisplayName: resolvedName || resolvedCode || `Member ${index + 1}`,
         ResolvedCode: resolvedCode,
         DisplayCode: resolvedCode || 'Code unavailable',
-        DisplayRole: resolvedRole || 'Team Member',
+        DisplayRole: getStaffRoleLabel(memberObject),
       };
     })
     .filter(member => member?.DisplayName)
@@ -538,32 +538,6 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
       if (!teamLeaderCode) {
         throw new Error('User code is missing for Team Leader API');
       }
-      const mappedTeamCode = resolveLeaderTeamCode(maintenanceTeams, user, teamLeaderCode);
-      const membersTeamCode = resolveMembersTeamCode(teamMembers);
-      const teamCode = String(
-        job?.TeamCode
-        || job?.teamCode
-        || teamLeaderTeamCode
-        || teamCodeFromApi
-        || membersTeamCode
-        || mappedTeamCode
-        || ''
-      ).trim();
-      if (!teamCode) {
-        throw new Error('Team code is missing. Please contact an administrator before accepting this job card.');
-      }
-
-      // A Job Card must be assigned to this Team Leader's team before it can be accepted.
-      const assignResponse = await teamService.assignTeam(
-        companyDb,
-        getDocEntry(job),
-        teamCode,
-        teamLeaderCode,
-      );
-      if (assignResponse?.Success === false || assignResponse?.Status === false) {
-        throw new Error(assignResponse?.Message || 'Could not assign the team to this job card');
-      }
-
       const response = await teamService.updateTeamStatus(companyDb, getDocEntry(job), teamLeaderCode, 'A');
       if (response?.Success !== false) {
         const faultRows = faultsMap[jobKey(job)]?.data || [];

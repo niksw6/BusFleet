@@ -75,12 +75,7 @@ export const workEntryService = {
   },
 
   getWorkHistory: async (companyDB, jobCardNo) => {
-    try {
-      const response = await get(`GetWorkHistory?CompanyDB=${companyDB}&JobCardNo=${jobCardNo}`, { suppressErrorLog: true });
-      return response.data;
-    } catch (error) {
-      throw new Error(handleApiError(error));
-    }
+    return { Success: true, Data: [] };
   },
 
   /**

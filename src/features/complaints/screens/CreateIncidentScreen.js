@@ -528,12 +528,13 @@ const CreateIncidentScreen = ({ route, navigation }) => {
     try {
       setLoadingData(true);
       console.log('🔍 Fetching CreateIncident data...');
+      const depot = user?.Depot || user?.depot || '';
       const driverFetch = driverUser
         ? Promise.resolve({ Success: true, Data: [] })
-        : complaintService.getDrivers(dbName || 'MUTSPL_TEST');
+        : complaintService.getDrivers(dbName || 'MUTSPL_TEST', depot);
 
       const [busesResponse, jobTypesResponse, driversResponse, routesResponse, faultsResponse] = await Promise.all([
-        complaintService.getActiveBuses(dbName || 'MUTSPL_TEST'),
+        complaintService.getActiveBuses(dbName || 'MUTSPL_TEST', depot),
         complaintService.getJobTypes(dbName || 'MUTSPL_TEST'),
         driverFetch,
         complaintService.getRoutes(dbName || 'MUTSPL_TEST'),

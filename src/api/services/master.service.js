@@ -5,14 +5,9 @@ import { get, post, handleApiError } from '../client';
  * Handles all master data: buses, drivers, mechanics, supervisors, routes, faults
  */
 export const masterService = {
-  /**
-   * Get list of active buses/vehicles
-   * @param {string} companyDB - Company database name
-   * @returns {Promise} List of buses
-   */
-  getActiveBuses: async (companyDB) => {
+  getActiveBuses: async (companyDB, depot = '') => {
     try {
-      const response = await get(`GetActiveBusMasters?CompanyDB=${companyDB}`);
+      const response = await get(`GetActiveBusMasters?CompanyDB=${companyDB}${depot ? `&Depot=${encodeURIComponent(depot)}` : ''}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -33,43 +28,27 @@ export const masterService = {
     }
   },
 
-  /**
-   * Get list of supervisors
-   * @param {string} companyDB - Company database name
-   * @returns {Promise} List of supervisors
-   */
-  getSupervisors: async (companyDB) => {
+  getSupervisors: async (companyDB, depot = '') => {
     try {
-      const response = await get(`GetSupervisors?CompanyDB=${companyDB}`);
+      const response = await get(`GetSupervisors?CompanyDB=${companyDB}${depot ? `&Depot=${encodeURIComponent(depot)}` : ''}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
     }
   },
 
-  /**
-   * Get list of drivers
-   * @param {string} companyDB - Company database name
-   * @returns {Promise} List of drivers
-   */
-  getDrivers: async (companyDB) => {
+  getDrivers: async (companyDB, depot = '') => {
     try {
-      const response = await get(`GetDrivers?CompanyDB=${companyDB}`);
+      const response = await get(`GetDrivers?CompanyDB=${companyDB}${depot ? `&Depot=${encodeURIComponent(depot)}` : ''}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
     }
   },
 
-  /**
-   * Get list of mechanics
-   * @param {string} companyDB - Company database name
-   * @returns {Promise} List of mechanics
-   */
-  getMechanics: async (companyDB) => {
+  getMechanics: async (companyDB, depot = '') => {
     try {
-      const response = await get(`GetMechanics?CompanyDB=${companyDB}`);
-      console.log('🔧 GetMechanics API response:', response.data);
+      const response = await get(`GetMechanics?CompanyDB=${companyDB}${depot ? `&Depot=${encodeURIComponent(depot)}` : ''}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -78,24 +57,25 @@ export const masterService = {
 
   getMechanicList: async (companyDB, depot) => {
     try {
-      const response = await get(
-        `GetMechanicList?CompanyDB=${encodeURIComponent(companyDB)}&Depot=${encodeURIComponent(depot)}`,
-      );
+      const response = await get(`GetMechanicList?CompanyDB=${encodeURIComponent(companyDB)}&Depot=${encodeURIComponent(depot)}`);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
     }
   },
 
-  /**
-   * Get fault details master — includes DueHours per fault code
-   * Expected response: { Success, Data: [{ FaultCode, FaultName, DueHours, ... }] }
-   * @param {string} companyDB
-   */
+  getTeamByDepot: async (companyDB, depot) => {
+    try {
+      const response = await get(`GetTeamByDepot?CompanyDB=${encodeURIComponent(companyDB)}&Depot=${encodeURIComponent(depot)}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   getFaultDetails: async (companyDB) => {
     try {
       const response = await get(`GetFaultDetails?CompanyDB=${companyDB}`);
-      console.log('🔧 Fault details response:', JSON.stringify(response.data?.Data?.[0]));
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -117,10 +97,6 @@ export const masterService = {
     }
   },
 
-  /**
-   * Work options / repair guidance configured for one fault.
-   * API: GET GetFaultByCode?CompanyDB=...&FaultCode=...
-   */
   getFaultByCode: async (companyDB, faultCode) => {
     try {
       const response = await get(
@@ -241,9 +217,9 @@ export const masterService = {
    * Get mechanics available / mapped to a breakdown entry.
    * API: GET GetMechanicsByBreakdown?CompanyDB=...&DocEntry=...
    */
-  getMechanicsByBreakdown: async (companyDB, docEntry) => {
+  getMechanicsByBreakdown: async (companyDB, docEntry, depot = '') => {
     try {
-      const url = `GetMechanicsByBreakdown?CompanyDB=${companyDB}&DocEntry=${encodeURIComponent(docEntry)}`;
+      const url = `GetMechanicsByBreakdown?CompanyDB=${companyDB}&DocEntry=${encodeURIComponent(docEntry)}${depot ? `&Depot=${encodeURIComponent(depot)}` : ''}`;
       const response = await get(url);
       return response.data;
     } catch (error) {

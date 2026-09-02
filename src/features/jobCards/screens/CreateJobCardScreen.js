@@ -19,6 +19,7 @@ import Loader from '../../../shared/components/Loader';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import FaultMechanicPartsSection from '../components/FaultMechanicPartsSection';
+import { getStaffRoleLabel } from '../../../utils/roleAccess';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { getJobTypeCode } from '../../../utils/helpers';
 
@@ -195,7 +196,8 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           CompanyDB: dbName || 'MUTSPL_TEST',
           DocEntry: complaintNo,
         });
-        const response = await masterService.getMechanicsByBreakdown(dbName || 'MUTSPL_TEST', complaintNo);
+        const depot = route.params?.depot || user?.Depot || user?.depot || '';
+        const response = await masterService.getMechanicsByBreakdown(dbName || 'MUTSPL_TEST', complaintNo, depot);
         const rawData = response?.Data && Array.isArray(response.Data.Mechanics) ? response.Data.Mechanics : (Array.isArray(response?.Data) ? response.Data : []);
         const normalized = rawData
           .map((item, index) => {
@@ -258,14 +260,14 @@ const CreateJobCardScreen = ({ route, navigation }) => {
       setLoadingData(true);
       console.log('🔍 Fetching all data for CreateJobCard...');
       const isBreakdownFlow = normalizeJobCardComplaintType(complaintType) === 'Breakdown';
-      const shouldLoadMaintenanceTeams = !isBreakdownFlow;
+      const assignmentDepot = String(route.params?.depot || user?.Depot || user?.depot || '').trim();
       const [mechanicsResult, routesResult, sparePartsResult, teamsResult, breakdownTeamsResult, breakdownMechanicsResult, depotsResult] = await Promise.allSettled([
-        complaintService.getMechanics(dbName || 'MUTSPL_TEST'),
+        complaintService.getMechanics(dbName || 'MUTSPL_TEST', route.params?.depot || user?.Depot || user?.depot || ''),
         complaintService.getRoutes(dbName || 'MUTSPL_TEST'),
         masterService.getSpareParts(dbName || 'MUTSPL_TEST'),
-        shouldLoadMaintenanceTeams ? masterService.getMaintenanceTeams(dbName || 'MUTSPL_TEST') : Promise.resolve({ Data: [] }),
+        !isBreakdownFlow && assignmentDepot ? masterService.getTeamByDepot(dbName || 'MUTSPL_TEST', assignmentDepot) : Promise.resolve({ Data: [] }),
         isBreakdownFlow && complaintNo ? masterService.getBreakdownTeams(dbName || 'MUTSPL_TEST', complaintNo) : Promise.resolve({ Data: [] }),
-        isBreakdownFlow && complaintNo ? masterService.getMechanicsByBreakdown(dbName || 'MUTSPL_TEST', complaintNo) : Promise.resolve({ Data: [] }),
+        isBreakdownFlow && complaintNo ? masterService.getMechanicsByBreakdown(dbName || 'MUTSPL_TEST', complaintNo, route.params?.depot || user?.Depot || user?.depot || '') : Promise.resolve({ Data: [] }),
         isBreakdownFlow ? masterService.getDepots(dbName || 'MUTSPL_TEST') : Promise.resolve({ Data: [] }),
       ]);
 
@@ -296,7 +298,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         console.warn('⚠️ Spare parts fetch failed:', sparePartsResult.reason?.message || sparePartsResult.reason);
       }
       if (teamsResult.status === 'rejected') {
-        console.log('ℹ️ Maintenance teams not available for this flow; continuing without team assignment list.', teamsResult.reason?.message || teamsResult.reason);
+        console.log('ℹ️ Depot maintenance teams not available for this flow; continuing without team assignment list.', teamsResult.reason?.message || teamsResult.reason);
       }
 
       console.log('📊 Mechanics response:', mechanicsRes);
@@ -661,24 +663,6 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           || createdDocEntryFromData
           || 0,
         );
-        const incidentFormType = complaintTypeForApi === 'Breakdown' ? 'B' : 'D';
-        try {
-          const statusSyncResponse = await complaintService.updateComplaintStatus(
-            dbName || 'MUTSPL_TEST',
-            Number(complaintNo) || complaintNo,
-            'I',
-            incidentFormType,
-          );
-
-          if (statusSyncResponse?.Success && statusSyncResponse?.Synced) {
-            console.log('✅ Incident status updated to In Progress for complaint:', complaintNo);
-          } else {
-            console.log('ℹ️ Incident status sync skipped:', statusSyncResponse?.Message || 'UpdateComplaintStatus API not available');
-          }
-        } catch (statusError) {
-          console.log('ℹ️ Incident status sync skipped:', statusError?.message || statusError);
-        }
-
         if (isTransferAssignment) {
           try {
             const transferResponse = await jobCardService.transferJobCard(
@@ -1079,6 +1063,9 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 Code: {item.EmpCode || item.Code || item.EmpID}
               </Text>
             )}
+            <Text style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+              Role: {getStaffRoleLabel(item)}
+            </Text>
           </View>
         )}
       />

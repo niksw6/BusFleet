@@ -243,7 +243,7 @@ const RepairWorkScreen = ({ route }) => {
 
   const resolveLoggedInMechanicId = async () => {
     if (empId) return empId;
-    const response = await masterService.getMechanics(dbName);
+    const response = await masterService.getMechanics(dbName, user?.Depot || user?.depot || '');
     const mechanicCode = String(userCode || '').trim().toLowerCase();
     const mechanic = extractRows(response).find(item => [
       item?.UserCode,

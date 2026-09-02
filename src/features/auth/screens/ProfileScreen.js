@@ -16,6 +16,7 @@ const ProfileScreen = ({ navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
+  const depotName = String(user?.Depot || user?.depot || '').trim();
   const companyName =
     (typeof dbName === 'string' && dbName.trim()) ||
     (typeof user?.CompanyDatabaseName === 'string' && user.CompanyDatabaseName.trim()) ||
@@ -66,7 +67,7 @@ const ProfileScreen = ({ navigation }) => {
           <View style={[styles.avatarContainer, { backgroundColor: colors.primary + '15' }]}>
             <MaterialIcons name="account-circle" size={80} color={colors.primary} />
           </View>
-          <Text style={[styles.name, { color: isDarkMode ? colors.text : colors.dark }]}>{user?.name || user?.Name || user?.FirstName || 'User'}</Text>
+          <Text style={[styles.name, { color: isDarkMode ? colors.text : colors.dark }]}>{user?.name || user?.Name || user?.FirstName || 'User'}{depotName ? ` - ${depotName}` : ''}</Text>
           <Text style={[styles.email, { color: colors.textSecondary }]}>{user?.email || user?.username || ''}</Text>
           <View style={[styles.companyBadge, { backgroundColor: colors.primary + '15' }]}>
             <Text style={[styles.company, { color: colors.primary }]}>{companyName}</Text>

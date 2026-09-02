@@ -192,6 +192,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
   const fetchComplaints = async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
+      const depot = user?.Depot || user?.depot || '';
       const shouldFetchSchedulers = !driverUser;
 
       const [incidentsResponse, serviceSchedulersResponse] = await Promise.all([
@@ -199,6 +200,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
           companyDb,
           null,
           null,
+          depot,
         ),
         shouldFetchSchedulers
           ? maintenanceService.getServiceSchedulers(companyDb)

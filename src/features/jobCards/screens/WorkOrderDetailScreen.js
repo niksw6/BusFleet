@@ -1613,24 +1613,6 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         setSelectedMechanics([]);
         await fetchWorkOrderDetails();
 
-        if (complaintNo) {
-          const incidentFormType = String(routeComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
-          try {
-            const statusSyncResponse = await complaintService.updateComplaintStatus(
-              dbName || 'MUTSPL_TEST',
-              Number(complaintNo) || complaintNo,
-              'I',
-              incidentFormType,
-            );
-
-            if (!statusSyncResponse?.Success || !statusSyncResponse?.Synced) {
-              console.log('[sync] Incident status sync skipped:', statusSyncResponse?.Message || 'UpdateComplaintStatus API not available');
-            }
-          } catch (incidentStatusError) {
-            console.log('[sync] Incident status sync skipped:', incidentStatusError?.message || incidentStatusError);
-          }
-        }
-
         Toast.show({
           type: 'success',
           text1: 'Work Order Created',

@@ -217,6 +217,7 @@ const DashboardScreen = ({ navigation }) => {
   const fieldStaffUser = isFieldStaffUser(user);
   const driverUser = isDriverUser(user);
   const userTeamCode = getUserTeamCode(user);
+  const userDepot = user?.Depot || user?.depot || '';
   // BUG FIX: this used to check only isMechanicUser, so Electricians fell through
   // to the generic Supervisor-style dashboard instead of the Job Cards overview.
   const showMechanicDashboard = fieldStaffUser && !supervisorUser && !technicalHeadUser && !depotHeadUser;
@@ -289,7 +290,7 @@ const DashboardScreen = ({ navigation }) => {
         try {
           const companyDb = dbName || 'MUTSPL_TEST';
           const driverCode = String(user?.Code || user?.code || user?.User || user?.user || '').trim().toLowerCase();
-          const incidentsResponse = await complaintService.getIncidents(companyDb, null, null);
+          const incidentsResponse = await complaintService.getIncidents(companyDb, null, null, userDepot);
           const allIncidents = Array.isArray(incidentsResponse?.Data) ? incidentsResponse.Data : [];
           const ownIncidents = allIncidents.filter((item) => {
             return matchesDriverIncident(item, driverCode, driverName.trim().toLowerCase());
@@ -333,7 +334,7 @@ const DashboardScreen = ({ navigation }) => {
         let breakdownJobs = [];
 
         try {
-          const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null);
+          const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null, userDepot);
           jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
         } catch (jobCardsError) {
           console.warn('Mechanic dashboard job-cards fetch failed:', jobCardsError?.message || jobCardsError);
@@ -394,7 +395,7 @@ const DashboardScreen = ({ navigation }) => {
             user?.name,
           ].map((value) => String(value || '').trim()).filter(Boolean))];
           const [verificationResponse, ...notificationResults] = await Promise.all([
-            jobCardService.getJobCards(companyDb, null),
+            jobCardService.getJobCards(companyDb, null, userDepot),
             ...identityCandidates.map(async (identity) => {
               try {
                 return await dashboardService.getNotifications(companyDb, identity);
@@ -437,7 +438,7 @@ const DashboardScreen = ({ navigation }) => {
 
       const companyDb = dbName || 'MUTSPL_TEST';
       const [incidentsResponse, serviceSchedulersResponse] = await Promise.all([
-        complaintService.getIncidents(companyDb, null, null),
+        complaintService.getIncidents(companyDb, null, null, userDepot),
         maintenanceService.getServiceSchedulers(companyDb),
       ]);
 
@@ -494,7 +495,8 @@ const DashboardScreen = ({ navigation }) => {
       const response = await complaintService.getIncidents(
         dbName || 'MUTSPL_TEST',
         null, // status - fetch all
-        null  // type - fetch all types
+        null, // type - fetch all types
+        userDepot,
       );
 
       if (response?.Success && Array.isArray(response.Data)) {

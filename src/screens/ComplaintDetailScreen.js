@@ -618,7 +618,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
       let matchedIncident = null;
       try {
-        const incidentsRes = await complaintService.getIncidents(companyDb, null, null);
+        const incidentsRes = await complaintService.getIncidents(companyDb, null, null, user?.Depot || user?.depot || '');
         const incidentRows = Array.isArray(incidentsRes?.Data) ? incidentsRes.Data : [];
         matchedIncident = incidentRows.find((item) => {
           const docEntryValue = String(item?.DocEntry || item?.ComplaintNo || '').trim();

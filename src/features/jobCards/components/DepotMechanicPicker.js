@@ -3,6 +3,7 @@ import { View, FlatList, StyleSheet } from 'react-native';
 import { Text, Button, ActivityIndicator } from 'react-native-paper';
 import PropTypes from 'prop-types';
 import { complaintService, masterService } from '../../../api/services';
+import { getStaffRoleLabel } from '../../../utils/roleAccess';
 
 const DepotMechanicPicker = ({ companyDB, depotCode, onAssign }) => {
   const [loading, setLoading] = useState(false);
@@ -66,6 +67,7 @@ const DepotMechanicPicker = ({ companyDB, depotCode, onAssign }) => {
             <View style={{ flex: 1 }}>
               <Text style={styles.name}>{item.FirstName || item.Name || item.EmpName || 'Unnamed'}</Text>
               {item.Code ? <Text style={styles.meta}>Code: {item.Code}</Text> : null}
+              <Text style={styles.meta}>Role: {getStaffRoleLabel(item)}</Text>
               {item.Depot ? <Text style={styles.meta}>Depot: {item.Depot}</Text> : null}
             </View>
             <Button mode="outlined" compact onPress={() => handleAssign(item)}>Assign</Button>

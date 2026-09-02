@@ -3,7 +3,7 @@ import { USER_ROLES } from '../constants/config';
 export const mapUsertypeToRole = (usertype) => {
   const code = String(usertype || '').trim().toUpperCase();
   if (code === 'M') return USER_ROLES.MECHANIC;
-  if (code === 'E') return USER_ROLES.ELECTRICIAN;
+  if (code === 'E' || code === 'EL') return USER_ROLES.ELECTRICIAN;
   if (code === 'S') return USER_ROLES.SUPERVISOR;
   if (code === 'ST') return USER_ROLES.STORE;
   if (code === 'TL' || code === 'T') return USER_ROLES.TEAM_LEADER;
@@ -45,6 +45,13 @@ export const getUserRole = (user) => {
   if (normalizedExplicitRole) return normalizedExplicitRole;
 
   return USER_ROLES.SUPERVISOR;
+};
+
+export const getStaffRoleLabel = (user) => {
+  const code = String(user?.Usertype || user?.usertype || user?.Role || user?.role || '').trim().toUpperCase();
+  if (code === 'EL' || code === 'E' || code === 'ELECTRICIAN') return 'Electrician';
+  if (code === 'M' || code === 'MECHANIC') return 'Mechanic';
+  return String(user?.Role || user?.role || user?.Designation || user?.designation || 'Team Member').trim();
 };
 
 export const isSupervisorUser = (user) => getUserRole(user) === USER_ROLES.SUPERVISOR;

@@ -175,6 +175,19 @@ export const storeService = {
   },
 
   /**
+   * Mechanic returns received special tools from a Work Entry.
+   * @param {Object} payload
+   * @param {string} payload.CompanyDB
+   * @param {number} payload.WorkEntryDocEntry
+   * @param {string} payload.MechanicCode
+   * @param {Array} payload.Tools - [{ LineId, Remarks }]
+   */
+  returnSpecialTool: async (payload) => {
+    const response = await post('ReturnSpecialTool', payload);
+    return response.data;
+  },
+
+  /**
    * Supervisor views special-tool requests by depot.
    * @param {string} companyDB
    * @param {string} depot
