@@ -19,13 +19,15 @@ const AppIcon = ({
   ...rest
 }) => {
   const iconName = resolveName(name, source);
+  const glyphMap = MaterialIcons.getRawGlyphMap?.() || {};
+  const safeIconName = glyphMap[iconName] !== undefined ? iconName : 'help';
 
   return (
     <MaterialIcons
       {...rest}
       testID={testID}
       allowFontScaling={allowFontScaling}
-      name={iconName || 'help'}
+      name={safeIconName}
       color={color}
       size={size}
       style={style}

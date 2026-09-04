@@ -517,6 +517,7 @@ const NotificationsScreen = ({ navigation }) => {
     }
 
     if (shouldOpenBreakdownWorkEntryForMechanic) {
+      const breakdownJobCardDocEntry = Number(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.DocEntry || item?.docEntry || docEntry || 0) || 0;
       const breakdownComplaintNo = String(
         item?.ComplaintNo
         || item?.complaintNo
@@ -530,8 +531,8 @@ const NotificationsScreen = ({ navigation }) => {
         || ''
       ).trim();
 
-      navigation.navigate('FaultWork', {
-        docEntry: Number(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.DocEntry || item?.docEntry || docEntry || 0) || 0,
+      navigation.navigate(type === 'JB' ? 'WorkEntry' : 'FaultWork', {
+        ...(type === 'JB' ? { workOrderDocEntry: breakdownJobCardDocEntry, jobCardDocEntry: breakdownJobCardDocEntry } : { docEntry: breakdownJobCardDocEntry }),
         dbName: dbName || 'MUTSPL_TEST',
         jobCardNo: item?.JobCardNo || item?.jobCardNo || item?.DocEntry || item?.docEntry || docEntry || '',
         complaintType: item?.ComplaintType || item?.complaintType || 'Breakdown',

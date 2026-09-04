@@ -92,7 +92,7 @@ const extractItems = (res) => {
 const getWorkEntryDocEntry = (item) => item?.WorkEntryDocEntry ?? item?.WorkEntryNo ?? item?.DocEntry ?? '';
 const getJobCardDocEntry = (item) => item?.JobCardDocEntry ?? item?.JobCardNo ?? '';
 const getPartLine = (item) => item?.PartLine ?? item?.Line ?? item?.LineNum ?? 0;
-const getToolLine = (item, index) => item?.LineId ?? item?.Line ?? item?.LineNum ?? index + 1;
+const getToolLine = (item, index) => item?.ToolLine ?? item?.LineId ?? item?.Line ?? item?.LineNum ?? index + 1;
 
 const groupByWorkEntry = (items) => {
   const map = new Map();
@@ -160,7 +160,13 @@ const PartsApprovalScreen = ({ navigation, route }) => {
           toolCode: tool?.ToolCode || tool?.Code || '',
           toolName: tool?.ToolName || tool?.Name || tool?.Description || tool?.ToolCode || tool?.Code || 'Tool',
           workEntryDocEntry: getWorkEntryDocEntry(tool),
+          jobCardDocEntry: getJobCardDocEntry(tool),
           mechanicCode: tool?.MechanicCode || tool?.UserCode || tool?.EmpCode || '',
+          mechanicName: tool?.MechanicName || tool?.RequestedBy || tool?.UserName || '',
+          vehicle: tool?.Vehicle || tool?.BusNo || tool?.VehicleNo || '',
+          requestedDate: tool?.ReqDate || tool?.RequestDate || tool?.Date || '',
+          requestedTime: tool?.ReqTime || tool?.RequestTime || tool?.Time || '',
+          requestRemarks: tool?.Remarks || '',
           approved: null,
           remarks: '',
         })));
@@ -433,9 +439,23 @@ const PartsApprovalScreen = ({ navigation, route }) => {
                     <View key={`${tool.toolCode}-${tool.lineId}-${index}`} style={[styles.partRow, { borderColor: colors.border || '#E0E0E0' }]}>
                       <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{tool.toolName}</Text>
                       <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>
-                        {tool.toolCode ? `Code: ${tool.toolCode}  ` : ''}Work Entry #{tool.workEntryDocEntry || '-'}
+                        {tool.toolCode ? `Tool Code: ${tool.toolCode}  ` : ''}Tool Line: {tool.lineId}
                       </Text>
-                      {tool.mechanicCode ? <Text style={{ color: colors.gray, fontSize: 12 }}>Requested by: {tool.mechanicCode}</Text> : null}
+                      <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>
+                        Job Card #{tool.jobCardDocEntry || '-'}  Work Entry #{tool.workEntryDocEntry || '-'}
+                      </Text>
+                      {(tool.mechanicName || tool.mechanicCode) ? (
+                        <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>
+                          Requested by: {tool.mechanicName || '-'}{tool.mechanicCode ? ` (${tool.mechanicCode})` : ''}
+                        </Text>
+                      ) : null}
+                      {tool.vehicle ? <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>Vehicle: {tool.vehicle}</Text> : null}
+                      {(tool.requestedDate || tool.requestedTime) ? (
+                        <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>
+                          Requested: {tool.requestedDate ? parseODataDate(tool.requestedDate) : '-'}{tool.requestedTime ? ` ${tool.requestedTime}` : ''}
+                        </Text>
+                      ) : null}
+                      {tool.requestRemarks ? <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>Remarks: {tool.requestRemarks}</Text> : null}
                       <View style={[styles.toolActionRow, { marginTop: 8 }]}>
                         <TouchableOpacity
                           style={[styles.approveToggle, { backgroundColor: tool.approved === true ? '#2B7D2B20' : '#F1F5F9' }]}

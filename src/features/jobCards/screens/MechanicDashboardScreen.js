@@ -139,6 +139,7 @@ const getBreakdownJobCardDocEntry = (item) => Number(
 ) || 0;
 const itemKey = (item) => `${getDocEntry(item)}-${getFaultLine(item)}`;
 const isBreakdownAssignment = (item) => {
+  if (getNotificationType(item) === 'JB') return true;
   const jobType = normalizeJobType(item);
   if (jobType === 'Breakdown') return true;
 
@@ -243,7 +244,7 @@ const getNotificationQueueItems = (notifications) => {
     : extractItems(notifications);
 
   return notificationList
-  .filter((notification) => ['JCA', 'JR'].includes(getNotificationType(notification)))
+  .filter((notification) => ['JB', 'JCA', 'JR'].includes(getNotificationType(notification)))
   .map((notification) => ({
     ...notification,
     Type: getNotificationType(notification),
@@ -274,12 +275,20 @@ const getNotificationQueueItems = (notifications) => {
       || notification?.jobCardNo
       || notification?.DocEntry
       || notification?.docEntry,
+    BreakdownNo: notification?.BreakdownNo
+      || notification?.BreakdownDocEntry
+      || notification?.DocEntry
+      || notification?.docEntry,
     FaultLine: notification?.FaultLine || notification?.faultLine || 1,
     ComplaintType: getNotificationType(notification) === 'JR'
       ? 'Repair Incident'
       : 'Breakdown',
     FaultCode: notification?.FaultCode || notification?.faultCode || '',
     FaultName: notification?.FaultName || notification?.faultName || notification?.Description || 'Line Breakdown',
+    Vehicle: notification?.Vehicle || notification?.BusNo || notification?.Bus || (() => {
+      const message = String(notification?.Message || notification?.message || '');
+      return message.match(/\bBus\s+([^\s)]+)/i)?.[1] || '';
+    })(),
     ComplaintNo: notification?.ComplaintNo || notification?.complaintNo || notification?.BreakdownNo || notification?.IncidentNo,
     NotificationDate: notification?.NotificationDate || notification?.notificationDate || notification?.Date || notification?.date,
     NotificationTime: notification?.NotificationTime || notification?.notificationTime || notification?.Time || notification?.time,
@@ -320,23 +329,24 @@ const mergeQueueItems = (apiItems, notificationItems) => {
     const key = itemKey(item);
     const matchingIndex = merged.findIndex((existingItem) => (
       String(getDocEntry(existingItem)).trim() === String(getDocEntry(item)).trim()
-      && getNotificationType(item) === 'JR'
+      && ['JR', 'JB'].includes(getNotificationType(item))
     ));
     if (matchingIndex >= 0) {
       // A dashboard row may exist before the JR notification is read. Keep
       // its details, but let the assignment notification control its queue.
       const existingItem = merged[matchingIndex];
-      const preservedStatus = isRepairAccepted(existingItem)
+      const preservedStatus = getNotificationType(item) === 'JB'
+        ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.FaultStatus || 'P')
+        : isRepairAccepted(existingItem)
         ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.MechanicStatus)
         : 'P';
       merged[matchingIndex] = {
         ...existingItem,
         ...item,
-        Type: 'JR',
-        JobType: 'Repair',
-        ComplaintType: 'Repair Incident',
-        FaultName: 'Assembly',
-        Fault: 'Assembly',
+        Type: getNotificationType(item),
+        JobType: getNotificationType(item) === 'JB' ? 'Breakdown' : 'Repair',
+        ComplaintType: getNotificationType(item) === 'JB' ? 'Breakdown' : 'Repair Incident',
+        ...(getNotificationType(item) === 'JR' ? { FaultName: 'Assembly', Fault: 'Assembly' } : {}),
         Status: preservedStatus,
       };
       return;
@@ -352,6 +362,7 @@ const mergeQueueItems = (apiItems, notificationItems) => {
 const MechanicDashboardScreen = ({ navigation }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
+  const storedNotifications = useSelector(state => state.notification?.notifications || []);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const userCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || user?.name || '';
@@ -376,14 +387,14 @@ const MechanicDashboardScreen = ({ navigation }) => {
       const repairWorkItems = repairWorkResult.status === 'fulfilled'
         ? getRepairWorkQueueItems(repairWorkResult.value)
         : [];
-      let notificationItems = [];
+      let notificationItems = getNotificationQueueItems(storedNotifications);
       try {
         const notificationUser = String(
           user?.User || user?.username || user?.user || userCode || '',
         ).trim();
         const notificationResponse = await dashboardService.getNotifications(companyDb, notificationUser);
         const notificationData = notificationResponse?.Data ?? notificationResponse?.data ?? notificationResponse;
-        notificationItems = getNotificationQueueItems(notificationData);
+        notificationItems = mergeQueueItems(notificationItems, getNotificationQueueItems(notificationData));
       } catch (notificationError) {
         console.warn('Unable to load repair/job notifications for work queue:', notificationError?.message || notificationError);
       }
@@ -401,7 +412,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dbName, userCode]);
+  }, [dbName, userCode, storedNotifications]);
 
   // Refresh when returning from Fault Work so started faults and newly-created
   // WorkEntries are not shown using the stale dashboard item.
@@ -482,8 +493,9 @@ const MechanicDashboardScreen = ({ navigation }) => {
 
   const openBreakdownWorkEntry = (item, acceptedWorkEntryDocEntry = null, acceptedWorkEntry = null) => {
     const jobCardDocEntry = getBreakdownJobCardDocEntry(item);
-    navigation.navigate('FaultWork', {
-      docEntry: jobCardDocEntry,
+    navigation.navigate('WorkEntry', {
+      workOrderDocEntry: jobCardDocEntry,
+      jobCardDocEntry,
       dbName: dbName || 'MUTSPL_TEST',
       jobCardNo: item?.JobCardNo || item?.DocNum || jobCardDocEntry,
       complaintType: 'Breakdown',
@@ -553,7 +565,10 @@ const MechanicDashboardScreen = ({ navigation }) => {
             return;
           }
           if (breakdownAssignment) {
-            if (bucket === BUCKET.TO_ACCEPT) return;
+            if (bucket === BUCKET.TO_ACCEPT) {
+              handleAccept(item);
+              return;
+            }
             openBreakdownWorkEntry(item);
             return;
           }

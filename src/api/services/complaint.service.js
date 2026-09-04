@@ -263,32 +263,18 @@ export const complaintService = {
    * @param {string} companyDB
    * @param {string|number} breakdownNo
    * @param {string} supervisorCode
+   * @param {string} supervisorCode
    * @param {string} teamCode
+   * @param {string} remarks
    */
-  assignBreakdownTeam: async (companyDB, breakdownDocEntry, teamCodeOrSupervisorCode, remarksOrTeamCode, maybeRemarks) => {
+  assignBreakdownTeam: async (companyDB, breakdownDocEntry, supervisorCode, teamCode, remarks = '') => {
     try {
       const docEntry = Number(breakdownDocEntry) || breakdownDocEntry;
-      let teamCode = '';
-      let remarks = '';
-
-      if (typeof remarksOrTeamCode === 'string' && remarksOrTeamCode && !maybeRemarks) {
-        teamCode = remarksOrTeamCode;
-      } else if (typeof teamCodeOrSupervisorCode === 'string' && teamCodeOrSupervisorCode && !maybeRemarks) {
-        teamCode = teamCodeOrSupervisorCode;
-      } else {
-        teamCode = remarksOrTeamCode || teamCodeOrSupervisorCode || '';
-        remarks = maybeRemarks || '';
-      }
-
-      if (typeof remarksOrTeamCode !== 'string' && typeof teamCodeOrSupervisorCode !== 'string') {
-        teamCode = teamCodeOrSupervisorCode || remarksOrTeamCode || '';
-        remarks = maybeRemarks || '';
-      }
 
       const payload = {
         CompanyDB: companyDB,
         BreakdownDocEntry: docEntry,
-        TeamCode: teamCode,
+        TeamCode: teamCode || '',
         Remarks: remarks || 'Please attend the breakdown immediately.',
       };
       console.log('📤 Assigning breakdown team:', JSON.stringify(payload));

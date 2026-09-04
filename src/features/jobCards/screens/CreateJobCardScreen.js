@@ -627,6 +627,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
           const assignResponse = await complaintService.assignBreakdownTeam(
             dbName || 'MUTSPL_TEST',
             Number(complaintNo) || complaintNo,
+            user?.Code || user?.code || user?.UserCode || user?.User || '',
             selectedBreakdownTeam.TeamCode || selectedBreakdownTeam.Code || '',
             'Please attend the breakdown immediately.',
           );

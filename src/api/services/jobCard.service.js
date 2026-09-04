@@ -9,9 +9,11 @@ export const jobCardService = {
   transferJobCard: async (companyDB, jobCardDocEntry, toDepot, toSupervisorCode, toSupervisorName, remarks) => {
     const transferRemarks = String(remarks || '').trim();
     if (!transferRemarks) throw new Error('Transfer remarks are required.');
+    if (!jobCardDocEntry) throw new Error('Valid JobCardDocEntry is required.');
     try {
       const response = await post(API_ENDPOINTS.TRANSFER_JOB_CARD, {
         CompanyDB: companyDB,
+        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
         ToDepot: String(toDepot || '').trim(),
         ToSupervisorCode: String(toSupervisorCode || '').trim(),
         ToSupervisorName: String(toSupervisorName || '').trim(),

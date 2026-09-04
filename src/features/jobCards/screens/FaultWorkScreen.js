@@ -61,16 +61,22 @@ const extractImageFileName = (record) => String(
 
 const normalizeSpecialToolRows = (rows) => {
   if (!Array.isArray(rows)) return [];
-  return rows
+  const normalizedRows = rows
     .map((row, index) => ({
       ...row,
       ToolCode: String(row?.ToolCode || row?.Code || '').trim(),
       ToolName: String(row?.ToolName || row?.Name || row?.Description || row?.ToolCode || row?.Code || '').trim(),
       Status: String(row?.Status || row?.ApprovalStatus || 'RQ').trim().toUpperCase(),
       Remarks: String(row?.Remarks || row?.MechanicRemarks || '').trim(),
-      LineId: row?.LineId ?? row?.Line ?? row?.LineNum ?? index + 1,
+      LineId: row?.ToolLine ?? row?.LineId ?? row?.Line ?? row?.LineNum ?? index + 1,
     }))
     .filter((row) => row.ToolCode || row.ToolName);
+  const uniqueRows = new Map();
+  normalizedRows.forEach((row, index) => {
+    const identity = `${row.ToolCode || row.ToolName}-${row.LineId ?? index}`;
+    if (!uniqueRows.has(identity)) uniqueRows.set(identity, row);
+  });
+  return Array.from(uniqueRows.values());
 };
 
 const extractSpecialToolsForFault = (workEntry, faultItem) => {
@@ -135,6 +141,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const [workList, setWorkList] = useState([]);
   const [spareParts, setSpareParts] = useState([]);
   const [approvedParts, setApprovedParts] = useState([]);
+  const [pendingRequestedParts, setPendingRequestedParts] = useState([]);
   const [resolvedFaultCode, setResolvedFaultCode] = useState('');
 
   // Work entry form
@@ -266,16 +273,18 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [faultDetailsResult, sparePartsResult, approvedResults, jobCardResult] = await Promise.all([
+      const [faultDetailsResult, sparePartsResult, approvedResults, pendingRequestsResult, jobCardResult, mechanicDashboardResult] = await Promise.all([
         Promise.allSettled([
         masterService.getFaultDetails(companyDb),
         masterService.getSpareParts(companyDb),
         ]),
         Promise.allSettled(partIdentityCandidates.map(identity => storeService.getApprovedJobCardParts(companyDb, identity))),
+        storeService.getMechanicPartRequests(companyDb).catch(() => null),
         Promise.allSettled([
         jobCardService.getJobCardDetail(companyDb, docEntry),
         ]),
-      ]).then(([masterResults, partResults, jobCardResults]) => [...masterResults, partResults, jobCardResults]);
+        mechanicService.getMechanicDashboard(companyDb, userCode).catch(() => null),
+      ]).then(([masterResults, partResults, pendingRequests, jobCardResults, dashboardResult]) => [...masterResults, partResults, pendingRequests, jobCardResults, dashboardResult]);
       const faultMasters = faultDetailsResult.status === 'fulfilled' ? extractRows(faultDetailsResult.value) : [];
       const normalizedReference = faultReference.toLowerCase();
       const matchingFault = faultMasters.find((row) => [row?.FaultCode, row?.Fault, row?.Description]
@@ -299,6 +308,15 @@ const FaultWorkScreen = ({ route, navigation }) => {
       const approvedFromQueue = approvedResults.flatMap(result => (
         result.status === 'fulfilled' ? extractRows(result.value) : []
       ));
+      const pendingForWorkEntry = extractRows(pendingRequestsResult).filter((part) => {
+        const requestedWorkEntry = part?.WorkEntryDocEntry
+          ?? part?.WorkEntryDocEntryNo
+          ?? part?.WorkEntryNo
+          ?? part?.WorkEntry
+          ?? null;
+        return requestedWorkEntry !== null && String(requestedWorkEntry) === String(workEntryDocEntry);
+      }).filter((part) => !isPartApproved(part));
+      setPendingRequestedParts(pendingForWorkEntry);
       const detail = jobCardResult.status === 'fulfilled' ? (jobCardResult.value?.Data ?? jobCardResult.value) : {};
       const detailParts = [
         ...(Array.isArray(detail?.Parts) ? detail.Parts : []),
@@ -357,6 +375,15 @@ const FaultWorkScreen = ({ route, navigation }) => {
       ));
       setApprovedParts(Array.from(uniqueParts.values()));
 
+      const dashboardRows = extractRows(mechanicDashboardResult);
+      const dashboardJob = dashboardRows.find((row) => String(row?.DocEntry ?? row?.JobCardDocEntry ?? row?.JobCardNo ?? '') === String(docEntry));
+      const dashboardWorkEntry = (Array.isArray(dashboardJob?.WorkEntries) ? dashboardJob.WorkEntries : [])
+        .find((entry) => String(entry?.DocEntry ?? entry?.WorkEntryDocEntry ?? entry?.WorkEntry ?? '') === String(workEntryDocEntry));
+      const dashboardTools = Array.isArray(dashboardWorkEntry?.SpecialTools) ? dashboardWorkEntry.SpecialTools : [];
+      if (dashboardTools.length > 0) {
+        setExistingSpecialTools((previous) => normalizeSpecialToolRows([...dashboardTools, ...previous]));
+      }
+
       // Fetch available special tools for this depot
       try {
         const depot = fault?.Depot || fault?.depot || user?.Depot || user?.depot || '';
@@ -399,6 +426,12 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const busNo = fault?.BusNo || '';
   const approvedForCollection = approvedParts.filter(isPartApproved);
   const pendingSupervisorParts = approvedParts.filter(part => !isPartApproved(part));
+  const awaitingApprovalParts = [...pendingSupervisorParts, ...pendingRequestedParts].filter((part, index, list) => {
+    const key = `${part?.ItemCode || part?.Code || ''}-${part?.PartLine || part?.LineId || index}`;
+    return list.findIndex((candidate, candidateIndex) => (
+      `${candidate?.ItemCode || candidate?.Code || ''}-${candidate?.PartLine || candidate?.LineId || candidateIndex}` === key
+    )) === index;
+  });
   const savedBeforeImages = savedImages.filter((image) => String(image.imgType || '').toUpperCase() === 'BF');
   const savedAfterImages = savedImages.filter((image) => String(image.imgType || '').toUpperCase() === 'AF');
   const hasSavedBeforeImage = savedBeforeImages.length > 0;
@@ -928,6 +961,15 @@ const FaultWorkScreen = ({ route, navigation }) => {
       });
       if (isApiSuccess(response)) {
         Toast.show({ type: 'success', text1: 'Parts requested', text2: 'Awaiting Supervisor approval.' });
+        setPendingRequestedParts((previous) => [
+          ...previous,
+          ...partsDraft.map((part, index) => ({
+            ...part,
+            WorkEntryDocEntry: workEntryDocEntry,
+            PartLine: part?.PartLine ?? `local-${Date.now()}-${index}`,
+            Status: 'RQ',
+          })),
+        ]);
         setPartsDraft([]);
       } else {
         Toast.show({ type: 'error', text1: 'Failed', text2: response?.Message || 'Could not request parts' });
@@ -1035,9 +1077,9 @@ const FaultWorkScreen = ({ route, navigation }) => {
       return;
     }
     const rawStatus = String(tool?.Status || '').trim().toUpperCase();
-    const isApproved = ['AP', 'A', 'APPROVED'].includes(rawStatus);
-    if (!isApproved) {
-      Toast.show({ type: 'info', text1: 'Tool not approved yet', text2: 'Only approved special tools can be received.' });
+    const isIssued = ['IS', 'ISSUED'].includes(rawStatus);
+    if (!isIssued) {
+      Toast.show({ type: 'info', text1: 'Tool not issued yet', text2: 'Only issued special tools can be received.' });
       return;
     }
     try {
@@ -1431,11 +1473,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
             {/* Parts */}
             <View style={[styles.card, { backgroundColor: colors.white }]}>
               <Text style={[styles.sectionTitle, { color: colors.dark }]}>Request Parts</Text>
-              {pendingSupervisorParts.length > 0 && (
+              {awaitingApprovalParts.length > 0 && (
                 <View style={[styles.approvedBox, { borderColor: '#2B7D2B40' }]}>
-                  <Text style={{ color: '#9A6700', fontWeight: '700', fontSize: 13 }}>Supervisor-selected parts — awaiting approval</Text>
-                  <Text style={{ color: colors.gray, fontSize: 12, marginTop: 3 }}>These parts are linked to this fault. They become ready to collect when the approved quantity is returned by the server.</Text>
-                  {pendingSupervisorParts.map((part, index) => <Text key={`${part?.ItemCode || part?.Code || 'part'}-${index}`} style={{ color: colors.dark, fontSize: 13, marginTop: 5 }}>• {part?.ItemName || part?.Name || part?.Dscription || part?.ItemCode || part?.Code} — Requested: {getPartQty(part)}</Text>)}
+                  <Text style={{ color: '#9A6700', fontWeight: '700', fontSize: 13 }}>Parts awaiting approval</Text>
+                  <Text style={{ color: colors.gray, fontSize: 12, marginTop: 3 }}>Requested parts appear here until the supervisor approves or rejects them.</Text>
+                  {awaitingApprovalParts.map((part, index) => <Text key={`${part?.ItemCode || part?.Code || 'part'}-${index}`} style={{ color: colors.dark, fontSize: 13, marginTop: 5 }}>• {part?.ItemName || part?.Name || part?.Dscription || part?.ItemCode || part?.Code} — Requested: {getPartQty(part)}</Text>)}
                 </View>
               )}
               {!workEntryDocEntry && (
@@ -1545,14 +1587,18 @@ const FaultWorkScreen = ({ route, navigation }) => {
                   <Text style={{ color: '#5B21B6', fontWeight: '700', fontSize: 13 }}>Current special tool requests</Text>
                   {existingSpecialTools.map((tool, index) => {
                     const rawStatus = String(tool?.Status || '').trim().toUpperCase();
-                    const statusLabel = rawStatus === 'AP' || rawStatus === 'APPROVED' || rawStatus === 'A'
+                    const statusLabel = rawStatus === 'RT' || rawStatus === 'RETURNED'
+                      ? 'Returned'
+                      : rawStatus === 'IS' || rawStatus === 'ISSUED'
+                      ? 'Issued'
+                      : rawStatus === 'AP' || rawStatus === 'APPROVED' || rawStatus === 'A'
                       ? 'Approved'
                       : rawStatus === 'RJ' || rawStatus === 'REJECTED' || rawStatus === 'R'
                         ? 'Rejected'
                         : rawStatus === 'RC' || rawStatus === 'RECEIVED'
                           ? 'Received'
                           : 'Awaiting approval';
-                    const isApproved = ['AP', 'A', 'APPROVED'].includes(rawStatus);
+                    const isIssued = ['IS', 'ISSUED'].includes(rawStatus);
                     const isReceived = ['RC', 'RECEIVED'].includes(rawStatus);
                     return (
                       <View key={`${tool.ToolCode || tool.Code || 'tool'}-${tool.LineId || index}`} style={{ marginTop: 6 }}>
@@ -1562,7 +1608,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
                         <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>
                           Status: {statusLabel}{tool.Remarks ? ` • ${tool.Remarks}` : ''}
                         </Text>
-                        {isApproved && !isReceived && (
+                        {isIssued && !isReceived && (
                           <TouchableOpacity
                             style={[styles.smallBtn, { backgroundColor: '#7C3AED', marginTop: 6, alignSelf: 'flex-start' }]}
                             onPress={() => handleReceiveSpecialTool(tool)}

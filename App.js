@@ -95,11 +95,13 @@ const renderPaperIcon = ({ name, source, color, size, ...rest }) => {
       : (resolvedSource && typeof resolvedSource === 'object' && typeof resolvedSource.name === 'string'
         ? resolvedSource.name
         : 'help-circle-outline');
+  const glyphMap = MaterialCommunityIcons.getRawGlyphMap?.() || {};
+  const safeIconName = glyphMap[iconName] !== undefined ? iconName : 'help-circle-outline';
 
   return (
     <MaterialCommunityIcons
       {...rest}
-      name={iconName}
+      name={safeIconName}
       color={color}
       size={size}
     />
