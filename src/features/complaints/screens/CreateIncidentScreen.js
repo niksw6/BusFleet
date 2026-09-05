@@ -435,6 +435,7 @@ const INCIDENT_RECENT_KEY = '@fleet_incident_recent';
 
 const CreateIncidentScreen = ({ route, navigation }) => {
   const incidentTypeParam = route.params?.type || 'complaint';
+  const prefilledIncident = route.params?.prefilledIncident || {};
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const dbName = useSelector(state => state.auth.dbName);
   const user = useSelector(state => state.auth.user);
@@ -461,7 +462,9 @@ const CreateIncidentScreen = ({ route, navigation }) => {
   const [drivers, setDrivers] = useState([]);
   const [routes, setRoutes] = useState([]);
   const [faults, setFaults] = useState([]);
-  const [selectedFaults, setSelectedFaults] = useState([]);
+  const [selectedFaults, setSelectedFaults] = useState(() => (
+    Array.isArray(prefilledIncident?.faults) ? prefilledIncident.faults : []
+  ));
   const [tempSelectedFaults, setTempSelectedFaults] = useState([]);
   
   // Modal states
@@ -860,22 +863,22 @@ const CreateIncidentScreen = ({ route, navigation }) => {
       : null;
 
   const initialValues = {
-    vehicleNumber: '',
-    incidentType: driverUser ? (defaultBreakdownType?.Code || 'B') : '',
-    driverCode: driverUser ? String(resolvedDriverCode) : '',
-    driverName: driverUser ? String(resolvedDriverName) : '',
+    vehicleNumber: prefilledIncident?.vehicleNumber || '',
+    incidentType: driverUser ? (defaultBreakdownType?.Code || 'B') : (prefilledIncident?.incidentType || ''),
+    driverCode: driverUser ? String(resolvedDriverCode) : String(prefilledIncident?.driverCode || ''),
+    driverName: driverUser ? String(resolvedDriverName) : String(prefilledIncident?.driverName || ''),
     odometer: '',
     incidentDate: new Date(),
     incidentTime: formatTime(new Date()),
     priority: 'Medium',
     reportedBy: user?.Name || user?.name || '',
     shift: '',
-    location: '',
-    routeNo: '',
-    routeName: '',
+    location: prefilledIncident?.location || '',
+    routeNo: prefilledIncident?.routeNo || '',
+    routeName: prefilledIncident?.routeName || '',
     preventiveCategory: '',
     preventiveTaskConfigs: [],
-    faults: [],
+    faults: Array.isArray(prefilledIncident?.faults) ? prefilledIncident.faults : [],
   };
 
   const handleUseCurrentLocation = () => {

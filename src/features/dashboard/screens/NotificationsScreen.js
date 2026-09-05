@@ -517,6 +517,7 @@ const NotificationsScreen = ({ navigation }) => {
         focusWorkEntryDocEntry: item?.WorkEntryDocEntry || docEntry,
         focusJobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || '',
         repair: rawNotificationType === 'WER' || type === 'WER',
+        createDriverComplaintAfterApproval: rawNotificationType === 'LBWE' || type === 'LBWE',
       });
       return;
     }

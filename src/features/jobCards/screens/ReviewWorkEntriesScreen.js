@@ -513,6 +513,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
   const [selectedReassignmentTeam, setSelectedReassignmentTeam] = useState(null);
   const [reassignmentRemarks, setReassignmentRemarks] = useState('');
   const [approvalRemarks, setApprovalRemarks] = useState('');
+  const [pendingDriverComplaint, setPendingDriverComplaint] = useState(null);
   const consumedFocusEntryRef = useRef('');
 
   const onPanGestureEvent = Animated.event(
@@ -668,6 +669,9 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
             jobCardDocEntry: card?.DocEntry || card?.JobCardDocEntry || card?.JCDocEnt || card?.JobCardNo,
             jobCardNo: card?.JobCardNo || card?.DocNum || card?.DocEntry,
             busNo: getBusLabel(card),
+            complaintType: card?.ComplaintType || card?.JobType || card?.FormType || '',
+            driverCode: card?.DrvCode || card?.DriverCode || card?.Driver || '',
+            driverName: card?.DrvName || card?.DriverName || card?.Driver || '',
             status: card?.Status || card?.WorkStatus || card?.FaultStatus || '',
             complaintNo: card?.ComplaintNo || card?.IncidentNo || '',
             workEntries,
@@ -704,6 +708,9 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
               jobCardDocEntry: exactRecord?.JobCardDocEntry || exactRecord?.DocEntry || exactRecord?.JCDocEnt || 'NA',
               jobCardNo: exactRecord?.JobCardNo || exactRecord?.JCDocNum || exactRecord?.JobCardDocEntry || exactRecord?.DocEntry || 'NA',
               busNo: getBusLabel(exactRecord),
+              complaintType: exactRecord?.ComplaintType || exactRecord?.JobType || exactRecord?.FormType || '',
+              driverCode: exactRecord?.DrvCode || exactRecord?.DriverCode || exactRecord?.Driver || '',
+              driverName: exactRecord?.DrvName || exactRecord?.DriverName || exactRecord?.Driver || '',
               status: exactRecord?.Status || exactRecord?.WorkStatus || 'AWAITING VERIFICATION',
               complaintNo: exactRecord?.ComplaintNo || exactRecord?.IncidentNo || '',
               workEntries: [],
@@ -761,6 +768,9 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                     jobCardDocEntry: item?.DocEntry || item?.JobCardDocEntry || item?.JCDocEnt || item?.JobCardNo || 'NA',
                     jobCardNo: item?.JobCardNo || item?.DocNum || item?.JCDocNum || item?.DocEntry || 'NA',
                     busNo: getBusLabel(item),
+                    complaintType: item?.ComplaintType || item?.JobType || item?.FormType || '',
+                    driverCode: item?.DrvCode || item?.DriverCode || item?.Driver || '',
+                    driverName: item?.DrvName || item?.DriverName || item?.Driver || '',
                     status: item?.Status || item?.WorkStatus || 'AWAITING VERIFICATION',
                     complaintNo: item?.ComplaintNo || item?.IncidentNo || '',
                     workEntries: [],
@@ -1042,6 +1052,41 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         workEntryDocEntry: null,
         repair: null,
       });
+      const reviewIncidentType = String(
+        selected?.parentItem?.complaintType
+        || selected?.entry?.complaintType
+        || ''
+      ).trim().toLowerCase();
+      const isBreakdownReview = reviewIncidentType.includes('breakdown') || reviewIncidentType === 'b';
+      const shouldOfferDriverComplaint = Boolean(route?.params?.createDriverComplaintAfterApproval) || isBreakdownReview;
+      if (shouldOfferDriverComplaint) {
+        const entry = selected?.entry || {};
+        const parent = selected?.parentItem || {};
+        const workSummary = (Array.isArray(entry?.workDetails) ? entry.workDetails : [])
+          .map((detail) => detail?.WorkDone || detail?.OtherDescription || detail?.Description || '')
+          .filter(Boolean)
+          .join('; ');
+        const prefilledIncident = {
+          incidentType: 'Driver Complaint',
+          vehicleNumber: entry?.vehicle || parent?.busNo || '',
+          driverCode: parent?.driverCode || '',
+          driverName: parent?.driverName || '',
+          routeNo: parent?.routeNo || '',
+          routeName: parent?.routeNo || '',
+          location: entry?.depot || parent?.depot || '',
+          faults: [{
+            Fault: entry?.faultName || 'Follow-up repair required',
+            Description: [workSummary, entry?.finalRemarks].filter(Boolean).join(' — '),
+            Code: entry?.faultCode || '',
+          }],
+        };
+        console.log('[ReviewWorkEntries] Offering Driver Complaint follow-up:', JSON.stringify({
+          workEntryDocEntry,
+          fromLbweNotification: Boolean(route?.params?.createDriverComplaintAfterApproval),
+          isBreakdownReview,
+        }));
+        setPendingDriverComplaint(prefilledIncident);
+      }
       Toast.show({ type: 'success', text1: 'Work entry approved' });
     } catch (error) {
       const message = String(error?.message || 'Unable to approve work entry.');
@@ -1607,6 +1652,36 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         </View>
       </Modal>
 
+      <Modal
+        visible={Boolean(pendingDriverComplaint)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPendingDriverComplaint(null)}
+      >
+        <View style={styles.previewOverlay}>
+          <View style={[styles.confirmModal, { backgroundColor: colors.white }]}>
+            <MaterialIcons name="help-outline" size={38} color={colors.primary} style={{ alignSelf: 'center' }} />
+            <Text style={[styles.previewTitle, { color: colors.dark, textAlign: 'center', marginTop: 10 }]}>Create Driver Complaint Incident?</Text>
+            <Text style={[styles.metaText, { color: colors.gray, textAlign: 'center', marginTop: 8 }]}>Do you want to create a Driver Complaint incident using this approved work entry?</Text>
+            <View style={[styles.actionsRow, { marginTop: 18 }]}>
+              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.gray }]} onPress={() => setPendingDriverComplaint(null)}>
+                <Text style={styles.actionBtnText}>No</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: colors.primary }]}
+                onPress={() => {
+                  const prefilledIncident = pendingDriverComplaint;
+                  setPendingDriverComplaint(null);
+                  navigation.navigate('CreateIncident', { type: 'complaint', prefilledIncident });
+                }}
+              >
+                <Text style={styles.actionBtnText}>Create Incident</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={showDenyModal} transparent animationType="fade" onRequestClose={() => setShowDenyModal(false)}>
         <View style={styles.previewOverlay}>
           <View style={[styles.denyModal, { backgroundColor: colors.white }]}> 
@@ -1754,6 +1829,10 @@ const styles = StyleSheet.create({
     borderRadius: BORDER_RADIUS.lg,
     overflow: 'hidden',
     minHeight: 280,
+  },
+  confirmModal: {
+    borderRadius: BORDER_RADIUS.lg,
+    padding: SPACING.lg,
   },
   previewHeader: {
     flexDirection: 'row',
