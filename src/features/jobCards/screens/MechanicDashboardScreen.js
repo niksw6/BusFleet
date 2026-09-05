@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useSelector } from 'react-redux';
@@ -55,7 +55,9 @@ const deriveBucket = (item) => {
   if (['COMPLETED', 'COMPLETE', 'C', 'CM', 'SV', 'CL', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(raw)) return BUCKET.COMPLETED;
   // WC is the backend's mechanic-complete state: work is finished but must
   // remain in progress until the Supervisor verifies/closes the job card.
-  if (['ACCEPTED', 'A', 'IN PROGRESS', 'INPROGRESS', 'STARTED', 'I', 'IP', 'WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw)) return BUCKET.IN_PROGRESS;
+  // RW is a supervisor/team-leader rework decision. The mechanic must resume
+  // the same fault, so it belongs in In Progress rather than New.
+  if (['ACCEPTED', 'A', 'IN PROGRESS', 'INPROGRESS', 'STARTED', 'I', 'IP', 'RW', 'REWORK', 'REWORK REQUIRED', 'WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(raw)) return BUCKET.IN_PROGRESS;
   return BUCKET.TO_ACCEPT; // covers 'PENDING', '', 'P', 'NEW'
 };
 
@@ -64,6 +66,10 @@ const isAwaitingVerification = (item) => ['WC', 'WORK COMPLETED', 'AWAITING VERI
 );
 
 const normalizeJobType = (item) => {
+  // JB is the backend code for a Breakdown Job Card. Never let a generic
+  // fault/job field (such as an Assembly description) override it.
+  if (getNotificationType(item) === 'JB') return 'Breakdown';
+
   const raw = String(item?.JobType ?? item?.FormType ?? item?.ComplaintType ?? item?.IncidentType ?? item?.Type ?? '').trim();
   if (!raw) {
     const hasBreakdownRef = Boolean(item?.BreakdownNo || item?.BreakdownId || item?.ComplaintNo || item?.CmplaintNo || item?.BreakdownDocEntry);
@@ -86,6 +92,7 @@ const getMechanicStatusLabel = (item, bucket, awaitingVerification) => {
   }
 
   if (awaitingVerification) return 'Awaiting Verification';
+  if (raw === 'RW' || raw === 'REWORK' || raw === 'REWORK REQUIRED') return 'Rework Required';
   if (raw === 'PR' || raw === 'PARTS RECEIVED') return 'Parts Received';
   if (raw === 'PI' || raw === 'PARTS ISSUED') return 'Parts Issued';
   if (raw === 'PP' || raw === 'PART APPROVAL PENDING') return 'Part Approval Pending';
@@ -137,7 +144,7 @@ const getBreakdownJobCardDocEntry = (item) => Number(
   ?? item?.JobCardNo
   ?? 0
 ) || 0;
-const itemKey = (item) => `${getDocEntry(item)}-${getFaultLine(item)}`;
+const itemKey = (item) => `${getNotificationType(item) || normalizeJobType(item)}-${getDocEntry(item)}-${getFaultLine(item)}`;
 const isBreakdownAssignment = (item) => {
   if (getNotificationType(item) === 'JB') return true;
   const jobType = normalizeJobType(item);
@@ -329,7 +336,10 @@ const mergeQueueItems = (apiItems, notificationItems) => {
     const key = itemKey(item);
     const matchingIndex = merged.findIndex((existingItem) => (
       String(getDocEntry(existingItem)).trim() === String(getDocEntry(item)).trim()
-      && ['JR', 'JB'].includes(getNotificationType(item))
+      && (
+        (getNotificationType(item) === 'JB' && isBreakdownAssignment(existingItem))
+        || (getNotificationType(item) === 'JR' && isRepairAssignment(existingItem))
+      )
     ));
     if (matchingIndex >= 0) {
       // A dashboard row may exist before the JR notification is read. Keep
@@ -359,7 +369,7 @@ const mergeQueueItems = (apiItems, notificationItems) => {
   return merged;
 };
 
-const MechanicDashboardScreen = ({ navigation }) => {
+const MechanicDashboardScreen = ({ navigation, route }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const storedNotifications = useSelector(state => state.notification?.notifications || []);
@@ -374,6 +384,12 @@ const MechanicDashboardScreen = ({ navigation }) => {
   const [items, setItems] = useState([]);
   const [activeTab, setActiveTab] = useState(BUCKET.TO_ACCEPT);
   const [submittingKey, setSubmittingKey] = useState(null);
+
+  useEffect(() => {
+    if (route?.params?.initialTab === BUCKET.TO_ACCEPT) {
+      setActiveTab(BUCKET.TO_ACCEPT);
+    }
+  }, [route?.params?.initialTab]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -459,7 +475,24 @@ const MechanicDashboardScreen = ({ navigation }) => {
           || response?.WorkEntryNo
           || null;
 
-        setItems(prev => prev.map(i => (itemKey(i) === key ? { ...i, Status: 'A' } : i)));
+        // Move the accepted card straight to In Progress locally. WEV rows can
+        // retain a pending status in the dashboard response briefly after
+        // AcceptFault succeeds, so use IP at both parent and nested-row level.
+        setItems(prev => prev.map(i => (itemKey(i) === key ? {
+          ...i,
+          Status: 'IP',
+          AssignmentStatus: 'IP',
+          FaultStatus: 'IP',
+          WorkStatus: 'IP',
+          WorkEntries: Array.isArray(i.WorkEntries)
+            ? i.WorkEntries.map(entry => ({
+                ...entry,
+                Status: 'IP',
+                AssignmentStatus: 'IP',
+                WorkStatus: 'IP',
+              }))
+            : i.WorkEntries,
+        } : i)));
         if (breakdownAssignment) {
           Toast.show({ type: 'success', text1: 'Breakdown accepted', text2: 'Opening work entry.' });
           openBreakdownWorkEntry(item, acceptedWorkEntryDocEntry, acceptedEntry);
@@ -534,8 +567,12 @@ const MechanicDashboardScreen = ({ navigation }) => {
     const breakdownAssignment = isBreakdownAssignment(item);
     const repairAssignment = isRepairAssignment(item);
     const bucket = repairAssignment ? BUCKET.REPAIR : deriveBucket(item);
-    const itemJobType = repairAssignment ? 'Repair' : normalizeJobType(item);
-    const faultName = repairAssignment ? 'Assembly' : item?.Fault || item?.FaultName || item?.Description || (breakdownAssignment ? 'Line Breakdown' : 'Fault');
+    const itemJobType = repairAssignment ? 'Assembly Repair' : normalizeJobType(item);
+    const faultName = breakdownAssignment
+      ? 'Breakdown Incident'
+      : repairAssignment
+        ? 'Assembly'
+        : item?.Fault || item?.FaultName || item?.Description || 'Driver Complaint';
     const busNo = getBusLabel(item);
     const displayNo = item?.JobCardNo || item?.DocNum || getDocEntry(item);
     const assignedName = item?.AssignedMechanic?.UserName || item?.MechanicName || item?.AssignedToName || item?.EmployeeName || item?.EmpName || assigneeName;
@@ -583,7 +620,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
         ) : null}
         <View style={styles.cardTop}>
           <View style={[styles.faultIcon, { backgroundColor: `${statusColor}20` }]}>
-            <MaterialIcons name="build" size={18} color={statusColor} />
+            <MaterialIcons name={breakdownAssignment ? 'warning' : repairAssignment ? 'settings' : 'report-problem'} size={18} color={statusColor} />
           </View>
           <View style={{ flex: 1, marginLeft: 10 }}>
             <Text style={[styles.faultName, { color: colors.dark }]}>{faultName}</Text>
@@ -610,7 +647,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
             disabled={submittingKey === key}
           >
             <MaterialIcons name="check" size={16} color="#FFF" />
-            <Text style={styles.acceptBtnText}>{submittingKey === key ? 'Accepting...' : 'Accept Fault'}</Text>
+            <Text style={styles.acceptBtnText}>{submittingKey === key ? 'Accepting...' : 'Accept Breakdown'}</Text>
           </TouchableOpacity>
         ) : breakdownAssignment ? (
           <View style={styles.rowBetween}>
@@ -619,7 +656,7 @@ const MechanicDashboardScreen = ({ navigation }) => {
                 {statusLabel}
               </Text>
             </View>
-            <Text style={[styles.openLabel, { color: colors.primary }]}>Open work entry</Text>
+            <Text style={[styles.openLabel, { color: colors.primary }]}>Open breakdown work</Text>
           </View>
         ) : bucket === BUCKET.TO_ACCEPT ? (
           <TouchableOpacity

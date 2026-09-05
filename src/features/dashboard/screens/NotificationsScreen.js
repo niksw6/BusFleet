@@ -125,10 +125,12 @@ const NotificationsScreen = ({ navigation }) => {
 
   const mapNotificationItem = (item) => {
     const rawType = String(item?.Type || '').trim().toUpperCase();
-    const normalizedType = ['WE', 'WER'].includes(rawType) ? 'V' : rawType;
+    // LBWE (Line Breakdown Work Entry) follows the same verification flow as
+    // WE (Work Entry).
+    const normalizedType = ['WE', 'WER', 'LBWE'].includes(rawType) ? 'V' : rawType;
     const workEntryDoc = String(item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || '').trim();
     const defaultTitle = item?.Message || item?.Title || item?.title || 'Notification';
-    const resolvedTitle = rawType === 'WE'
+    const resolvedTitle = ['WE', 'LBWE'].includes(rawType)
       ? `Mechanic completed Work Entry ${workEntryDoc || '-'}`
       : formatIncidentTitle(item);
 
@@ -368,7 +370,7 @@ const NotificationsScreen = ({ navigation }) => {
       || notificationText.includes('transferred')
       || ['TRANSFER', 'JOB_CARD_TRANSFER', 'JOBCARDTRANSFER', 'JT', 'JCT'].includes(type)
       || Boolean(item?.TransferJobCard || item?.TransferStatus || item?.ToSupervisorCode || item?.TrnSupCode);
-    const requiresSupervisorVerification = rawNotificationType === 'WER' || type === 'WER' || (notificationText.includes('work entry') && (
+    const requiresSupervisorVerification = ['WER', 'LBWE'].includes(rawNotificationType) || ['WER', 'LBWE'].includes(type) || (notificationText.includes('work entry') && (
       notificationText.includes('supervisor inspection')
       || notificationText.includes('inspection is required')
     ));
@@ -422,6 +424,14 @@ const NotificationsScreen = ({ navigation }) => {
         || type === 'JCA'
         || Boolean(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.ComplaintNo || item?.complaintNo || item?.BreakdownNo || item?.BreakdownDocEntry || item?.BreakdownId)
       );
+
+    // JB/JCA/WER are mechanic work-queue notifications. Handle them before the
+    // message-text repair-assignment heuristic below, which may contain the
+    // words "repair" and "job card" but is not an Assembly assignment.
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && ['JB', 'JCA', 'WER'].includes(type)) {
+      navigation.navigate('MechanicDashboard', { initialTab: 'TO_ACCEPT' });
+      return;
+    }
 
     if ((isMechanicUser(user) || isFieldStaffUser(user)) && isRepairJobCardAssignment) {
       const repairJobCardEntry = String(
@@ -508,11 +518,6 @@ const NotificationsScreen = ({ navigation }) => {
         focusJobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || '',
         repair: rawNotificationType === 'WER' || type === 'WER',
       });
-      return;
-    }
-
-    if ((isMechanicUser(user) || isFieldStaffUser(user)) && type === 'JCA') {
-      navigation.navigate('MechanicDashboard');
       return;
     }
 
@@ -630,7 +635,7 @@ const NotificationsScreen = ({ navigation }) => {
   const getNotificationIcon = (type, item = {}) => {
     const rawType = String(type || '').trim().toUpperCase();
     const notificationText = `${item?.title || item?.Title || ''} ${item?.message || item?.Message || ''}`.toUpperCase();
-    if (['W', 'WE', 'WORK', 'WORKENTRY', 'WORK ENTRY'].includes(rawType) || notificationText.includes('WORK ENTRY')) {
+    if (['W', 'WE', 'LBWE', 'WORK', 'WORKENTRY', 'WORK ENTRY'].includes(rawType) || notificationText.includes('WORK ENTRY')) {
       return 'build';
     }
     switch (type) {

@@ -7,7 +7,6 @@ import { get, post, handleApiError } from '../client';
  *   POST RequestJobCardParts        (Supervisor requests parts known upfront, per fault line)
  *   GET  GetApprovedJobCardParts?CompanyDB=...&UserCode=...   (Mechanic checks approved parts)
  *   POST ReceiveJobCardParts        (confirm parts physically received)
- *   POST ReceiveWorkEntryParts      (confirm work-entry part receipt by mechanic)
  *   POST RequestWorkEntryParts      (Mechanic requests parts while doing the work)
  *   GET  GetMechanicPartRequests?CompanyDB=...   (Supervisor sees all pending mechanic requests)
  *   POST ApproveMechanicPartRequest (Supervisor approves/rejects each part line)

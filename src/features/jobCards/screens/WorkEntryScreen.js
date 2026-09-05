@@ -31,7 +31,8 @@ import ModalSelector from '../../../shared/components/ModalSelector';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { mechanicService, masterService, storeService, lineBreakdownService, workEntryService } from '../../../api/services';
+import { API_BASE_URL } from '../../../constants/config';
+import { mechanicService, masterService, storeService, lineBreakdownService, workEntryService, jobCardService } from '../../../api/services';
 import {
   setWorkEntries,
   addWorkEntry as addWorkEntryAction,
@@ -136,7 +137,7 @@ const groupPartRequestsByWorkEntry = (rawItems = [], jobCardDocEntry) => {
 };
 
 const WorkEntryScreen = ({ route, navigation }) => {
-  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, fault: routeFault = null, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', depot: routeDepot = '' } = route.params || {};
+  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, fault: routeFault = null, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', complaintNo: routeComplaintNo = '', depot: routeDepot = '' } = route.params || {};
   const dispatch = useDispatch();
 
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
@@ -155,6 +156,8 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [workList, setWorkList] = useState([]);
+  const [faultWorkLoading, setFaultWorkLoading] = useState(false);
+  const [resolvedFaultCode, setResolvedFaultCode] = useState('');
 
   // Work Entry Form
   const [showAddEntry, setShowAddEntry] = useState(false);
@@ -186,6 +189,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [selectedTowDepot, setSelectedTowDepot] = useState(routeDepot || '');
   const [depotsList, setDepotsList] = useState([]);
   const [showDepotsModal, setShowDepotsModal] = useState(false);
+  const [towRequestEntryId, setTowRequestEntryId] = useState(null);
 
   // Issued Items (from SAP Store)
   const [issuedItems, setIssuedItems] = useState([]);
@@ -215,11 +219,55 @@ const WorkEntryScreen = ({ route, navigation }) => {
     return data?.WorkEntry || data?.WorkEntryDetails || data?.Record || data;
   };
 
+  const normalizeFaultWorkItems = (response) => {
+    const data = response?.Data ?? response?.data ?? response;
+    // GetFaultByCode returns one fault with its selectable work items in
+    // Data.Solutions, e.g. { Solution: 'SLTN_4', Name: 'Change the Break shoe' }.
+    const rows = Array.isArray(data?.Solutions) ? data.Solutions : extractApiRows(response);
+    return rows.map((row) => ({
+      ...row,
+      Code: String(row?.Solution || row?.WorkCode || row?.Code || row?.WorkListCode || '').trim(),
+      Name: String(row?.Name || row?.WorkName || row?.WorkDone || row?.Description || row?.Dscription || row?.Code || '').trim(),
+    })).filter((row) => row.Code || row.Name);
+  };
+
+  const loadFaultWorkList = useCallback(async (faultCode) => {
+    const code = String(faultCode || '').trim();
+    if (!code) return [];
+    const companyDb = dbName || 'MUTSPL_TEST';
+    const requestUrl = `${API_BASE_URL}GetFaultByCode?CompanyDB=${encodeURIComponent(companyDb)}&FaultCode=${encodeURIComponent(code)}`;
+    setFaultWorkLoading(true);
+    try {
+      // Keep an explicit screen-level log: it makes the work-list API and its
+      // fault code immediately visible in the device log viewer.
+      console.log('[WorkEntry] GET fault work list:', requestUrl);
+      const response = await masterService.getFaultByCode(companyDb, code);
+      const items = normalizeFaultWorkItems(response);
+      console.log('[WorkEntry] GetFaultByCode result:', JSON.stringify({
+        faultCode: code,
+        success: response?.Success ?? response?.Status,
+        solutionCount: items.length,
+      }));
+      setWorkList([...items, { Code: 'OTHER', Name: 'Other Work' }]);
+      return items;
+    } catch (error) {
+      console.warn('[WorkEntry] GetFaultByCode failed:', requestUrl, error?.message || error);
+      return [];
+    } finally {
+      setFaultWorkLoading(false);
+    }
+  }, [dbName]);
+
   // ─── Load data ───────────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [faultDetailsResult, sparePartsResult, approvedResult, requestsResult, depotsResult, workEntryResult] = await Promise.allSettled([
+      console.log('[WorkEntry] Loading screen data:', JSON.stringify({
+        jobCardDocEntry: resolvedJobCardDocEntry,
+        faultLine: routeFaultLine,
+        routeFaultCode: routeFault?.FaultCode || '',
+      }));
+      const [faultDetailsResult, sparePartsResult, approvedResult, requestsResult, depotsResult, workEntryResult, jobCardResult] = await Promise.allSettled([
         masterService.getFaultDetails(companyDb),
         masterService.getSpareParts(companyDb),
         storeService.getApprovedJobCardParts(companyDb, mechanicCode),
@@ -227,6 +275,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
         masterService.getDepots(companyDb),
         routeWorkEntryDocEntry
           ? workEntryService.getWorkEntry(companyDb, routeWorkEntryDocEntry)
+          : Promise.resolve(null),
+        resolvedJobCardDocEntry
+          ? jobCardService.getJobCardDetail(companyDb, resolvedJobCardDocEntry)
           : Promise.resolve(null),
       ]);
 
@@ -248,39 +299,52 @@ const WorkEntryScreen = ({ route, navigation }) => {
         console.warn('GetWorkEntry failed:', workEntryResult.reason);
       }
 
+      const rows = faultDetailsResult.status === 'fulfilled' ? extractApiRows(faultDetailsResult.value) : [];
+      const jobCard = jobCardResult.status === 'fulfilled'
+        ? (jobCardResult.value?.Data ?? jobCardResult.value)
+        : null;
+      const jobCardFaults = Array.isArray(jobCard?.Faults) ? jobCard.Faults : [];
+      const jobCardFault = jobCardFaults.find((fault) => String(
+        fault?.FaultLine ?? fault?.FaultLineNo ?? fault?.Line ?? fault?.LineNum ?? ''
+      ) === String(routeFaultLine)) || jobCardFaults.find((fault) => (
+        Number(fault?.FaultLine ?? fault?.FaultLineNo ?? fault?.Line ?? fault?.LineNum) === Number(routeFaultLine) + 1
+      )) || (jobCardFaults.length === 1 ? jobCardFaults[0] : null);
+
       if (faultDetailsResult.status === 'fulfilled') {
-        const rows = extractApiRows(faultDetailsResult.value);
+        // Job-card detail can contain only Fault/Dscption (without FaultCode).
+        // Use it to resolve FLT5 from the master list, but never display the
+        // master list itself as selectable work items.
+        const faultReferences = [
+          jobCardFault?.FaultCode,
+          jobCardFault?.Fault,
+          jobCardFault?.FaultName,
+          jobCardFault?.Description,
+          jobCardFault?.Dscption,
+          faultReference,
+        ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean);
         const matchingFault = rows.find((row) => [row?.FaultCode, row?.Fault, row?.Description]
-          .some(value => String(value || '').trim().toLowerCase() === faultReference.toLowerCase()));
-        const resolvedFault = matchingFault || routeFault;
+          .some(value => faultReferences.includes(String(value || '').trim().toLowerCase())));
+        const resolvedFault = jobCardFault || matchingFault || routeFault;
         if (resolvedFault) {
           setIncidentFault({ ...routeFault, ...resolvedFault });
         }
-        const resolvedFaultCode = String(matchingFault?.FaultCode || faultReference).trim();
-        let workItems = [];
-        if (resolvedFaultCode) {
-          try {
-            const faultResponse = await masterService.getFaultByCode(companyDb, resolvedFaultCode);
-            workItems = extractApiRows(faultResponse).map((row) => ({
-              ...row,
-              Code: row?.WorkCode || row?.Code || row?.WorkListCode || '',
-              Name: row?.WorkName || row?.WorkDone || row?.Description || row?.Dscription || row?.Name || row?.Code || '',
-            })).filter((row) => row.Code || row.Name);
-          } catch (faultLookupError) {
-            console.warn('GetFaultByCode failed:', faultLookupError?.message || faultLookupError);
-          }
-        }
+        const faultCode = String(jobCardFault?.FaultCode || routeFault?.FaultCode || matchingFault?.FaultCode || '').trim();
+        console.log('[WorkEntry] Resolved fault for work list:', JSON.stringify({
+          faultCode,
+          source: jobCardFault?.FaultCode ? 'JobCardDetail.Faults' : routeFault?.FaultCode ? 'route fault' : 'fault master',
+        }));
+        setResolvedFaultCode(faultCode);
+        let workItems = faultCode ? await loadFaultWorkList(faultCode) : [];
         if (workItems.length === 0) {
-          workItems = rows.map((row) => ({
-          ...row,
-          Code: row?.FaultCode || row?.Code || row?.WorkCode || '',
-          Name: row?.FaultName || row?.Description || row?.Fault || row?.Name || row?.Code || '',
-          })).filter((row) => row.Code || row.Name);
+          console.warn('[WorkEntry] No fault-specific solutions returned; not showing generic fault-master rows.');
         }
         setWorkList([...workItems, { Code: 'OTHER', Name: 'Other Work' }]);
       } else {
         console.warn('GetFaultDetails failed:', faultDetailsResult.reason);
-        setWorkList([{ Code: 'OTHER', Name: 'Other Work' }]);
+        const faultCode = String(jobCardFault?.FaultCode || routeFault?.FaultCode || '').trim();
+        setResolvedFaultCode(faultCode);
+        const workItems = faultCode ? await loadFaultWorkList(faultCode) : [];
+        if (workItems.length === 0) setWorkList([{ Code: 'OTHER', Name: 'Other Work' }]);
       }
 
       if (sparePartsResult.status === 'fulfilled') {
@@ -318,7 +382,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dbName, workOrderDocEntry, dispatch, mechanicCode, resolvedJobCardDocEntry, routeDepot, selectedTowDepot, routeWorkEntryDocEntry, existingWorkEntry, routeFault, faultReference]);
+  }, [dbName, workOrderDocEntry, dispatch, mechanicCode, resolvedJobCardDocEntry, routeDepot, selectedTowDepot, routeWorkEntryDocEntry, existingWorkEntry, routeFault, routeFaultLine, faultReference, loadFaultWorkList]);
 
   useEffect(() => {
     loadData();
@@ -329,6 +393,13 @@ const WorkEntryScreen = ({ route, navigation }) => {
     if (!selectedWork) return '';
     if (selectedWork.Code === 'OTHER') return customDescription.trim();
     return selectedWork.Name || '';
+  };
+
+  const handleOpenWorkList = () => {
+    setShowWorkListModal(true);
+    // Refresh when the mechanic opens the list so it always reflects the
+    // latest GetFaultByCode response for this particular fault.
+    if (resolvedFaultCode) loadFaultWorkList(resolvedFaultCode);
   };
 
   const resetEntryForm = () => {
@@ -430,6 +501,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
           FaultLine: Number(routeFaultLine) || 1,
           UserCode: mechanicCode,
           RepairType: repairType,
+          CanRepairOnSite: true,
           FinalRemarks: entryRemarks || '',
           Details: [
             {
@@ -446,8 +518,36 @@ const WorkEntryScreen = ({ route, navigation }) => {
           throw new Error(breakdownRes?.Message || 'Failed to create breakdown work entry');
         }
 
-        const createdEntry = breakdownRes?.Data || breakdownRes || {};
-        const createdEntryId = createdEntry?.WorkEntryDocEntry || createdEntry?.DocEntry || createdEntry?.Code;
+        const responseData = breakdownRes?.Data ?? breakdownRes;
+        const createdEntry = responseData?.WorkEntry
+          || responseData?.WorkEntryDetails
+          || (responseData && typeof responseData === 'object' && !Array.isArray(responseData) ? responseData : {});
+        const createdEntryId = createdEntry?.WorkEntryDocEntry
+          || createdEntry?.WorkEntryNo
+          || createdEntry?.WorkEntryEntry
+          || createdEntry?.DocEntry
+          || createdEntry?.Code
+          || (typeof responseData === 'number' || typeof responseData === 'string' ? responseData : null);
+
+        // GetWorkEntry is the authoritative record used by the Driver
+        // Complaint flow. Fetch it here too, so Breakdown rows use the same
+        // server-provided description, status, parts, and document entry.
+        let savedEntry = createdEntry;
+        if (createdEntryId) {
+          try {
+            console.log('[WorkEntry] GET created breakdown work entry:', JSON.stringify({ WorkEntryDocEntry: createdEntryId }));
+            const getWorkEntryResponse = await workEntryService.getWorkEntry(
+              dbName || 'MUTSPL_TEST',
+              createdEntryId,
+            );
+            const fetchedEntry = getWorkEntryRecord(getWorkEntryResponse);
+            if (fetchedEntry && typeof fetchedEntry === 'object' && !Array.isArray(fetchedEntry)) {
+              savedEntry = { ...createdEntry, ...fetchedEntry };
+            }
+          } catch (getWorkEntryError) {
+            console.warn('[WorkEntry] GetWorkEntry after breakdown create failed:', getWorkEntryError?.message || getWorkEntryError);
+          }
+        }
 
         if (createdEntryId && entryParts.length > 0) {
           await storeService.requestWorkEntryParts({
@@ -466,8 +566,20 @@ const WorkEntryScreen = ({ route, navigation }) => {
         if (createdEntryId && beforeImageDrafts.length > 0) {
           await persistWorkEntryImages('BF', beforeImageDrafts, createdEntryId);
         }
-        if (createdEntryId) {
-          dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: { ...createdEntry, WorkEntryDocEntry: createdEntryId } }));
+        // Always reflect a successful save immediately.  The breakdown API may
+        // return only a numeric Data value, so use the submitted detail for the
+        // visible row while retaining any returned document-entry identifier.
+        const visibleEntry = {
+          ...breakdownPayload,
+          ...savedEntry,
+          WorkEntryDocEntry: savedEntry?.WorkEntryDocEntry || savedEntry?.DocEntry || createdEntryId || null,
+          Description: savedEntry?.Description || savedEntry?.WorkListName || selectedWork?.Name || description,
+          Remarks: savedEntry?.Remarks ?? entryRemarks ?? '',
+          Details: savedEntry?.Details || breakdownPayload.Details,
+        };
+        dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: visibleEntry }));
+        if (!createdEntryId) {
+          console.warn('[WorkEntry] Breakdown work entry saved but no WorkEntryDocEntry was returned:', JSON.stringify(breakdownRes));
         }
 
         Toast.show({
@@ -528,6 +640,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Please select a depot for the tow' });
       return;
     }
+    if (beforeImageDrafts.length === 0) {
+      Toast.show({ type: 'error', text1: 'Breakdown photo required', text2: 'Upload a photo before requesting a tow vehicle.' });
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -553,34 +669,58 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
       const res = await mechanicService.createWorkEntry(payload);
       if (res?.Success) {
-        // attempt to complete the work entry (closure after tow request)
         const created = res.Data || {};
         const workEntryDocEntry = created?.WorkEntryDocEntry || created?.DocEntry || created?.Code || null;
         if (workEntryDocEntry) {
-          const completeRes = await mechanicService.completeWork({
-            CompanyDB: dbName || 'MUTSPL_TEST',
-            WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-            UserCode: mechanicCode,
-            FinalRemarks: 'Tow requested and vehicle moved',
-          });
-          if (completeRes?.Success) {
-            dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: created }));
-            Toast.show({ type: 'success', text1: 'Tow requested and work entry closed' });
-            setAwaitingVerification(true);
-            resetEntryForm();
-            return;
-          }
+          await persistWorkEntryImages('BF', beforeImageDrafts, workEntryDocEntry);
+          // Do not call AssignBreakdownTeam here. That API performs a real team
+          // assignment and rejects this stage because no team is selected. The
+          // saved TowRequested work entry is the event the supervisor queue uses.
+          console.log('[WorkEntry] Tow requested; awaiting supervisor depot-team assignment:', JSON.stringify({
+            breakdownNo: routeComplaintNo || '',
+            jobCardDocEntry: resolvedJobCardDocEntry,
+            depot: selectedTowDepot,
+          }));
+          dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: { ...created, WorkEntryDocEntry: workEntryDocEntry, TowRequested: true } }));
+          setTowRequestEntryId(workEntryDocEntry);
+          setBeforeImageDrafts([]);
+          Toast.show({ type: 'success', text1: 'Tow requested', text2: 'Add the depot-arrival photo when the bus arrives.' });
+          return;
         }
 
-        // If completion not possible, still add entry and notify
         dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: res.Data || payload }));
-        Toast.show({ type: 'success', text1: 'Tow requested — awaiting supervisor actions' });
-        resetEntryForm();
+        Toast.show({ type: 'success', text1: 'Tow requested' });
       } else {
         Toast.show({ type: 'error', text1: res?.Message || 'Failed to request tow' });
       }
     } catch (err) {
       Toast.show({ type: 'error', text1: err.message || 'Error' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleConfirmTowArrival = async () => {
+    if (!towRequestEntryId) return;
+    if (afterImageDrafts.length === 0) {
+      Toast.show({ type: 'error', text1: 'Arrival photo required', text2: 'Upload a photo of the bus with the towing van at the depot.' });
+      return;
+    }
+    try {
+      setSubmitting(true);
+      await persistWorkEntryImages('AF', afterImageDrafts, towRequestEntryId);
+      const res = await mechanicService.completeWork({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        WorkEntryDocEntry: Number(towRequestEntryId) || towRequestEntryId,
+        UserCode: mechanicCode,
+        FinalRemarks: 'Bus and towing van arrived at depot. Supervisor to assign depot maintenance team.',
+      });
+      if (!res?.Success) throw new Error(res?.Message || 'Failed to close tow work entry');
+      Toast.show({ type: 'success', text1: 'Depot arrival recorded', text2: 'Supervisor can now assign the depot maintenance team and notify its leader.' });
+      setAwaitingVerification(true);
+      setAfterImageDrafts([]);
+    } catch (err) {
+      Toast.show({ type: 'error', text1: err.message || 'Error recording depot arrival' });
     } finally {
       setSubmitting(false);
     }
@@ -630,11 +770,12 @@ const WorkEntryScreen = ({ route, navigation }) => {
   // ─── Mark part received ───────────────────────────────────────────────────────
   const handleMarkReceived = async (request) => {
     try {
-      const res = await storeService.receiveWorkEntryParts({
+      const res = await storeService.receiveJobCardParts({
         CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(request?.WorkEntryDocEntry) || request?.WorkEntryDocEntry,
+        JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
+        UserCode: mechanicCode,
         Parts: (request?.Parts || []).map((part) => ({
-          LineId: Number(part?.LineId ?? part?.PartLine) || 0,
+          PartLine: Number(part?.PartLine ?? part?.LineId ?? part?.Line ?? part?.LineNum) || 0,
           ReceivedQty: Number(part?.IssuedQty ?? part?.ApprovedQty ?? part?.ReqQty ?? 0) || 0,
         })),
       });
@@ -660,7 +801,8 @@ const WorkEntryScreen = ({ route, navigation }) => {
     try {
       setSubmitting(true);
       setShowCompleteConfirm(false);
-      const latestEntry = storeEntries[storeEntries.length - 1];
+      // addWorkEntry prepends the latest saved entry.
+      const latestEntry = storeEntries[0];
       const workEntryDocEntry = latestEntry?.WorkEntryDocEntry || latestEntry?.DocEntry || latestEntry?.Code;
       if (!workEntryDocEntry) {
         throw new Error('No work entry found. Create and save a work entry first.');
@@ -792,53 +934,55 @@ const WorkEntryScreen = ({ route, navigation }) => {
             <Text style={[styles.completeHint, { color: colors.gray, marginBottom: 10 }]}>Choose how this breakdown will be handled.</Text>
 
             <View style={styles.breakdownSection}>
-              <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginBottom: 6 }]}>Repair Type</Text>
-              <View style={styles.breakdownToggleRow}>
-                <Button
-                  mode={repairType === 'P' ? 'contained' : 'outlined'}
-                  onPress={() => setRepairType('P')}
-                  style={styles.breakdownToggleButton}
-                  labelStyle={styles.breakdownButtonLabel}
-                  compact
-                >
-                  Permanent Repair
-                </Button>
-                <Button
-                  mode={repairType === 'T' ? 'contained' : 'outlined'}
-                  onPress={() => setRepairType('T')}
-                  style={styles.breakdownToggleButton}
-                  labelStyle={styles.breakdownButtonLabel}
-                  compact
-                >
-                  Temporary Repair
-                </Button>
-              </View>
-
-              <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginTop: 10, marginBottom: 6 }]}>Field Decision</Text>
+              <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginBottom: 6 }]}>Can Repair on Site?</Text>
               <View style={styles.breakdownToggleRow}>
                 <Button
                   mode={canRepairOnSite ? 'contained' : 'outlined'}
                   onPress={() => setCanRepairOnSite(true)}
-                  style={styles.breakdownToggleButton}
-                  labelStyle={styles.breakdownButtonLabel}
-                  compact
+                  icon="build"
+                  buttonColor={canRepairOnSite ? '#167A45' : undefined}
+                  style={[styles.breakdownToggleButton, styles.decisionButton]}
+                  labelStyle={styles.decisionButtonLabel}
+                  contentStyle={styles.decisionButtonContent}
                 >
                   Repair on Site
                 </Button>
                 <Button
                   mode={!canRepairOnSite ? 'contained' : 'outlined'}
                   onPress={() => setCanRepairOnSite(false)}
-                  style={styles.breakdownToggleButton}
-                  labelStyle={styles.breakdownButtonLabel}
-                  compact
+                  icon="local-shipping"
+                  buttonColor={!canRepairOnSite ? '#C2410C' : undefined}
+                  style={[styles.breakdownToggleButton, styles.decisionButton]}
+                  labelStyle={styles.decisionButtonLabel}
+                  contentStyle={styles.decisionButtonContent}
                 >
                   Tow to Depot
                 </Button>
               </View>
 
+              {canRepairOnSite && (
+                <>
+                  <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginTop: 10, marginBottom: 6 }]}>Permanent or Temporary Repair?</Text>
+                  <View style={styles.breakdownToggleRow}>
+                    <Button mode={repairType === 'P' ? 'contained' : 'outlined'} onPress={() => setRepairType('P')} buttonColor={repairType === 'P' ? '#167A45' : undefined} style={styles.breakdownToggleButton} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>
+                      Permanent Repair
+                    </Button>
+                    <Button mode={repairType === 'T' ? 'contained' : 'outlined'} onPress={() => setRepairType('T')} buttonColor={repairType === 'T' ? '#EA580C' : undefined} style={styles.breakdownToggleButton} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>
+                      Temporary Repair
+                    </Button>
+                  </View>
+                  <Text style={[styles.flowHint, { color: repairType === 'P' ? '#166534' : '#9A3412' }]}>
+                    {repairType === 'P'
+                      ? 'Before photo → repair on site → after photo → close work entry → supervisor inspection.'
+                      : 'Before photo → temporary repair → after photo → close work entry → bus returns to depot for depot-team assignment.'}
+                  </Text>
+                </>
+              )}
+
               {!canRepairOnSite && (
                 <View style={[styles.breakdownTowBox, { backgroundColor: '#FFF7ED', borderColor: '#FDBA74' }]}> 
-                  <Text style={{ color: '#9A4A00', fontWeight: '700', marginBottom: 8 }}>Select depot for tow</Text>
+                  <Text style={{ color: '#9A4A00', fontWeight: '700', marginBottom: 5 }}>Tow Vehicle Request</Text>
+                  <Text style={{ color: '#9A4A00', fontSize: 12, marginBottom: 8 }}>Upload a breakdown photo, request the tow, then record the bus and towing van at depot arrival.</Text>
                   <View style={styles.breakdownToggleRow}>
                     <Button
                       mode={towDepotMode === 'default' ? 'contained' : 'outlined'}
@@ -846,8 +990,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
                         setTowDepotMode('default');
                         setSelectedTowDepot(routeDepot || selectedTowDepot);
                       }}
-                      compact
-                      labelStyle={styles.breakdownButtonLabel}
+                      buttonColor={towDepotMode === 'default' ? '#C2410C' : undefined}
+                      labelStyle={styles.decisionButtonLabel}
+                      contentStyle={styles.decisionButtonContent}
                       style={styles.breakdownToggleButton}
                     >
                       Default depot
@@ -855,9 +1000,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
                     <Button
                       mode={towDepotMode === 'other' ? 'contained' : 'outlined'}
                       onPress={() => setTowDepotMode('other')}
-                      compact
-                      labelStyle={styles.breakdownButtonLabel}
-                      style={{ marginLeft: 8, minHeight: 32 }}
+                      buttonColor={towDepotMode === 'other' ? '#C2410C' : undefined}
+                      labelStyle={styles.decisionButtonLabel}
+                      contentStyle={styles.decisionButtonContent}
+                      style={styles.breakdownToggleButton}
                     >
                       Other depot
                     </Button>
@@ -872,9 +1018,41 @@ const WorkEntryScreen = ({ route, navigation }) => {
                     </TouchableOpacity>
                   )}
 
-                  <Button mode="contained" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={{ marginTop: 12 }}>
-                    Request Tow & Close Work Entry
-                  </Button>
+                  {!towRequestEntryId ? (
+                    <>
+                      <View style={[styles.imageBox, { borderColor: '#FDBA74', backgroundColor: colors.white }]}>
+                        <Text style={{ color: '#9A4A00', fontWeight: '700', fontSize: 13 }}>Breakdown Photo *</Text>
+                        <View style={styles.imageActions}>
+                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('BF')}>
+                            <MaterialIcons name="photo-library" size={16} color="#00689E" /><Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('BF', true)}>
+                            <MaterialIcons name="photo-camera" size={16} color="#007A5A" /><Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                      <Button mode="contained" icon="local-shipping" buttonColor="#C2410C" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>
+                        Request Tow & Notify Supervisor
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <View style={[styles.imageBox, { borderColor: '#FDBA74', backgroundColor: colors.white }]}>
+                        <Text style={{ color: '#9A4A00', fontWeight: '700', fontSize: 13 }}>Bus + Towing Van at Depot *</Text>
+                        <View style={styles.imageActions}>
+                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('AF')}>
+                            <MaterialIcons name="photo-library" size={16} color="#00689E" /><Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('AF', true)}>
+                            <MaterialIcons name="photo-camera" size={16} color="#007A5A" /><Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                      <Button mode="contained" icon="location-on" buttonColor="#C2410C" onPress={handleConfirmTowArrival} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>
+                        Record Depot Arrival & Close Work Entry
+                      </Button>
+                    </>
+                  )}
                 </View>
               )}
             </View>
@@ -887,13 +1065,13 @@ const WorkEntryScreen = ({ route, navigation }) => {
             <MaterialIcons name="assignment" size={18} color="#0070F2" />
             <Text style={[styles.sectionTitle, { color: colors.dark }]}>Work Entries</Text>
             <TouchableOpacity
-              style={[styles.addBtn, { backgroundColor: workEntryLocked ? '#94A3B8' : '#0070F2' }]}
+              style={[styles.addBtn, { backgroundColor: workEntryLocked || (isBreakdownJob && !canRepairOnSite) ? '#94A3B8' : '#0070F2' }]}
               onPress={() => {
-                if (workEntryLocked) return;
+                if (workEntryLocked || (isBreakdownJob && !canRepairOnSite)) return;
                 setShowAddEntry(true);
               }}
               activeOpacity={0.7}
-              disabled={workEntryLocked}
+              disabled={workEntryLocked || (isBreakdownJob && !canRepairOnSite)}
             >
               <MaterialIcons name="add" size={16} color="#FFF" />
               <Text style={styles.addBtnText}>Add</Text>
@@ -909,7 +1087,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
                   <MaterialIcons name="build" size={16} color="#0070F2" />
                   <View style={styles.entryText}>
                     <Text style={[styles.entryDesc, { color: colors.dark }]}>
-                      {entry.Description || entry.WorkListName || '—'}
+                      {entry.Description || entry.WorkListName || entry?.Details?.[0]?.WorkDone || '—'}
                     </Text>
                     {entry.Remarks ? (
                       <Text style={[styles.entryRemarks, { color: colors.gray }]}>{entry.Remarks}</Text>
@@ -925,7 +1103,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
                   style={[styles.partsBtn, { borderColor: workEntryLocked ? '#94A3B8' : '#2B7D2B' }]}
                   onPress={() => {
                     if (workEntryLocked) return;
-                    setPendingEntryCode(entry.Code || entry.DocEntry || String(i));
+                    setPendingEntryCode(entry.WorkEntryDocEntry || entry.DocEntry || entry.Code || String(i));
                     setPartsDraft([]);
                     setShowPartsModal(true);
                   }}
@@ -1106,10 +1284,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
             }}
             icon="check-circle"
             style={[styles.completeBtn, { backgroundColor: workEntryLocked ? '#64748B' : '#2B7D2B' }]}
-            disabled={submitting || workEntryLocked}
+            disabled={submitting || workEntryLocked || (isBreakdownJob && !canRepairOnSite)}
             contentStyle={{ paddingVertical: 6 }}
           >
-            {workEntryLocked ? 'Completed' : submitting ? 'Completing…' : 'Complete Work'}
+            {workEntryLocked ? 'Completed' : submitting ? 'Completing…' : (isBreakdownJob && !canRepairOnSite) ? 'Use Tow Workflow Above' : 'Complete Work'}
           </Button>
         </View>
       </ScrollView>
@@ -1123,7 +1301,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
             {/* Work List Selector */}
             <TouchableOpacity
               style={[styles.selectorBtn, { borderColor: colors.border || '#CCC' }]}
-              onPress={() => setShowWorkListModal(true)}
+              onPress={handleOpenWorkList}
               activeOpacity={0.7}
             >
               <Text style={[styles.selectorBtnText, { color: selectedWork ? colors.dark : colors.gray }]}>
@@ -1336,7 +1514,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
         }}
         title="Select Work"
         data={workList}
-        loading={false}
+        loading={faultWorkLoading}
         searchPlaceholder="Search work list..."
         displayKey="Name"
         valueKey="Code"
@@ -1493,24 +1671,35 @@ const styles = StyleSheet.create({
   completeBtn: { borderRadius: BORDER_RADIUS.md },
   breakdownToggleRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    alignItems: 'stretch',
   },
   breakdownToggleButton: {
-    marginRight: 8,
+    flex: 1,
+    marginHorizontal: 4,
     marginBottom: 8,
-    minHeight: 30,
   },
   breakdownButtonLabel: {
     fontSize: 11,
     lineHeight: 14,
   },
+  decisionButton: { minHeight: 48 },
+  decisionButtonContent: { minHeight: 44 },
+  decisionButtonLabel: { fontSize: 12, lineHeight: 16, fontWeight: '700' },
   breakdownTowBox: {
     marginTop: 12,
     borderWidth: 1,
     borderRadius: BORDER_RADIUS.md,
     padding: SPACING.md,
   },
+  flowHint: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  towActionButton: { marginTop: 14, borderRadius: BORDER_RADIUS.md },
+  towActionContent: { minHeight: 50 },
+  towActionLabel: { fontSize: 13, fontWeight: '800' },
   imageBox: {
     borderWidth: 1,
     borderRadius: BORDER_RADIUS.sm,

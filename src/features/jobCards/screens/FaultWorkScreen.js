@@ -21,7 +21,7 @@ import { mechanicService, storeService, masterService, jobCardService, workEntry
  *   POST RequestWorkEntryParts { CompanyDB, WorkEntryDocEntry, UserCode, Parts:[] }
  *   POST RequestSpecialTool { CompanyDB, WorkEntryDocEntry, MechanicCode, Tools:[] }
  *   GET  GetApprovedJobCardParts?CompanyDB=...&UserCode=...
- *   POST ReceiveWorkEntryParts { CompanyDB, WorkEntryDocEntry, Parts:[{LineId,ReceivedQty}] }
+ *   POST ReceiveJobCardParts { CompanyDB, JobCardDocEntry, UserCode, Parts:[{PartLine,ReceivedQty}] }
  *
  * Note: the API set does not expose a "get my open work entry for this fault" lookup,
  * so once a Work Entry is created its WorkEntryDocEntry is kept in this screen's
@@ -243,8 +243,8 @@ const FaultWorkScreen = ({ route, navigation }) => {
       || Number(part?.AprQty ?? part?.ApprovedQty ?? 0) > 0;
   };
 
-  // Receipt is a backend line operation, never a UI-list-index operation.
-  // ReceiveWorkEntryParts uses LineId (fallback: PartLine/FaultLine variants).
+  // Receipt is a Job Card backend line operation, never a UI-list-index operation.
+  // ReceiveJobCardParts uses PartLine; legacy variants are only fallbacks.
   const getReceiveLineId = (part) => {
     const rawLine = part?.LineId
       ?? part?.PartLine
@@ -1122,16 +1122,16 @@ const FaultWorkScreen = ({ route, navigation }) => {
     setReceiveTarget({
       part,
       lineId,
-      workEntryDocEntry: part?.WorkEntryDocEntry ?? existingWorkEntry?.DocEntry ?? workEntryDocEntry,
+      jobCardDocEntry: docEntry,
     });
     setReceivedQty(String(remainingQty));
   };
 
   const handleReceivePart = async () => {
     if (!receiveTarget) return;
-    const { part, lineId, workEntryDocEntry: targetWorkEntryDocEntry } = receiveTarget;
-    if (!targetWorkEntryDocEntry) {
-      Toast.show({ type: 'error', text1: 'Work entry unavailable', text2: 'Unable to resolve WorkEntryDocEntry for receipt.' });
+    const { part, lineId, jobCardDocEntry } = receiveTarget;
+    if (!jobCardDocEntry) {
+      Toast.show({ type: 'error', text1: 'Job card unavailable', text2: 'Unable to resolve JobCardDocEntry for receipt.' });
       return;
     }
     const approvedQty = Number(getPartQty(part));
@@ -1144,11 +1144,12 @@ const FaultWorkScreen = ({ route, navigation }) => {
     }
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
-      const response = await storeService.receiveWorkEntryParts({
+      const response = await storeService.receiveJobCardParts({
         CompanyDB: companyDb,
-        WorkEntryDocEntry: Number(targetWorkEntryDocEntry) || targetWorkEntryDocEntry,
+        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
+        UserCode: userCode,
         Parts: [{
-          LineId: lineId,
+          PartLine: lineId,
           ReceivedQty: enteredQty,
         }],
       });

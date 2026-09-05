@@ -67,7 +67,6 @@ export const API_ENDPOINTS = {
   REQUEST_JOB_CARD_PARTS: 'RequestJobCardParts',
   GET_APPROVED_JOB_CARD_PARTS: 'GetApprovedJobCardParts',
   RECEIVE_JOB_CARD_PARTS: 'ReceiveJobCardParts',
-  RECEIVE_WORK_ENTRY_PARTS: 'ReceiveWorkEntryParts',
   REQUEST_WORK_ENTRY_PARTS: 'RequestWorkEntryParts',
   GET_MECHANIC_PART_REQUESTS: 'GetMechanicPartRequests',
   APPROVE_MECHANIC_PART_REQUEST: 'ApproveMechanicPartRequest',

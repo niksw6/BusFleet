@@ -28,6 +28,7 @@ const ModalSelector = ({
   searchKeys = [],
   multiSelect = false,
   selectedItems = [],
+  isItemDisabled = () => false,
 }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
@@ -65,6 +66,7 @@ const ModalSelector = ({
   }, [data, searchQuery, searchKeys, displayKey, renderItem]);
 
   const handleSelect = (item) => {
+    if (isItemDisabled(item)) return;
     const value = valueKey ? item[valueKey] : item;
     console.log('🔘 Item selected:', value, 'Current selected items:', selectedItems?.length || 0);
     onSelect(value, item);
@@ -140,15 +142,20 @@ const ModalSelector = ({
               >
                 {filteredData.map((item, index) => {
                   const isSelected = isItemSelected(item);
+                  const disabled = isItemDisabled(item);
                   return (
                     <View key={index}>
                       <TouchableOpacity
                         style={[
                           styles.listItem,
-                          { backgroundColor: isSelected ? colors.primary + '15' : colors.card }
+                          {
+                            backgroundColor: isSelected ? colors.primary + '15' : colors.card,
+                            opacity: disabled ? 0.5 : 1,
+                          }
                         ]}
                         onPress={() => handleSelect(item)}
                         activeOpacity={0.7}
+                        disabled={disabled}
                       >
                         {multiSelect && (
                           <View style={styles.checkboxContainer}>
@@ -174,6 +181,7 @@ const ModalSelector = ({
                             onPress={() => handleSelect(item)}
                             compact
                             style={styles.selectButton}
+                            disabled={disabled}
                           >
                             Select
                           </Button>
@@ -303,4 +311,3 @@ const styles = StyleSheet.create({
 });
 
 export default ModalSelector;
-

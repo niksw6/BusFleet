@@ -435,9 +435,13 @@ const CreateJobCardScreen = ({ route, navigation }) => {
       const supervisorName = String(
         user?.FirstName || user?.name || user?.Name || user?.UserName || user?.User || user?.user || ''
       ).trim();
-      const complaintTypeForApi = normalizeJobCardComplaintType(formValues.complaintType || complaintType);
+      const complaintTypeForApi = normalizeJobCardComplaintType(complaintType);
+      // The incident supplied by the previous screen is the authority for
+      // breakdown-only actions. Do not let a stale form value turn a Driver
+      // Complaint into a breakdown-team assignment.
+      const isBreakdownIncident = normalizeJobCardComplaintType(complaintType) === 'Breakdown';
       const assignmentType = formValues.assignmentType || 'Area Breakdown Team';
-      const isTransferAssignment = complaintTypeForApi === 'Breakdown' && assignmentType === 'Transfer to nearest supervisor';
+      const isTransferAssignment = isBreakdownIncident && assignmentType === 'Transfer to nearest supervisor';
       if (isTransferAssignment && (!selectedTransferDepot || !selectedTransferSupervisor)) {
         throw new Error('Select the destination depot and supervisor before creating the job card.');
       }
@@ -615,7 +619,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
       console.log('🔍 ComplaintType (API):', complaintTypeForApi, '| Input:', formValues.complaintType || complaintType);
       const response = await jobCardService.createJobCard(attemptPayload);
 
-      if (complaintTypeForApi === 'Breakdown' && assignmentType === 'Area Breakdown Team' && selectedBreakdownTeam) {
+      if (isBreakdownIncident && complaintTypeForApi === 'Breakdown' && assignmentType === 'Area Breakdown Team' && selectedBreakdownTeam) {
         const breakdownAssignPayload = {
           CompanyDB: dbName || 'MUTSPL_TEST',
           BreakdownDocEntry: Number(complaintNo) || complaintNo,
@@ -963,7 +967,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
               )}
 
               {/* Maintenance Team — routes Job Card to a Team Leader for accept/reject (SOP §1.3, §2) */}
-              {maintenanceTeamsAvailable && maintenanceTeams.length > 0 && (
+              {normalizeJobCardComplaintType(complaintType) === 'Breakdown' && maintenanceTeamsAvailable && maintenanceTeams.length > 0 && (
                 <>
                   <Text style={[styles.label, { color: colors.dark }]}>Assign Maintenance Team (optional)</Text>
                   <TouchableOpacity onPress={() => setShowTeamModal(true)} activeOpacity={0.7}>
@@ -1158,9 +1162,21 @@ const CreateJobCardScreen = ({ route, navigation }) => {
         valueKey="TeamCode"
         searchKeys={['TeamName', 'TeamCode', 'Name', 'Area', 'Depot']}
         renderItem={(item) => (
-          <View>
-            <Text style={{ fontSize: 15, fontWeight: '600', color: '#000' }}>{item.TeamName || item.Name || item.TeamCode || item.Code}</Text>
-            {item.Location ? <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>Location: {item.Location}</Text> : null}
+          <View style={{ borderBottomWidth: 1, borderBottomColor: '#E5E7EB', paddingBottom: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 15, fontWeight: '600', color: '#000', flex: 1 }}>{item.TeamName || item.Name || item.TeamCode || item.Code}</Text>
+              {(() => {
+                const availability = String(item?.Availability || item?.Status || 'ASSIGNED').trim().toUpperCase();
+                const available = availability === 'AVAILABLE';
+                const label = available ? 'AVAILABLE' : 'ASSIGNED';
+                return (
+                  <View style={{ backgroundColor: available ? '#DCFCE7' : '#FEE2E2', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, marginLeft: 8 }}>
+                    <Text style={{ color: available ? '#166534' : '#B91C1C', fontSize: 10, fontWeight: '800' }}>{label}</Text>
+                  </View>
+                );
+              })()}
+            </View>
+            {item.Location ? <Text style={{ fontSize: 12, color: '#666', marginTop: 4 }}>Location: {item.Location}</Text> : null}
             {item.Phone ? <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>Phone: {item.Phone}</Text> : null}
           </View>
         )}

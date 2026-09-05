@@ -321,7 +321,10 @@ const extractPendingWorkEntryIdsFromNotifications = (notifications = []) => {
       || text.includes('supervisor inspection')
       || text.includes('inspection is required')
     );
-    const isVerificationItem = type === 'WE' || type === 'V' || isWorkEntryVerificationText;
+    // LBWE (Line Breakdown Work Entry) is verified through the same queue as
+    // WE. Keep the raw backend type here because stored notifications retain
+    // their original Type even when the UI normalizes it to V.
+    const isVerificationItem = ['WE', 'LBWE', 'V'].includes(type) || isWorkEntryVerificationText;
     if (!isVerificationItem) return;
 
     const candidates = [
