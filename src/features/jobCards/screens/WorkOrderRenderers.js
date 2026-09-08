@@ -311,16 +311,23 @@ export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
   const woParts = Array.isArray(parts) ? parts : [];
   const reqParts = Array.isArray(mechanicPartRequests) ? mechanicPartRequests : [];
   const merged = [...woParts, ...reqParts];
-  try { console.log('[PARTS_TAB_DIAG] woParts=', woParts.length, 'reqParts=', reqParts.length); woParts.forEach((p,i) => console.log('[PARTS_TAB_DIAG] woParts['+i+'].Status=', JSON.stringify(p.Status), 'itemCode=', p.ItemCode)); reqParts.forEach((p,i) => console.log('[PARTS_TAB_DIAG] reqParts['+i+'].Status=', JSON.stringify(p.Status), 'itemCode=', p.ItemCode)); } catch (_) {}
   if (merged.length === 0) {
     return <EmptyState icon="build" message="No parts requested for this job card." theme={theme} />;
   }
   const totalReq = merged.reduce((s, p) => s + Number(p.ReqQty ?? p.RequestedQty ?? p.Qty ?? 0), 0);
   const totalIss = merged.reduce((s, p) => s + Number(p.IssQty ?? p.IssuedQty ?? 0), 0);
   const totalRec = merged.reduce((s, p) => s + Number(p.RecQty ?? p.ReceivedQty ?? 0), 0);
+  const groupedParts = merged.reduce((groups, part, index) => {
+    const mechanicName = safeStr(part.MechanicName || part.MechName || part.mechanicName || part.UserName) || 'Unassigned Parts';
+    const mechanicCode = safeStr(part.MechanicCode || part.MechCode || part.mechanicCode || part.UserCode);
+    const key = mechanicCode ? `code:${mechanicCode}` : `name:${mechanicName.toLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, { mechanicName, mechanicCode, parts: [] });
+    groups.get(key).parts.push({ ...part, __key: `${key}-${part.ItemCode || part.itemCode || index}-${index}` });
+    return groups;
+  }, new Map());
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: SPACING.lg }}>
-      <SectionHeader title="Parts Summary" theme={theme} icon="build" />
+      <SectionHeader title="Parts by Mechanic" count={merged.length} theme={theme} icon="inventory-2" />
       <View style={[psStyles.summaryRow, { backgroundColor: theme.colors.white, borderColor: theme.colors.border || '#E0E0E0' }]}>
         <View style={psStyles.summaryCell}>
           <Text style={[psStyles.summaryNum, { color: theme.colors.primary }]}>{fmtQty(totalReq)}</Text>
@@ -338,84 +345,47 @@ export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
         </View>
       </View>
 
-      {woParts.length > 0 ? (
-        <>
-          <SectionHeader title="Parts on Job Card" count={woParts.length} theme={theme} icon="list" />
-          {woParts.map((p, idx) => renderPartCard(p, idx, theme))}
-        </>
-      ) : null}
-
-      {reqParts.length > 0 ? (
-        <>
-          <SectionHeader title="Mechanic Part Requests" count={reqParts.length} theme={theme} icon="engineering" />
-          {reqParts.map((p, idx) => renderPartCard(p, woParts.length + idx, theme))}
-        </>
-      ) : null}
+      {[...groupedParts.values()].map((group) => (
+        <View key={group.mechanicCode || group.mechanicName} style={[psStyles.mechanicGroup, { backgroundColor: theme.colors.white, borderColor: theme.colors.border || '#E0E0E0' }]}>
+          <View style={[psStyles.mechanicHeader, { backgroundColor: theme.colors.light, borderBottomColor: theme.colors.border || '#E0E0E0' }]}>
+            <View style={[psStyles.mechanicIcon, { backgroundColor: theme.colors.primary + '18' }]}>
+              <MaterialIcons name="engineering" size={18} color={theme.colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[psStyles.mechanicName, { color: theme.colors.dark }]}>{group.mechanicName}</Text>
+              {group.mechanicCode ? <Text style={[psStyles.mechanicCode, { color: theme.colors.gray }]}>Code: {group.mechanicCode}</Text> : null}
+            </View>
+            <View style={[psStyles.partCount, { backgroundColor: theme.colors.primary }]}>
+              <Text style={psStyles.partCountText}>{group.parts.length}</Text>
+            </View>
+          </View>
+          <View style={[psStyles.tableHeader, { borderBottomColor: theme.colors.border || '#E0E0E0' }]}>
+            <Text style={[psStyles.partNameCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>PART</Text>
+            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>REQ</Text>
+            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>ISS</Text>
+            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>REC</Text>
+          </View>
+          {group.parts.map((part) => {
+            const code = safeStr(part.ItemCode || part.itemCode);
+            const name = safeStr(part.ItemName || part.itemName || part.Dscription || part.Name) || code || 'Part';
+            const warehouse = safeStr(part.Warehouse || part.warehouse || part.WhsCode || part.Whs || part.StoreWarehouse);
+            return (
+              <View key={part.__key} style={[psStyles.partRow, { borderBottomColor: theme.colors.border || '#E0E0E0' }]}>
+                <View style={psStyles.partNameCol}>
+                  <Text style={[psStyles.partName, { color: theme.colors.dark }]} numberOfLines={1}>{name}</Text>
+                  <Text style={[psStyles.partMeta, { color: theme.colors.gray }]} numberOfLines={1}>
+                    {[code, warehouse].filter(Boolean).join('  •  ') || 'No item code'}
+                  </Text>
+                </View>
+                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.ReqQty ?? part.RequestedQty ?? part.Qty ?? 0)}</Text>
+                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.IssQty ?? part.IssuedQty ?? 0)}</Text>
+                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.RecQty ?? part.ReceivedQty ?? 0)}</Text>
+              </View>
+            );
+          })}
+        </View>
+      ))}
     </ScrollView>
-  );
-};
-
-const renderPartCard = (p, idx, theme) => {
-  // DIAG: log incoming part status
-  try { console.log('[PART_DIAG] status=', JSON.stringify(p.Status), 'code=', p.ItemCode); } catch (_) {}
-
-  const code = safeStr(p.ItemCode);
-  const name = safeStr(p.ItemName || p.Dscription || p.Name) || (code ? ('Item ' + code) : ('Item #' + (idx + 1)));
-  const req = Number(p.ReqQty ?? p.RequestedQty ?? p.Qty ?? 0);
-  const iss = Number(p.IssQty ?? p.IssuedQty ?? 0);
-  const rec = Number(p.RecQty ?? p.ReceivedQty ?? 0);
-  const wh = safeStr(p.Warehouse || p.WhsCode || p.StoreWarehouse);
-  const status = safeStr(p.Status);
-  const partLine = safeStr(p.PartLine);
-  const reqDate = fmtDateTime(p.ReqDate);
-  const remarks = safeStr(p.Remarks);
-  const vehicle = safeStr(p.Vehicle);
-  const mechName = safeStr(p.MechanicName);
-  const mechCode = safeStr(p.MechanicCode);
-  const jcNo = safeStr(p.JobCardNo);
-  const jcDoc = safeStr(p.JobCardDocEntry || p.JCDocEnt);
-  const weDoc = safeStr(p.WorkEntryDocEntry);
-  const subtitle = [code ? '#' + code : '', wh, mechName ? ('by ' + mechName) : ''].filter(Boolean).join(' ');
-  return (
-    <CollapsibleCard
-      key={(code || name || 'part') + '-' + idx}
-      theme={theme}
-      defaultOpen={false}
-      title={name}
-      subtitle={subtitle}
-      badge={status ? <StatusPill status={status} theme={theme} size="sm" /> : null}
-    >
-      <KeyValue label="Item Code" value={code} copyable theme={theme} icon="qr-code" />
-      {partLine ? <KeyValue label="Part Line" value={partLine} theme={theme} icon="tag" /> : null}
-      <KeyValue label="Requested Qty" value={fmtQty(req)} theme={theme} icon="add-shopping-cart" />
-      <KeyValue label="Issued Qty" value={fmtQty(iss)} theme={theme} icon="outbox" />
-      <KeyValue label="Received Qty" value={fmtQty(rec)} theme={theme} icon="inventory" />
-      <KeyValue label="Warehouse" value={wh} theme={theme} icon="store" />
-      {p.UnitPrice || p.Price ? (
-        <KeyValue label="Unit Price" value={safeStr(p.UnitPrice || p.Price)} theme={theme} icon="payments" />
-      ) : null}
-      {p.LineTotal || p.Total ? (
-        <KeyValue label="Line Total" value={safeStr(p.LineTotal || p.Total)} theme={theme} icon="calculate" />
-      ) : null}
-      <KeyValue label="Request Date" value={reqDate} theme={theme} icon="event" />
-      {(mechName || mechCode) ? (
-        <>
-          <KeyValue label="Requested By" value={mechName || '-'} theme={theme} icon="engineering" />
-          <KeyValue label="Mechanic Code" value={mechCode} copyable theme={theme} icon="badge" />
-        </>
-      ) : null}
-      {vehicle ? <KeyValue label="Vehicle" value={vehicle} copyable theme={theme} icon="directions-bus" /> : null}
-      {jcNo ? (
-        <KeyValue label="Job Card No" value={jcNo} copyable theme={theme} icon="description" />
-      ) : null}
-      {jcDoc ? (
-        <KeyValue label="Job Card DocEntry" value={jcDoc} copyable theme={theme} icon="key" />
-      ) : null}
-      {weDoc ? (
-        <KeyValue label="Work Entry DocEntry" value={weDoc} copyable theme={theme} icon="assignment-turned-in" />
-      ) : null}
-      {remarks ? <KeyValue label="Remarks" value={remarks} theme={theme} icon="notes" fullWidth /> : null}
-    </CollapsibleCard>
   );
 };
 
@@ -426,6 +396,21 @@ const psStyles = StyleSheet.create({
   summaryNum: { fontSize: 18, fontWeight: '800' },
   summaryLbl: { fontSize: 11, marginTop: 2 },
   divider: { width: StyleSheet.hairlineWidth, alignSelf: 'stretch' },
+  mechanicGroup: { marginHorizontal: SPACING.md, marginTop: SPACING.md, borderWidth: 1, borderRadius: BORDER_RADIUS.md, overflow: 'hidden' },
+  mechanicHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: 1 },
+  mechanicIcon: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', marginRight: SPACING.sm },
+  mechanicName: { fontSize: 14, fontWeight: '700' },
+  mechanicCode: { fontSize: 11, marginTop: 2 },
+  partCount: { minWidth: 24, height: 24, paddingHorizontal: 6, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  partCountText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  tableHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: 7, borderBottomWidth: StyleSheet.hairlineWidth },
+  tableHeaderText: { fontSize: 10, fontWeight: '800' },
+  partRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: StyleSheet.hairlineWidth },
+  partNameCol: { flex: 1, paddingRight: SPACING.sm },
+  qtyCol: { width: 42, textAlign: 'right' },
+  partName: { fontSize: 13, fontWeight: '700' },
+  partMeta: { fontSize: 11, marginTop: 2 },
+  qtyText: { fontSize: 13, fontWeight: '700' },
 });
 
 export const renderWorkEntriesTab = ({ entries, theme }) => {

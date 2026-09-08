@@ -332,29 +332,6 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
         throw new Error(response?.Message || 'Unable to close incident');
       }
 
-      const linkedJobCardDocEntry = Number(
-        complaint?.JobCardDocEntry || complaint?.JobCardEntry || routeJobCardDocEntry || 0,
-      );
-      const linkedJobCardNo = String(
-        complaint?.JobCardNo || complaint?.JobcardNo || routeJobCardNo || '',
-      ).trim();
-      const jobCardTarget = linkedJobCardDocEntry > 0 ? linkedJobCardDocEntry : linkedJobCardNo;
-
-      if (jobCardTarget) {
-        try {
-          const jobCardCloseResponse = await jobCardService.updateJobCardStatus(
-            dbName || 'MUTSPL_TEST',
-            jobCardTarget,
-            'CM',
-          );
-          if (!jobCardCloseResponse?.Success) {
-            console.warn('Job card status update skipped:', jobCardCloseResponse?.Message || 'Unknown response');
-          }
-        } catch (jobCardError) {
-          console.warn('Unable to update linked job card status:', jobCardError?.message || jobCardError);
-        }
-      }
-
       Toast.show({
         type: 'success',
         text1: 'Incident Closed',

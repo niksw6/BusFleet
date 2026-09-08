@@ -291,20 +291,25 @@ export const getJobTypeCode = (source) => {
 
   if (typeof source === 'string') {
     const normalized = source.trim().toUpperCase();
-    if (normalized === 'B' || normalized === 'D') {
+    if (normalized === 'B' || normalized === 'D' || normalized === 'A') {
       return normalized;
     }
 
-    return normalized.toLowerCase().includes('breakdown') ? 'B' : 'D';
+    if (normalized.toLowerCase().includes('breakdown')) return 'B';
+    if (normalized.toLowerCase().includes('assembly')) return 'A';
+    return 'D';
   }
 
-  const explicitType = source.JobType || source.FormType || source.Type;
-  if (explicitType === 'B' || explicitType === 'D') {
+  const explicitType = String(source.JobType || source.FormType || source.Type || '').trim().toUpperCase();
+  if (explicitType === 'B' || explicitType === 'D' || explicitType === 'A') {
     return explicitType;
   }
 
-  const complaintType = source.ComplaintType || source.JobTypeName || source.TypeName || '';
-  return String(complaintType).toLowerCase().includes('breakdown') ? 'B' : 'D';
+  const typeText = [source.ComplaintType, source.JobTypeName, source.TypeName, source.AssemblyType, source.Source, explicitType]
+    .filter(Boolean).join(' ').toLowerCase();
+  if (typeText.includes('breakdown')) return 'B';
+  if (typeText.includes('assembly')) return 'A';
+  return 'D';
 };
 
 export const formatJobCardDisplayNo = (jobCard) => {
@@ -321,6 +326,7 @@ export const formatJobCardDisplayNo = (jobCard) => {
   }
 
   const code = getJobTypeCode(jobCard);
-  const baseNo = jobCard.DocEntry ?? jobCard.JobCardNo;
+  // JobCardNo is the business sequence; DocEntry is only a fallback internal key.
+  const baseNo = jobCard.JobCardNo ?? jobCard.DocNum ?? jobCard.DocEntry;
   return `${code}-${baseNo}`;
 };

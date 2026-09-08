@@ -21,7 +21,7 @@ import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/
 import { complaintService, jobCardService, masterService, workEntryService, storeService, teamService, mechanicService, lineBreakdownService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
-import { getUserDepot, getUserRole, isFieldStaffUser, isSupervisorUser } from '../../../utils/roleAccess';
+import { getUserDepot, getUserRole, getUserTeamCode, isDriverUser, isFieldStaffUser, isSupervisorUser, isTeamLeaderUser } from '../../../utils/roleAccess';
 import { renderTabContent as renderRichTabContent, buildTheme as buildRichTheme } from './WorkOrderRenderers.js';
 
 /**
@@ -52,6 +52,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const userRole = getUserRole(user);
   const mechanicUser = isFieldStaffUser(user);
   const supervisorUser = isSupervisorUser(user);
+  const teamLeaderUser = isTeamLeaderUser(user);
+  const driverUser = isDriverUser(user);
+  const currentTeamCode = getUserTeamCode(user);
   const inputBorderColor = colors.border || COLORS.border;
 
   const isBreakdownJobCard = () => {
@@ -74,20 +77,29 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   ).trim().toLowerCase().includes('supervisor'));
 
   const getAccessibleTabs = () => {
-    const tabs = [];
+    const tabs = [{ key: 'Details', label: 'Overview', shortLabel: 'Info', icon: 'dashboard' }];
     if (supervisorUser) {
-      tabs.push({ key: 'Mechanics', label: 'Mechanics', shortLabel: 'Mechs' });
-      tabs.push({ key: 'PartDetails', label: 'Part Details', shortLabel: 'Parts' });
+      tabs.push({ key: 'Mechanics', label: 'Mechanics', shortLabel: 'Mechs', icon: 'engineering' });
+      tabs.push({ key: 'PartDetails', label: 'Part Details', shortLabel: 'Parts', icon: 'inventory-2' });
     }
-    if (mechanicUser || supervisorUser) {
-      tabs.push({ key: 'WorkEntry', label: 'Work Entry', shortLabel: 'Entries' });
+    if (teamLeaderUser) {
+      tabs.push({ key: 'Mechanics', label: 'Team', shortLabel: 'Team', icon: 'groups' });
+      tabs.push({ key: 'PartDetails', label: 'Part Details', shortLabel: 'Parts', icon: 'inventory-2' });
     }
-    tabs.push({ key: 'History', label: 'History', shortLabel: 'Log' });
+    if (mechanicUser) {
+      tabs.push({ key: 'PartDetails', label: 'My Parts', shortLabel: 'Parts', icon: 'inventory-2' });
+    }
+    if (mechanicUser || supervisorUser || teamLeaderUser) {
+      tabs.push({ key: 'WorkEntry', label: 'Work Entry', shortLabel: 'Entries', icon: 'assignment-turned-in' });
+    }
+    if (driverUser) {
+      tabs.push({ key: 'WorkEntry', label: 'Progress', shortLabel: 'Progress', icon: 'pending-actions' });
+    }
     return tabs;
   };
 
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('Mechanics');
+  const [activeTab, setActiveTab] = useState((mechanicUser || teamLeaderUser) ? 'WorkEntry' : 'Overview');
   const [workOrder, setWorkOrder] = useState(null);
   const [tasks, setTasks] = useState([]);
   const [parts, setParts] = useState([]);
@@ -109,8 +121,6 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [submittingWorkOrder, setSubmittingWorkOrder] = useState(false);
   const [workOrderEntries, setWorkOrderEntries] = useState([]);
   const [loadingWorkOrderEntries, setLoadingWorkOrderEntries] = useState(false);
-  const [historyRows, setHistoryRows] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [workOrderExpandedMap, setWorkOrderExpandedMap] = useState({});
   const [selectedWorkEntry, setSelectedWorkEntry] = useState(null);
   const [mechanicPartRequests, setMechanicPartRequests] = useState([]);
@@ -127,6 +137,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
   const [previewImageUri, setPreviewImageUri] = useState(null);
   const [previewImageTitle, setPreviewImageTitle] = useState('');
+  const [teamMemberCodes, setTeamMemberCodes] = useState([]);
+  const [selectedViewMechanicCode, setSelectedViewMechanicCode] = useState('');
 
   const tabs = getAccessibleTabs();
 
@@ -134,7 +146,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   useEffect(() => {
     if (!tabs.some((tab) => tab.key === activeTab)) {
-      setActiveTab(tabs[0]?.key || 'History');
+      setActiveTab(tabs[0]?.key || 'Details');
     }
   }, [activeTab, tabs]);
 
@@ -208,6 +220,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         mechanic?.UserCode,
         mechanic?.Code,
       ]) : []),
+      ...(Array.isArray(source?.AssignedMechanics) ? source.AssignedMechanics.flatMap((mechanic) => [
+        mechanic?.MechanicCode,
+        mechanic?.MechCode,
+        mechanic?.UserCode,
+        mechanic?.Code,
+      ]) : []),
       ...(Array.isArray(routeMechanics) ? routeMechanics.flatMap((mechanic) => [
         mechanic?.MechanicCode,
         mechanic?.MechCode,
@@ -219,6 +237,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         fault?.MechCode,
         fault?.UserCode,
         fault?.AssignedTo,
+        ...(Array.isArray(fault?.Mechanics) ? fault.Mechanics.map((mechanic) => (
+          mechanic?.MechanicCode || mechanic?.MechCode || mechanic?.UserCode || mechanic?.Code
+        )) : []),
       ]) : []),
     ];
 
@@ -241,6 +262,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     approvedQty: Number(row?.ApprovedQty ?? row?.AprQty ?? 0) || 0,
     issuedQty: Number(row?.IssQty ?? row?.IssuedQty ?? 0) || 0,
     receivedQty: Number(row?.RecQty ?? row?.ReceivedQty ?? 0) || 0,
+    mechanicCode: String(row?.MechanicCode || row?.MechCode || row?.UserCode || '').trim(),
+    mechanicName: String(row?.MechanicName || row?.MechName || row?.UserName || '').trim(),
     warehouse: String(row?.Warehouse || row?.StoreWarehouse || row?.WhsCode || '').trim(),
     status: String(row?.Status || row?.ApprovalStatus || '').trim().toUpperCase(),
     remarks: String(row?.Remarks || '').trim(),
@@ -300,6 +323,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     DetailedParts: Array.isArray(entry?.DetailedParts) && entry.DetailedParts.length > 0
       ? entry.DetailedParts
       : (Array.isArray(entry?.Parts) ? entry.Parts : []),
+    DetailedSpecialTools: Array.isArray(entry?.DetailedSpecialTools) && entry.DetailedSpecialTools.length > 0
+      ? entry.DetailedSpecialTools
+      : (Array.isArray(entry?.SpecialTools) ? entry.SpecialTools : []),
     __fallbackKey: `entry-${asWorkEntryId(entry) || index}`,
   });
 
@@ -390,6 +416,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       member?.EmpCode,
       member?.Code,
     ]);
+    if (teamLeaderUser) {
+      setTeamMemberCodes([...new Set(teamMemberCodes.map((value) => String(value || '').trim()).filter(Boolean))]);
+    }
     const findTeamMember = (code) => teamMemberRows.find((member) => (
       String(member?.UserCode || member?.MechanicCode || member?.MechCode || member?.EmpCode || member?.Code || '').trim()
         === String(code || '').trim()
@@ -403,8 +432,19 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     }
 
     const source = jobCardSnapshot || workOrder || {};
-    const targetDoc = String(source?.DocEntry || source?.JobCardDocEntry || docEntry || '').trim();
-    const targetJobNo = String(source?.JobCardNo || jobCardNo || '').trim();
+    const targetDocRefs = new Set([
+      source?.DocEntry,
+      source?.JobCardDocEntry,
+      source?.JCDocEnt,
+      source?.JobCardEntry,
+      docEntry,
+    ].map((value) => String(value || '').trim()).filter(Boolean));
+    const targetJobRefs = new Set([
+      source?.JobCardNo,
+      source?.JCDocNum,
+      source?.DocNum,
+      jobCardNo,
+    ].map((value) => String(value || '').trim()).filter(Boolean));
 
     const dashboardResults = await Promise.allSettled(
       userCodes.map(async (userCode) => ({
@@ -426,9 +466,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         }));
 
     const relatedRows = rows.filter((row) => {
-      const rowDoc = String(row?.DocEntry || row?.JobCardDocEntry || '').trim();
-      const rowJob = String(row?.JobCardNo || row?.DocNum || '').trim();
-      return (targetDoc && rowDoc === targetDoc) || (targetJobNo && rowJob === targetJobNo);
+      const rowDocRefs = [row?.DocEntry, row?.JobCardDocEntry, row?.JCDocEnt, row?.JobCardEntry, row?.JobCardId]
+        .map((value) => String(value || '').trim()).filter(Boolean);
+      const rowJobRefs = [row?.JobCardNo, row?.JCDocNum, row?.DocNum, row?.JobCardNum]
+        .map((value) => String(value || '').trim()).filter(Boolean);
+      return rowDocRefs.some((value) => targetDocRefs.has(value))
+        || rowJobRefs.some((value) => targetJobRefs.has(value));
     });
 
     const faults = relatedRows.map((row, index) => ({
@@ -461,9 +504,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       }
     });
 
-    const nestedEntries = relatedRows.flatMap((row) => (
-      Array.isArray(row?.WorkEntries)
-        ? row.WorkEntries.map((entry) => ({
+    const nestedEntries = relatedRows.flatMap((row) => {
+      const rowEntries = Array.isArray(row?.WorkEntries)
+        ? row.WorkEntries
+        : (row?.WorkEntry && typeof row.WorkEntry === 'object' ? [row.WorkEntry] : []);
+      return rowEntries.map((entry) => ({
           ...row,
           ...entry,
           WorkEntryStatus: entry?.WorkEntryStatus
@@ -477,11 +522,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           Fault: entry?.Fault || row?.FaultCode || row?.FaultName,
           FaultName: entry?.FaultName || row?.FaultName,
           Vehicle: entry?.Vehicle || row?.Vehicle,
-          MechanicCode: entry?.MechanicCode || row?.MechanicCode,
-          MechanicName: entry?.MechanicName || row?.MechanicName,
-        }))
-        : []
-    ));
+          MechanicCode: entry?.MechanicCode || entry?.MechCode || entry?.UserCode || row?.MechanicCode,
+          MechanicName: entry?.MechanicName || entry?.MechName || entry?.UserName || row?.MechanicName,
+        }));
+    });
     // A dashboard fault is not itself a work entry. Only its nested WorkEntries
     // belong in the WorkEntry tab; this avoids showing a phantom entry when a
     // mechanic has accepted a fault but has not submitted work yet.
@@ -500,6 +544,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           ? entry.Faults
           : [{ FaultCode: entry?.FaultCode || entry?.Fault, FaultDesc: getDisplayText(entry?.FaultName, entry?.Description), Status: entry?.Status }],
         DetailedParts: Array.isArray(entry?.Parts) ? entry.Parts : [],
+        DetailedSpecialTools: Array.isArray(entry?.SpecialTools) ? entry.SpecialTools : [],
         __fallbackKey: `dash-${asWorkEntryId(entry) || index}`,
       }))
       .filter((entry) => entry?.WorkEntryDocEntry || entry?.WorkDoneDetails || entry?.AssignedMechanics);
@@ -515,6 +560,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         ...part,
         Fault: part?.Fault || part?.FaultCode || fault,
         FaultLine: part?.FaultLine ?? faultLine,
+        MechanicCode: part?.MechanicCode || part?.MechCode || part?.UserCode || row?.MechanicCode,
+        MechanicName: part?.MechanicName || part?.MechName || part?.UserName || row?.MechanicName,
       }));
     });
 
@@ -621,6 +668,56 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const mechanicCount = mechanicsForDisplay.length;
   const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
 
+  const getMechanicCodeForView = (record) => String(
+    record?.MechanicCode || record?.MechCode || record?.UserCode || record?.Code || record?.mechanicCode || ''
+  ).trim();
+  const getMechanicNameForView = (record) => String(
+    record?.MechanicName || record?.MechName || record?.AssignedMechanics || record?.UserName || record?.Name || record?.mechanicName || ''
+  ).trim();
+  const getMechanicFilterKey = (record) => {
+    const code = getMechanicCodeForView(record);
+    if (code) return `code:${code}`;
+    const name = getMechanicNameForView(record).toLowerCase();
+    return name ? `name:${name}` : '';
+  };
+  const currentUserCode = resolveUserCode();
+  const currentUserName = String(user?.Name || user?.name || user?.UserName || user?.username || '').trim();
+  const isOwnedByCurrentMechanic = (record) => {
+    const code = getMechanicCodeForView(record);
+    const name = getMechanicNameForView(record);
+    return (code && currentUserCode && code === currentUserCode)
+      || (name && currentUserName && name.toLowerCase() === currentUserName.toLowerCase());
+  };
+  const isInTeamLeaderScope = (record) => {
+    if (!teamLeaderUser) return true;
+    const code = getMechanicCodeForView(record);
+    const recordTeamCode = String(record?.TeamCode || record?.MaintenanceTeamCode || '').trim();
+    return (code && teamMemberCodes.includes(code))
+      || (currentTeamCode && recordTeamCode && recordTeamCode === currentTeamCode);
+  };
+  const isSelectedMechanic = (record) => {
+    if (!selectedViewMechanicCode) return true;
+    const selectedMechanic = mechanicsForDisplay.find((mechanic) => getMechanicFilterKey(mechanic) === selectedViewMechanicCode);
+    const recordCode = getMechanicCodeForView(record);
+    const recordName = getMechanicNameForView(record).toLowerCase();
+    const selectedName = getMechanicNameForView(selectedMechanic).toLowerCase();
+    return getMechanicFilterKey(record) === selectedViewMechanicCode
+      || (selectedViewMechanicCode === `code:${recordCode}`)
+      || Boolean(selectedName && recordName && recordName === selectedName);
+  };
+  const visibleMechanics = mechanicsForDisplay.filter((mechanic) => (
+    (mechanicUser ? isOwnedByCurrentMechanic(mechanic) : isInTeamLeaderScope(mechanic))
+  ));
+  const visibleWorkOrderEntries = workOrderEntries.filter((entry) => (
+    (mechanicUser ? isOwnedByCurrentMechanic(entry) : isInTeamLeaderScope(entry))
+    && isSelectedMechanic(entry)
+  ));
+  const visibleMechanicPartRequests = mechanicPartRequests.filter((request) => (
+    (mechanicUser ? isOwnedByCurrentMechanic(request) : isInTeamLeaderScope(request))
+    && isSelectedMechanic(request)
+  ));
+  const visibleJobCardParts = (Array.isArray(workOrder?.Parts) ? workOrder.Parts : []).filter(isSelectedMechanic);
+
   useEffect(() => {
     if (!transferAccepted || availableMechanics.length > 0) return;
     const mechanicDepot = String(
@@ -649,14 +746,14 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     try {
       setLoadingWorkOrderEntries(true);
       const companyDb = dbName || 'MUTSPL_TEST';
-      const historyRows = Array.isArray(dashboardEntries) ? dashboardEntries : [];
-      if (historyRows.length === 0) {
+      const dashboardEntryRows = Array.isArray(dashboardEntries) ? dashboardEntries : [];
+      if (dashboardEntryRows.length === 0) {
         setWorkOrderEntries([]);
         return [];
       }
 
       const fullEntries = await Promise.all(
-        historyRows.map(async (row) => {
+        dashboardEntryRows.map(async (row) => {
           const workEntryId = asWorkEntryId(row);
           if (!workEntryId) return row;
           try {
@@ -972,7 +1069,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   };
   const getTabCounts = () => {
     const parts = (Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0) + mechanicPartRequests.length;
-    return { Mechanics: mechanicsForDisplay.length, PartDetails: parts, WorkEntry: workOrderEntries.length, History: historyRows.length, Details: 0 };
+    return { Mechanics: mechanicsForDisplay.length, PartDetails: parts, WorkEntry: workOrderEntries.length, Details: 0 };
   };
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -1970,9 +2067,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           </TouchableOpacity>
         )}
       </View>
-      {mechanicsForDisplay.length > 0 ? (
+      {visibleMechanics.length > 0 ? (
         <View style={styles.mechanicsList}>
-          {mechanicsForDisplay.map((mechanic, index) => (
+          {visibleMechanics.map((mechanic, index) => (
             <TouchableOpacity
               key={index}
               activeOpacity={isWorkOrderLocked ? 1 : 0.7}
@@ -1981,7 +2078,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               }}
               style={[
                 styles.mechanicCard,
-                mechanicsForDisplay.length === 1 && styles.singleMechanicCard,
+                visibleMechanics.length === 1 && styles.singleMechanicCard,
                 { backgroundColor: colors.light, borderColor: colors.border || '#D0D0D0' },
                 selectedMechanics.includes(getMechanicName(mechanic)) && styles.selectedMechanicCard,
                 selectedMechanics.includes(getMechanicName(mechanic)) && { borderColor: colors.primary }
@@ -2013,13 +2110,13 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       <View style={[styles.mappingSection, { backgroundColor: colors.light, borderColor: colors.border || '#E0E0E0' }]}>
         <Text style={[styles.label, { color: colors.dark }]}>Fault Mapping for Mechanics</Text>
         {(selectedMechanics.length > 0 ? selectedMechanics.map((mechanicName, index) => (
-          mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
+          visibleMechanics.find((mechanic) => getMechanicName(mechanic) === mechanicName)
           || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
-        )) : assignedMechanics).length > 0 ? (
+        )) : visibleMechanics).length > 0 ? (
           (selectedMechanics.length > 0 ? selectedMechanics.map((mechanicName, index) => (
-            mechanicsForDisplay.find((mechanic) => getMechanicName(mechanic) === mechanicName)
+            visibleMechanics.find((mechanic) => getMechanicName(mechanic) === mechanicName)
             || { MechanicName: mechanicName, MechanicCode: mechanicFaultMap[mechanicName] || `selected-${index}` }
-          )) : assignedMechanics).map((mechanic, index) => {
+          )) : visibleMechanics).map((mechanic, index) => {
             const faultLabels = getMechanicFaultLabels(mechanic);
             return (
               <View key={`${getMechanicName(mechanic)}-${getMechanicCode(mechanic) || index}`} style={styles.mappingRow}>
@@ -2049,28 +2146,67 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     </View>
   );
 
+  const renderMechanicDataFilter = () => {
+    if (!supervisorUser && !teamLeaderUser) return null;
+    const options = visibleMechanics.length > 0 ? visibleMechanics : mechanicsForDisplay;
+    if (options.length === 0) return null;
+    return (
+      <View style={[styles.mechanicFilterCard, { backgroundColor: colors.white, borderColor: inputBorderColor }]}>
+        <Text style={[styles.mechanicFilterLabel, { color: colors.dark }]}>View mechanic / electrician data</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.mechanicFilterOptions}>
+          <TouchableOpacity
+            style={[styles.mechanicFilterChip, !selectedViewMechanicCode && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+            onPress={() => setSelectedViewMechanicCode('')}
+          >
+            <Text style={[styles.mechanicFilterChipText, { color: !selectedViewMechanicCode ? '#FFFFFF' : colors.dark }]}>All</Text>
+          </TouchableOpacity>
+          {options.map((mechanic, index) => {
+            const code = getMechanicCodeForView(mechanic);
+            const filterKey = getMechanicFilterKey(mechanic);
+            const selected = Boolean(filterKey) && selectedViewMechanicCode === filterKey;
+            return (
+              <TouchableOpacity
+                key={`${code || getMechanicNameForView(mechanic)}-${index}`}
+                style={[styles.mechanicFilterChip, { borderColor: inputBorderColor }, selected && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                onPress={() => setSelectedViewMechanicCode(selected ? '' : filterKey)}
+              >
+                <Text style={[styles.mechanicFilterChipText, { color: selected ? '#FFFFFF' : colors.dark }]} numberOfLines={1}>
+                  {getMechanicNameForView(mechanic) || code}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+    );
+  };
+
   const renderWorkOrderEntries = () => (
     <View style={styles.tabContent}>
       {mechanicUser && (
-        <TouchableOpacity
-          style={[styles.primaryActionBtn, { backgroundColor: colors.primary, marginBottom: SPACING.md }]}
-          onPress={() => navigation.navigate('MechanicDashboard')}
-        >
-          <Text style={styles.primaryActionText}>+ Add Work Entry</Text>
+          <TouchableOpacity
+            style={[styles.primaryActionBtn, { backgroundColor: colors.primary, marginBottom: SPACING.md }]}
+            onPress={() => navigation.navigate('MechanicDashboard')}
+            activeOpacity={0.82}
+          >
+          <MaterialIcons name="build" size={18} color="#FFFFFF" />
+          <Text style={styles.primaryActionText}>Open My Work</Text>
         </TouchableOpacity>
       )}
+
+      {renderMechanicDataFilter()}
 
       {loadingWorkOrderEntries ? (
         <View style={styles.emptyState}>
           <Text style={[styles.emptyText, { color: colors.gray }]}>Loading work entries...</Text>
         </View>
-      ) : workOrderEntries.length === 0 ? (
+      ) : visibleWorkOrderEntries.length === 0 ? (
         <View style={styles.emptyState}>
-          <Text style={[styles.emptyText, { color: colors.gray }]}>No mechanic work entries submitted yet</Text>
+          <Text style={[styles.emptyText, { color: colors.gray }]}>No work entries found for this selection</Text>
         </View>
       ) : (
         <View style={styles.workOrderListContainer}>
-          {workOrderEntries.map((entry, index) => {
+          {visibleWorkOrderEntries.map((entry, index) => {
             const entryKey = String(entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.DocNum || `entry-${index}`);
             const isExpanded = workOrderExpandedMap[entryKey] !== false;
 
@@ -2150,8 +2286,21 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         {entry.DetailedParts.map((part, partIndex) => (
                           <View key={`${entry?.DocEntry || index}-part-${partIndex}`} style={[styles.entryDetailsCard, { backgroundColor: colors.light }]}> 
                             <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>&gt; {part?.ItemCode || '-'} - {part?.ItemName || '-'}</Text>
-                            <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>ReqQty: {part?.ReqQty ?? '-'} | IssQty: {part?.IssQty ?? '-'} | AddQty: {part?.AddQty ?? '-'}</Text>
+                            <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>Req: {part?.ReqQty ?? '-'} | Approved: {part?.AprQty ?? part?.ApprovedQty ?? '-'} | Issued: {part?.IssQty ?? part?.IssuedQty ?? '-'} | Received: {part?.RecQty ?? part?.ReceivedQty ?? '-'}</Text>
                             <Text style={[styles.entryDetailsMeta, { color: colors.gray }]}>Whs: {part?.Whs || '-'} | Fault: {part?.Fault || '-'} | Status: {part?.Status || '-'}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+
+                    {Array.isArray(entry?.DetailedSpecialTools) && entry.DetailedSpecialTools.length > 0 && (
+                      <View style={styles.entryDetailsSection}>
+                        <Text style={[styles.entryDetailsTitle, { color: colors.gray }]}>Special Tools:</Text>
+                        {entry.DetailedSpecialTools.map((tool, toolIndex) => (
+                          <View key={`${entry?.DocEntry || index}-tool-${toolIndex}`} style={[styles.entryDetailsCard, { backgroundColor: colors.light }]}>
+                            <Text style={[styles.entryDetailsPrimary, { color: colors.dark }]}>&gt; {tool?.ToolCode || tool?.ItemCode || '-'} - {tool?.ToolName || tool?.ItemName || tool?.Name || 'Special tool'}</Text>
+                            <Text style={[styles.entryDetailsSecondary, { color: colors.gray }]}>Req: {tool?.ReqQty ?? tool?.RequestedQty ?? '-'} | Approved: {tool?.AprQty ?? tool?.ApprovedQty ?? '-'} | Issued: {tool?.IssQty ?? tool?.IssuedQty ?? '-'} | Received: {tool?.RecQty ?? tool?.ReceivedQty ?? '-'}</Text>
+                            <Text style={[styles.entryDetailsMeta, { color: colors.gray }]}>Status: {tool?.Status || '-'} {tool?.Remarks ? `| ${tool.Remarks}` : ''}</Text>
                           </View>
                         ))}
                       </View>
@@ -2165,6 +2314,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                           disabled={Boolean(verifyingEntryId) || closingJobCard}
                           activeOpacity={0.8}
                         >
+                          <MaterialIcons name="verified" size={17} color="#FFFFFF" />
                           <Text style={styles.smallBtnText}>{verifyingEntryId === String(asWorkEntryId(entry)) ? 'Verifying...' : 'Verify Work'}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -2173,6 +2323,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                           disabled={Boolean(verifyingEntryId) || closingJobCard}
                           activeOpacity={0.8}
                         >
+                          <MaterialIcons name="restart-alt" size={17} color="#FFFFFF" />
                           <Text style={styles.smallBtnText}>Send for Rework</Text>
                         </TouchableOpacity>
                       </View>
@@ -2192,6 +2343,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const renderTabContent = () => {
     const richTheme = buildRichTheme(isDarkMode);
+    if (activeTab === 'Details') {
+      return renderWODetails();
+    }
     // Mechanics tab uses the local multi-select creation flow, not the rich renderer.
     if (activeTab === 'Mechanics') {
       return renderMechanicsDetails();
@@ -2209,43 +2363,16 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       const taskParts = (tasks || []).flatMap((t) => Array.isArray(t?.Parts) ? t.Parts : []);
       return [...woParts, ...taskParts];
     })();
-    return renderRichTabContent(activeTab, {
+    const renderedContent = renderRichTabContent(activeTab, {
       theme: richTheme,
       workOrder,
-      mechanics: mechanicsList,
-      parts: partsList,
-      mechanicPartRequests,
-      workOrderEntries,
-      history: historyRows,
-      historyLoading,
-      onRefreshHistory: () => fetchJobCardHistory(),
+      mechanics: visibleMechanics.length > 0 ? visibleMechanics : mechanicsList,
+      parts: activeTab === 'PartDetails' ? (Array.isArray(workOrder?.Parts) ? workOrder.Parts : []) : partsList,
+      mechanicPartRequests: activeTab === 'PartDetails' ? mechanicPartRequests : mechanicPartRequests,
+      workOrderEntries: visibleWorkOrderEntries,
     });
+    return renderedContent;
   };
-
-  const fetchJobCardHistory = async () => {
-    try {
-      setHistoryLoading(true);
-      const companyDb = dbName || 'MUTSPL_TEST';
-      const candidates = [workOrder?.JobCardNo, workOrder?.DocEntry, workOrder?.JobCardDocEntry, jobCardNo, docEntry]
-        .map((v) => String(v || '').trim())
-        .filter(Boolean);
-      let rows = [];
-      for (const cand of candidates) {
-        try {
-          const resp = await jobCardService.getJobCardHistory(companyDb, cand);
-          rows = extractRows(resp);
-          if (rows.length > 0) break;
-        } catch (e) {
-          // try next candidate
-        }
-      }
-      setHistoryRows(rows);
-    } catch (e) {
-      setHistoryRows([]);
-    } finally {
-      setHistoryLoading(false);
-    }
-  };;
 
   const renderTabCount = (key) => {
     const counts = getTabCounts();
@@ -2370,6 +2497,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
       {/* Tabs */}
       <View style={[styles.tabsContainer, { backgroundColor: colors.white, borderBottomColor: inputBorderColor }]}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsScrollContent}
+          accessibilityRole="tablist"
+        >
         {tabs.map((tab) => {
           const isActive = activeTab === tab.key;
           const count = renderTabCount(tab.key);
@@ -2396,6 +2529,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               onPress={() => setActiveTab(tab.key)}
             >
               <View style={styles.tabInnerRow}>
+                <View style={[styles.tabIconWrap, { backgroundColor: isActive ? 'rgba(255,255,255,0.22)' : (isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(29,78,216,0.08)') }]}>
+                  <MaterialIcons name={tab.icon} size={16} color={tabColor} />
+                </View>
                 <Text
                   style={[
                     styles.tabText,
@@ -2426,6 +2562,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             </TouchableOpacity>
           );
         })}
+        </ScrollView>
       </View>
 
       {/* Tab Content */}
@@ -2730,33 +2867,33 @@ const styles = StyleSheet.create({
   },
   tabsContainer: {
     flexGrow: 0,
-    flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: '#E0E0E0',
-    paddingHorizontal: 4,
-    paddingTop: 4,
+    paddingVertical: SPACING.xs,
+  },
+  tabsScrollContent: {
+    paddingHorizontal: SPACING.sm,
+    gap: SPACING.xs,
   },
   tab: {
-    flex: 1,
+    minWidth: 118,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 4,
-    paddingVertical: 10,
-    minHeight: 60,
-    borderBottomWidth: 3,
-    borderBottomColor: 'transparent',
-    borderTopLeftRadius: BORDER_RADIUS.sm,
-    borderTopRightRadius: BORDER_RADIUS.sm,
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: SPACING.sm,
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    borderRadius: BORDER_RADIUS.md,
   },
   activeTab: {
-    borderBottomWidth: 3,
+    borderWidth: 1,
   },
   tabInnerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingHorizontal: 2,
+    gap: 6,
   },
   tabIconWrap: {
     width: 24,
@@ -2764,7 +2901,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 2,
+    marginRight: 0,
   },
   tabText: {
     fontSize: 12,
@@ -2853,8 +2990,8 @@ const styles = StyleSheet.create({
   },
   transferActionButton: {
     flex: 1,
-    minHeight: 42,
-    borderRadius: BORDER_RADIUS.sm,
+    minHeight: 46,
+    borderRadius: BORDER_RADIUS.md,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: SPACING.sm,
@@ -2880,8 +3017,8 @@ const styles = StyleSheet.create({
     gap: SPACING.sm,
   },
   assignMechanicButton: {
-    minHeight: 36,
-    borderRadius: BORDER_RADIUS.sm,
+    minHeight: 42,
+    borderRadius: BORDER_RADIUS.md,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: SPACING.sm,
@@ -2934,6 +3071,35 @@ const styles = StyleSheet.create({
   },
   commonActionButton: {
     flex: 1,
+  },
+  primaryActionBtn: {
+    minHeight: 48,
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+    width: '100%',
+  },
+  primaryActionText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  smallBtn: {
+    minHeight: 42,
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  smallBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
   partList: {
     marginTop: SPACING.sm,
@@ -3244,8 +3410,37 @@ const styles = StyleSheet.create({
     marginTop: SPACING.xs,
   },
   selectedCodeText: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 4,
+  },
+  mechanicFilterCard: {
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.lg,
+    paddingVertical: SPACING.sm,
+    marginBottom: SPACING.md,
+  },
+  mechanicFilterLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    paddingHorizontal: SPACING.sm,
+    marginBottom: SPACING.xs,
+  },
+  mechanicFilterOptions: {
+    paddingHorizontal: SPACING.sm,
+    gap: SPACING.xs,
+  },
+  mechanicFilterChip: {
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    minHeight: 40,
+    justifyContent: 'center',
+    maxWidth: 170,
+  },
+  mechanicFilterChipText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   workOrderListContainer: {
     width: '100%',

@@ -40,7 +40,7 @@
   "devDependencies": {
     "@babel/core": "^7.20.0",
     "@react-native/babel-preset": "^0.73.21",
-    "@react-native/metro-config": "^0.80.3"
+    "@react-native/metro-config": "^0.73.5"
   },
   "private": true
 }
