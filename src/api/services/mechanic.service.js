@@ -148,6 +148,18 @@ export const mechanicService = {
     return response.data;
   },
 
+  /** Register a tow request after the breakdown work entry is created. */
+  requestTow: async (payload) => {
+    const response = await post('RequestTow', payload);
+    return response.data;
+  },
+
+  /** Mark a previously requested tow as complete. */
+  completeTow: async (payload) => {
+    const response = await post('CompleteTow', payload);
+    return response.data;
+  },
+
   /**
    * Append more Details / update remarks on an existing Work Entry.
    * @param {Object} payload

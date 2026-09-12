@@ -189,6 +189,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [selectedTowDepot, setSelectedTowDepot] = useState(routeDepot || '');
   const [depotsList, setDepotsList] = useState([]);
   const [showDepotsModal, setShowDepotsModal] = useState(false);
+  // Created by Add Work Entry (or supplied when reopening an existing
+  // breakdown entry). RequestTow must reuse this document rather than create
+  // a second line-breakdown work entry.
+  const [lineBreakdownWorkEntryId, setLineBreakdownWorkEntryId] = useState(routeWorkEntryDocEntry || null);
   const [towRequestEntryId, setTowRequestEntryId] = useState(null);
 
   // Issued Items (from SAP Store)
@@ -578,6 +582,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
           Details: savedEntry?.Details || breakdownPayload.Details,
         };
         dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: visibleEntry }));
+        if (createdEntryId) setLineBreakdownWorkEntryId(createdEntryId);
         if (!createdEntryId) {
           console.warn('[WorkEntry] Breakdown work entry saved but no WorkEntryDocEntry was returned:', JSON.stringify(breakdownRes));
         }
@@ -640,18 +645,19 @@ const WorkEntryScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Please select a depot for the tow' });
       return;
     }
-    if (beforeImageDrafts.length === 0) {
+    if (!lineBreakdownWorkEntryId && beforeImageDrafts.length === 0) {
       Toast.show({ type: 'error', text1: 'Breakdown photo required', text2: 'Upload a photo before requesting a tow vehicle.' });
       return;
     }
 
     try {
       setSubmitting(true);
-      const payload = {
+      const breakdownPayload = {
         CompanyDB: dbName || 'MUTSPL_TEST',
         JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
-        FaultLine: Number(routeFaultLine) || 0,
+        FaultLine: Number(routeFaultLine) || 1,
         UserCode: mechanicCode,
+        RepairType: repairType,
         FinalRemarks: entryRemarks || 'Tow requested',
         Details: [
           {
@@ -661,38 +667,52 @@ const WorkEntryScreen = ({ route, navigation }) => {
             Remarks: entryRemarks || '',
           },
         ],
-        TowRequested: true,
-        TowDepot: selectedTowDepot,
         CanRepairOnSite: false,
-        ComplaintType: (String(routeComplaintType || '')).toLowerCase().includes('breakdown') ? 'Breakdown' : undefined,
       };
 
-      const res = await mechanicService.createWorkEntry(payload);
-      if (res?.Success) {
-        const created = res.Data || {};
-        const workEntryDocEntry = created?.WorkEntryDocEntry || created?.DocEntry || created?.Code || null;
-        if (workEntryDocEntry) {
-          await persistWorkEntryImages('BF', beforeImageDrafts, workEntryDocEntry);
-          // Do not call AssignBreakdownTeam here. That API performs a real team
-          // assignment and rejects this stage because no team is selected. The
-          // saved TowRequested work entry is the event the supervisor queue uses.
-          console.log('[WorkEntry] Tow requested; awaiting supervisor depot-team assignment:', JSON.stringify({
-            breakdownNo: routeComplaintNo || '',
-            jobCardDocEntry: resolvedJobCardDocEntry,
-            depot: selectedTowDepot,
-          }));
-          dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: { ...created, WorkEntryDocEntry: workEntryDocEntry, TowRequested: true } }));
-          setTowRequestEntryId(workEntryDocEntry);
-          setBeforeImageDrafts([]);
-          Toast.show({ type: 'success', text1: 'Tow requested', text2: 'Add the depot-arrival photo when the bus arrives.' });
-          return;
+      // Reuse the line-breakdown entry already created by Add Work Entry.
+      // Only create one here when the tow is requested before an entry exists.
+      let workEntryDocEntry = lineBreakdownWorkEntryId;
+      let created = null;
+      if (!workEntryDocEntry) {
+        const res = await lineBreakdownService.createLineBreakdownWorkEntry(breakdownPayload);
+        if (!res?.Success && !res?.Status) {
+          throw new Error(res?.Message || 'Failed to create breakdown work entry');
         }
-
-        dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: res.Data || payload }));
-        Toast.show({ type: 'success', text1: 'Tow requested' });
-      } else {
-        Toast.show({ type: 'error', text1: res?.Message || 'Failed to request tow' });
+        const responseData = res?.Data ?? res;
+        created = responseData?.WorkEntry
+          || responseData?.WorkEntryDetails
+          || (responseData && typeof responseData === 'object' && !Array.isArray(responseData) ? responseData : {});
+        workEntryDocEntry = created?.WorkEntryDocEntry
+          || created?.WorkEntryNo
+          || created?.WorkEntryEntry
+          || created?.DocEntry
+          || created?.Code
+          || (typeof responseData === 'number' || typeof responseData === 'string' ? responseData : null);
+        if (!workEntryDocEntry) {
+          throw new Error('Breakdown work entry was created without a work-entry number.');
+        }
+        setLineBreakdownWorkEntryId(workEntryDocEntry);
       }
+
+      const towResponse = await mechanicService.requestTow({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: mechanicCode,
+        TowDestinationType: towDepotMode === 'other' ? 'OTHER' : 'DEFAULT',
+        TowDepot: towDepotMode === 'other' ? selectedTowDepot : '',
+        Remarks: entryRemarks || 'Bus cannot be repaired at breakdown location.',
+      });
+      if (towResponse?.Success === false) {
+        throw new Error(towResponse?.Message || 'Failed to request tow');
+      }
+      await persistWorkEntryImages('BF', beforeImageDrafts, workEntryDocEntry);
+      if (created) {
+        dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: { ...created, WorkEntryDocEntry: workEntryDocEntry, TowRequested: true } }));
+      }
+      setTowRequestEntryId(workEntryDocEntry);
+      setBeforeImageDrafts([]);
+      Toast.show({ type: 'success', text1: 'Tow requested', text2: 'Tap Complete Tow once the bus has been picked up.' });
     } catch (err) {
       Toast.show({ type: 'error', text1: err.message || 'Error' });
     } finally {
@@ -700,27 +720,21 @@ const WorkEntryScreen = ({ route, navigation }) => {
     }
   };
 
-  const handleConfirmTowArrival = async () => {
+  const handleCompleteTow = async () => {
     if (!towRequestEntryId) return;
-    if (afterImageDrafts.length === 0) {
-      Toast.show({ type: 'error', text1: 'Arrival photo required', text2: 'Upload a photo of the bus with the towing van at the depot.' });
-      return;
-    }
     try {
       setSubmitting(true);
-      await persistWorkEntryImages('AF', afterImageDrafts, towRequestEntryId);
-      const res = await mechanicService.completeWork({
+      const res = await mechanicService.completeTow({
         CompanyDB: dbName || 'MUTSPL_TEST',
         WorkEntryDocEntry: Number(towRequestEntryId) || towRequestEntryId,
         UserCode: mechanicCode,
-        FinalRemarks: 'Bus and towing van arrived at depot. Supervisor to assign depot maintenance team.',
+        Remarks: entryRemarks || 'Tow vehicle picked up the bus and left for the depot.',
       });
-      if (!res?.Success) throw new Error(res?.Message || 'Failed to close tow work entry');
-      Toast.show({ type: 'success', text1: 'Depot arrival recorded', text2: 'Supervisor can now assign the depot maintenance team and notify its leader.' });
+      if (res?.Success === false) throw new Error(res?.Message || 'Failed to complete tow');
+      Toast.show({ type: 'success', text1: 'Tow completed', text2: 'The tow has been recorded successfully.' });
       setAwaitingVerification(true);
-      setAfterImageDrafts([]);
     } catch (err) {
-      Toast.show({ type: 'error', text1: err.message || 'Error recording depot arrival' });
+      Toast.show({ type: 'error', text1: err.message || 'Error completing tow' });
     } finally {
       setSubmitting(false);
     }
@@ -1037,19 +1051,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
                     </>
                   ) : (
                     <>
-                      <View style={[styles.imageBox, { borderColor: '#FDBA74', backgroundColor: colors.white }]}>
-                        <Text style={{ color: '#9A4A00', fontWeight: '700', fontSize: 13 }}>Bus + Towing Van at Depot *</Text>
-                        <View style={styles.imageActions}>
-                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('AF')}>
-                            <MaterialIcons name="photo-library" size={16} color="#00689E" /><Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('AF', true)}>
-                            <MaterialIcons name="photo-camera" size={16} color="#007A5A" /><Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                      <Button mode="contained" icon="location-on" buttonColor="#C2410C" onPress={handleConfirmTowArrival} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>
-                        Record Depot Arrival & Close Work Entry
+                      <Text style={[styles.flowHint, { color: '#9A4A00' }]}>Keep this work entry open until the towing vehicle has picked up the bus.</Text>
+                      <Button mode="contained" icon="local-shipping" buttonColor="#C2410C" onPress={handleCompleteTow} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>
+                        Complete Tow
                       </Button>
                     </>
                   )}
