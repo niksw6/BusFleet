@@ -69,6 +69,9 @@ const normalizeJobType = (item) => {
   // JB is the backend code for a Breakdown Job Card. Never let a generic
   // fault/job field (such as an Assembly description) override it.
   if (getNotificationType(item) === 'JB') return 'Breakdown';
+  // JCA is a Driver Complaint assignment. Its notification text can still
+  // mention a breakdown, so the explicit backend type must take precedence.
+  if (getNotificationType(item) === 'JCA') return 'Driver Complaint';
 
   const raw = String(item?.JobType ?? item?.FormType ?? item?.ComplaintType ?? item?.IncidentType ?? item?.Type ?? '').trim();
   if (!raw) {
@@ -77,7 +80,8 @@ const normalizeJobType = (item) => {
   }
 
   const normalized = raw.toLowerCase();
-  if (normalized.includes('breakdown') || normalized === 'b' || normalized === 'jca' || normalized === 'jct') return 'Breakdown';
+  if (normalized.includes('breakdown') || normalized === 'b' || normalized === 'jct') return 'Breakdown';
+  if (normalized === 'jca') return 'Driver Complaint';
   if (normalized.includes('driver') || normalized.includes('complaint') || normalized === 'd') return 'Driver Complaint';
   return raw;
 };
@@ -120,6 +124,22 @@ const getDocEntry = (item) => item?.JobCardEntry
   ?? item?.DocEntry
   ?? item?.ReferenceDocEntry
   ?? '';
+const getJobCardReferences = (item) => new Set([
+  item?.JobCardEntry,
+  item?.jobCardEntry,
+  item?.JobCardDocEntry,
+  item?.jobCardDocEntry,
+  item?.JobCardNo,
+  item?.jobCardNo,
+  item?.DocEntry,
+  item?.docEntry,
+  item?.ReferenceDocEntry,
+].map(value => String(value ?? '').trim()).filter(Boolean));
+const hasSameJobCard = (left, right) => {
+  const leftReferences = getJobCardReferences(left);
+  const rightReferences = getJobCardReferences(right);
+  return [...leftReferences].some(reference => rightReferences.has(reference));
+};
 const getNotificationType = (item) => String(
   item?.Type
   ?? item?.type
@@ -147,13 +167,14 @@ const getBreakdownJobCardDocEntry = (item) => Number(
 const itemKey = (item) => `${getNotificationType(item) || normalizeJobType(item)}-${getDocEntry(item)}-${getFaultLine(item)}`;
 const isBreakdownAssignment = (item) => {
   if (getNotificationType(item) === 'JB') return true;
+  if (getNotificationType(item) === 'JCA') return false;
   const jobType = normalizeJobType(item);
   if (jobType === 'Breakdown') return true;
 
   const complaintTypes = [item?.ComplaintType, item?.IncidentType, item?.FormType, item?.Type, item?.JobType]
     .map(value => String(value || '').trim().toUpperCase());
   const description = String(item?.Description ?? item?.Fault ?? item?.FaultName ?? '').trim().toLowerCase();
-  return complaintTypes.some(type => type.includes('BREAKDOWN') || ['B', 'JCA', 'JCT'].includes(type))
+  return complaintTypes.some(type => type.includes('BREAKDOWN') || ['B', 'JCT'].includes(type))
     || description.includes('breakdown')
     || Boolean(item?.BreakdownDocEntry || item?.BreakdownNo || item?.BreakdownId || item?.ComplaintNo || item?.CmplaintNo);
 };
@@ -289,7 +310,9 @@ const getNotificationQueueItems = (notifications) => {
     FaultLine: notification?.FaultLine || notification?.faultLine || 1,
     ComplaintType: getNotificationType(notification) === 'JR'
       ? 'Repair Incident'
-      : 'Breakdown',
+      : getNotificationType(notification) === 'JCA'
+        ? 'Driver Complaint'
+        : 'Breakdown',
     FaultCode: notification?.FaultCode || notification?.faultCode || '',
     FaultName: notification?.FaultName || notification?.faultName || notification?.Description || 'Line Breakdown',
     Vehicle: notification?.Vehicle || notification?.BusNo || notification?.Bus || (() => {
@@ -335,17 +358,25 @@ const mergeQueueItems = (apiItems, notificationItems) => {
   notificationItems.forEach((item) => {
     const key = itemKey(item);
     const matchingIndex = merged.findIndex((existingItem) => (
-      String(getDocEntry(existingItem)).trim() === String(getDocEntry(item)).trim()
+      hasSameJobCard(existingItem, item)
       && (
         (getNotificationType(item) === 'JB' && isBreakdownAssignment(existingItem))
+        // A JCA notification is job-card-level metadata. Its matching
+        // dashboard fault can include ComplaintNo, which is also used by
+        // some Breakdown rows, so do not rely on that classification here.
+        || (getNotificationType(item) === 'JCA' && !isRepairAssignment(existingItem))
         || (getNotificationType(item) === 'JR' && isRepairAssignment(existingItem))
       )
     ));
     if (matchingIndex >= 0) {
+      // JCA is a job-card-level Driver Complaint notification, not a fault.
+      // The dashboard row already carries the actual fault name, so keep it
+      // instead of replacing it with the generic "Driver Complaint Incident".
+      if (getNotificationType(item) === 'JCA') return;
       // A dashboard row may exist before the JR notification is read. Keep
       // its details, but let the assignment notification control its queue.
       const existingItem = merged[matchingIndex];
-      const preservedStatus = getNotificationType(item) === 'JB'
+      const preservedStatus = ['JB', 'JCA'].includes(getNotificationType(item))
         ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.FaultStatus || 'P')
         : isRepairAccepted(existingItem)
         ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.MechanicStatus)
@@ -354,8 +385,8 @@ const mergeQueueItems = (apiItems, notificationItems) => {
         ...existingItem,
         ...item,
         Type: getNotificationType(item),
-        JobType: getNotificationType(item) === 'JB' ? 'Breakdown' : 'Repair',
-        ComplaintType: getNotificationType(item) === 'JB' ? 'Breakdown' : 'Repair Incident',
+        JobType: getNotificationType(item) === 'JB' ? 'Breakdown' : getNotificationType(item) === 'JCA' ? 'Driver Complaint' : 'Repair',
+        ComplaintType: getNotificationType(item) === 'JB' ? 'Breakdown' : getNotificationType(item) === 'JCA' ? 'Driver Complaint' : 'Repair Incident',
         ...(getNotificationType(item) === 'JR' ? { FaultName: 'Assembly', Fault: 'Assembly' } : {}),
         Status: preservedStatus,
       };
@@ -568,7 +599,9 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
     const repairAssignment = isRepairAssignment(item);
     const bucket = repairAssignment ? BUCKET.REPAIR : deriveBucket(item);
     const itemJobType = repairAssignment ? 'Assembly Repair' : normalizeJobType(item);
-    const faultName = breakdownAssignment
+    const faultName = getNotificationType(item) === 'JCA'
+      ? 'Driver Complaint Incident'
+      : breakdownAssignment
       ? 'Breakdown Incident'
       : repairAssignment
         ? 'Assembly'

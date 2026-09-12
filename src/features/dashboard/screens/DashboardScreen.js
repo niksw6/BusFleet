@@ -149,6 +149,7 @@ const extractArrayItems = (data) => {
 
 const isBreakdownAssignmentItem = (item) => {
   if (!item || typeof item !== 'object') return false;
+  if (String(item?.Type || item?.type || item?.NotificationType || '').trim().toUpperCase() === 'JCA') return false;
   const complaintTypes = [
     item?.ComplaintType,
     item?.IncidentType,
@@ -158,7 +159,7 @@ const isBreakdownAssignmentItem = (item) => {
     item?.BreakdownType,
   ].map(value => String(value || '').trim().toUpperCase());
   const description = String(item?.Description ?? item?.Fault ?? item?.FaultName ?? item?.JobDescription ?? '').trim().toLowerCase();
-  return complaintTypes.some(type => type.includes('BREAKDOWN') || ['B', 'JCA', 'JCT'].includes(type))
+  return complaintTypes.some(type => type.includes('BREAKDOWN') || ['B', 'JCT'].includes(type))
     || description.includes('breakdown')
     || Boolean(
       item?.BreakdownDocEntry

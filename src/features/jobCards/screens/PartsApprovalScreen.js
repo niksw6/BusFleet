@@ -254,6 +254,40 @@ const PartsApprovalScreen = ({ navigation, route }) => {
 
   const handleSubmit = async (group) => {
     const groupKey = String(group.workEntryDocEntry);
+    const hasDecision = group.parts.some(p => p.approved === true || p.approved === false);
+    if (!hasDecision) {
+      Toast.show({
+        type: 'info',
+        text1: 'Select a decision',
+        text2: 'Approve or reject at least one requested part before submitting.',
+      });
+      return;
+    }
+
+    const invalidQuantityPart = group.parts.find((part) => (
+      part.approved === true
+      && Number(part.approvedQty) > Number(part.reqQty)
+    ));
+    if (invalidQuantityPart) {
+      Toast.show({
+        type: 'error',
+        text1: 'Invalid approved quantity',
+        text2: `Approved quantity for ${invalidQuantityPart.itemName} cannot exceed the requested quantity (${invalidQuantityPart.reqQty}).`,
+      });
+      return;
+    }
+
+    const missingLocationPart = group.parts.find((part) => (
+      part.approved === true && !String(part.busLocation || '').trim()
+    ));
+    if (missingLocationPart) {
+      Toast.show({
+        type: 'info',
+        text1: 'Bus location required',
+        text2: `Select the bus location for ${missingLocationPart.itemName} before submitting.`,
+      });
+      return;
+    }
     try {
       setSubmittingKey(groupKey);
       const companyDb = dbName || 'MUTSPL_TEST';
@@ -289,6 +323,7 @@ const PartsApprovalScreen = ({ navigation, route }) => {
   const renderGroup = (group) => {
     const groupKey = String(group.workEntryDocEntry);
     const isSubmitting = submittingKey === groupKey;
+    const hasDecision = group.parts.some(p => p.approved === true || p.approved === false);
     return (
       <View key={groupKey} style={[styles.card, { backgroundColor: colors.white, borderColor: colors.border || '#E0E0E0' }]}>
         <View style={styles.cardTop}>
@@ -384,10 +419,10 @@ const PartsApprovalScreen = ({ navigation, route }) => {
         ))}
 
         <TouchableOpacity
-          style={[styles.submitBtn, { backgroundColor: colors.primary }]}
+          style={[styles.submitBtn, { backgroundColor: hasDecision ? colors.primary : colors.border || '#CBD5E1' }]}
           onPress={() => handleSubmit(group)}
           activeOpacity={0.8}
-          disabled={isSubmitting}
+          disabled={isSubmitting || !hasDecision}
         >
           <MaterialIcons name="send" size={16} color="#FFF" />
           <Text style={styles.submitBtnText}>{isSubmitting ? 'Submitting…' : 'Submit Decision'}</Text>

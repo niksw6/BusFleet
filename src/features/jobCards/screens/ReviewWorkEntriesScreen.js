@@ -408,7 +408,7 @@ const mapPartRowForDisplay = (row, index) => ({
   ItemCode: row?.ItemCode || '',
   ItemName: row?.ItemName || row?.PartName || row?.ItemCode || 'Item',
   Qty: row?.ReqQty ?? row?.Qty ?? row?.Quantity ?? 1,
-  IssuedQty: row?.IssuedQty ?? row?.IssueQty ?? 0,
+  IssuedQty: row?.IssuedQty ?? row?.IssueQty ?? row?.IssQty ?? 0,
   ReceivedQty: row?.ReceivedQty ?? 0,
   Status: row?.Status || row?.ApprovalStatus || '',
   Remarks: row?.Remarks || '',
@@ -1592,8 +1592,8 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                     (Array.isArray(entry?.parts) ? entry.parts : []).map((part, idx) => (
                       <View key={`part-${idx}`} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
                         <Text style={[styles.metaText, { color: colors.dark }]}>Part: {part?.ItemName || part?.PartName || part?.ItemCode || '-'}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Qty: {part?.Qty || part?.Quantity || '-'}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Remarks: {part?.Remarks || '-'}</Text>
+                        <Text style={[styles.metaText, { color: colors.gray }]}>Requested Qty: {part?.ReqQty ?? part?.Qty ?? part?.Quantity ?? '-'}</Text>
+                        <Text style={[styles.metaText, { color: colors.gray }]}>Issued Qty: {part?.IssuedQty ?? part?.IssueQty ?? part?.IssQty ?? 0}</Text>
                       </View>
                     ))
                   )}

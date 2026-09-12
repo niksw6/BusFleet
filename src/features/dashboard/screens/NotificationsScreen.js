@@ -72,7 +72,7 @@ const NotificationsScreen = ({ navigation }) => {
     if (typeCode === 'B') return 'B';
     if (typeCode === 'JB') return 'B';
     if (typeCode === 'JCT') return 'B';
-    if (typeCode === 'JCA') return 'B';
+    if (typeCode === 'JCA') return 'D';
     if (typeCode === 'M') return 'M';
     if (typeCode === 'D') return 'D';
     if (typeCode === 'R' || typeCode === 'RI' || typeCode === 'A' || typeCode === 'ASSEMBLY') return 'A';
@@ -230,7 +230,7 @@ const NotificationsScreen = ({ navigation }) => {
     if (typeCode === 'B') return 'Breakdown';
     if (typeCode === 'JB') return 'Breakdown';
     if (typeCode === 'JCT') return 'Breakdown';
-    if (typeCode === 'JCA') return 'Breakdown';
+    if (typeCode === 'JCA') return 'Driver Complaint';
     if (typeCode === 'R' || typeCode === 'RI') return 'Repair Incident';
     if (typeCode === 'D') return 'Driver Complaint';
 
@@ -408,9 +408,8 @@ const NotificationsScreen = ({ navigation }) => {
         || normalized === 'B'
         || normalized === 'JB'
         || type === 'JCT'
-        || type === 'JCA'
         || String(item?.FormType || item?.formType || item?.ComplaintType || item?.complaintType || item?.JobType || item?.jobType || '').trim().toUpperCase() === 'B'
-        || ['B', 'JB', 'JCT', 'JCA'].includes(String(item?.Type || item?.type || '').trim().toUpperCase())
+        || ['B', 'JB', 'JCT'].includes(String(item?.Type || item?.type || '').trim().toUpperCase())
       );
     };
 
@@ -421,7 +420,6 @@ const NotificationsScreen = ({ navigation }) => {
         || type === 'B'
         || type === 'JB'
         || type === 'JCT'
-        || type === 'JCA'
         || Boolean(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.ComplaintNo || item?.complaintNo || item?.BreakdownNo || item?.BreakdownDocEntry || item?.BreakdownId)
       );
 
@@ -614,7 +612,7 @@ const NotificationsScreen = ({ navigation }) => {
         docEntry,
         jobCardNo: docEntry,
         dbName: dbName || 'MUTSPL_TEST',
-        complaintType: ['JCT', 'JCA'].includes(type) ? 'Breakdown' : undefined,
+        complaintType: type === 'JCT' ? 'Breakdown' : type === 'JCA' ? 'Driver Complaint' : undefined,
       });
       return;
     }
@@ -644,8 +642,9 @@ const NotificationsScreen = ({ navigation }) => {
         return 'report-problem';
       case 'B':
       case 'JCT':
-      case 'JCA':
         return 'warning';
+      case 'JCA':
+        return 'report-problem';
       case 'J':
         return 'assignment';
       case 'T':

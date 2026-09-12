@@ -24,7 +24,7 @@ const normalizeExplicitRole = (roleValue) => {
   if (normalized === 'mechanic') return USER_ROLES.MECHANIC;
   if (normalized === 'electrician') return USER_ROLES.ELECTRICIAN;
   if (normalized === 'supervisor') return USER_ROLES.SUPERVISOR;
-  if (normalized === 'store') return USER_ROLES.STORE;
+  if (normalized === 'store' || normalized === 'store manager' || normalized === 'storemanager' || normalized === 'store_manager') return USER_ROLES.STORE;
   if (normalized === 'driver') return USER_ROLES.DRIVER;
   if (normalized === 'admin') return USER_ROLES.ADMIN;
   if (normalized === 'teamleader' || normalized === 'team leader' || normalized === 'team_leader') return USER_ROLES.TEAM_LEADER;

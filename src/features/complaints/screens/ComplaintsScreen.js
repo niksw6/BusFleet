@@ -17,8 +17,8 @@ import StandardListCard from '../../../shared/components/StandardListCard';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDate, truncateText, getStatusName, getComplaintTypeBadge } from '../../../utils/helpers';
-import { complaintService, maintenanceService } from '../../../api/services';
-import { isSupervisorUser, isDriverUser } from '../../../utils/roleAccess';
+import { complaintService, maintenanceService, repairService } from '../../../api/services';
+import { isSupervisorUser, isDriverUser, isStoreUser } from '../../../utils/roleAccess';
 
 const normalizeStatusFilter = (filter) => {
   if (filter === 'C') return 'CM';
@@ -30,12 +30,23 @@ const normalizeDataType = (type) => {
   if (!normalized) return 'all';
   if (normalized.includes('breakdown')) return 'breakdowns';
   if (normalized.includes('preventive')) return 'preventive';
+  if (normalized.includes('assembly') || normalized.includes('repair')) return 'assembly';
   if (normalized.includes('complaint')) return 'complaints';
   if (normalized === 'all') return 'all';
   return 'all';
 };
 
 const normalizeIdentity = (value) => String(value || '').trim().toLowerCase();
+
+const extractRows = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+  for (const value of Object.values(data)) {
+    if (Array.isArray(value)) return value;
+  }
+  return [data];
+};
 
 const getSortableIncidentTimestamp = (item) => {
   const dateCandidates = [
@@ -109,6 +120,44 @@ const matchesDriverIncident = (incident, driverIdentity, driverDisplayName) => {
   return Boolean(codeMatch || nameMatch);
 };
 
+// Store users must only see repair incidents assigned to their own StorePerson
+// identity. Unlike driver rows, an absent store identity is not considered a
+// match: showing the depot-wide fallback would expose other store users' work.
+const matchesStoreIncident = (incident, storeIdentity, storeDisplayName) => {
+  const codeCandidates = [
+    incident?.StorePersonID,
+    incident?.StorePerson,
+    incident?.StoreCode,
+    incident?.StoreUserCode,
+    incident?.AssignedStoreCode,
+    incident?.StoreManagerCode,
+  ].map(normalizeIdentity).filter(Boolean);
+  const nameCandidates = [
+    incident?.StorePersonName,
+    incident?.StoreManager,
+    incident?.StoreName,
+    incident?.AssignedStoreName,
+  ].map(normalizeIdentity).filter(Boolean);
+
+  return Boolean(
+    (storeIdentity && codeCandidates.includes(storeIdentity))
+    || (storeDisplayName && nameCandidates.includes(storeDisplayName))
+  );
+};
+
+const isAssemblyIncident = (incident) => {
+  const typeText = [
+    incident?.ComplaintType,
+    incident?.IncidentType,
+    incident?.JobType,
+    incident?.FormType,
+    incident?.Type,
+    incident?.AssemblyType,
+  ].map(normalizeIdentity).join(' ');
+  return typeText.includes('assembly') || typeText.includes('repair') || typeText === 'a'
+    || Boolean(incident?.Assembly || incident?.AssemblyCode || incident?.RepairAssemblyCode);
+};
+
 const mapSchedulerDateTime = (lastServiceDate) => {
   if (!lastServiceDate) {
     return { date: '-', time: '' };
@@ -142,11 +191,15 @@ const ComplaintsScreen = ({ navigation, route }) => {
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const supervisorUser = isSupervisorUser(user);
   const driverUser = isDriverUser(user);
+  const storeUser = isStoreUser(user);
   const driverIdentity = String(user?.Code || user?.code || user?.User || user?.user || '').trim().toLowerCase();
   const driverDisplayName = String(user?.name || user?.Name || user?.FirstName || '').trim().toLowerCase();
+  const storeIdentity = String(user?.User || user?.user || user?.UserCode || user?.Code || user?.code || '').trim().toLowerCase();
+  const storeDisplayName = String(user?.name || user?.Name || user?.FirstName || '').trim().toLowerCase();
   const selectedChipTextColor = colors.white || COLORS.white;
 
   const [complaints, setComplaints] = useState([]);
+  const [repairIncidents, setRepairIncidents] = useState([]);
   const [preventiveMaintenances, setPreventiveMaintenances] = useState([]);
   const [filteredComplaints, setFilteredComplaints] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -159,6 +212,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
     { key: 'all', label: 'All Incidents' },
     { key: 'complaints', label: 'Driver Complaints' },
     { key: 'breakdowns', label: 'Breakdown' },
+    { key: 'assembly', label: 'Assembly' },
     { key: 'preventive', label: 'Preventive Maintenance' },
   ];
 
@@ -187,21 +241,27 @@ const ComplaintsScreen = ({ navigation, route }) => {
 
   useEffect(() => {
     filterComplaints();
-  }, [searchQuery, selectedFilter, complaints, preventiveMaintenances, dataType]);
+  }, [searchQuery, selectedFilter, complaints, repairIncidents, preventiveMaintenances, dataType]);
 
   const fetchComplaints = async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
       const depot = user?.Depot || user?.depot || '';
-      const shouldFetchSchedulers = !driverUser;
+      const shouldFetchSchedulers = !driverUser && !storeUser;
 
-      const [incidentsResponse, serviceSchedulersResponse] = await Promise.all([
+      const [incidentsResponse, repairIncidentsResponse, serviceSchedulersResponse] = await Promise.all([
         complaintService.getIncidents(
           companyDb,
           null,
           null,
           depot,
         ),
+        // GetRepairIncident is detail-based. The Assembly filter is backed by
+        // the repair incident supplied for DocEntry 2.
+        repairService.getRepairIncident(companyDb, 2).catch((repairError) => {
+          console.warn('Unable to load repair incidents:', repairError?.message || repairError);
+          return { Success: false, Data: [] };
+        }),
         shouldFetchSchedulers
           ? maintenanceService.getServiceSchedulers(companyDb)
           : Promise.resolve({ Success: true, Data: [] }),
@@ -225,6 +285,27 @@ const ComplaintsScreen = ({ navigation, route }) => {
       } else {
         setComplaints([]);
       }
+
+      const normalizedRepairIncidents = extractRows(repairIncidentsResponse)
+        .map((item) => {
+          const repairDocEntry = item?.DocEntry || item?.RepairIncidentDocEntry || item?.IncidentDocEntry || item?.DocNum || '';
+          return {
+            ...item,
+            DocEntry: repairDocEntry,
+            ComplaintNo: repairDocEntry,
+            ComplaintType: 'Assembly',
+            ComplaintDate: item?.IncidentDate || item?.CreateDate || item?.CreateDt || item?.DocDate || item?.Date || '-',
+            ComplaintTime: item?.IncidentTime || item?.CreateTime || item?.CreateTm || item?.DocTime || item?.Time || '',
+            CreatedDate: item?.CreateDate || item?.CreateDt || item?.DocDate || item?.Date || '',
+            BusNo: item?.BusNo || item?.Vehicle || item?.AssemblyName || item?.Assembly || '-',
+            Priority: item?.Priority || 'Medium',
+            Status: item?.Status || item?.IncidentStatus || 'O',
+            JobCardNo: item?.JobCardNo || item?.JobCardEntry || item?.JobCardDocEntry || '',
+            _source: 'repairIncident',
+          };
+        })
+        .filter((item) => String(item.DocEntry || '').trim());
+      setRepairIncidents(normalizedRepairIncidents);
 
       if (serviceSchedulersResponse?.Success && Array.isArray(serviceSchedulersResponse.Data)) {
         const normalizedPreventiveList = serviceSchedulersResponse.Data.map((schedulerItem, index) => {
@@ -251,6 +332,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
     } catch (error) {
       console.error('Error fetching data:', error);
       setComplaints([]);
+      setRepairIncidents([]);
       setPreventiveMaintenances([]);
     }
   };
@@ -267,8 +349,13 @@ const ComplaintsScreen = ({ navigation, route }) => {
     if (driverUser) {
       filtered = [...complaints];
       filtered = filtered.filter((c) => matchesDriverIncident(c, driverIdentity, driverDisplayName));
+    } else if (storeUser) {
+      const source = dataType === 'assembly' ? repairIncidents : complaints;
+      filtered = [...source].filter((c) => matchesStoreIncident(c, storeIdentity, storeDisplayName));
     } else {
-      filtered = dataType === 'preventive'
+      filtered = dataType === 'assembly'
+        ? [...repairIncidents]
+        : dataType === 'preventive'
         ? [...preventiveMaintenances]
         : [...complaints, ...preventiveMaintenances];
     }
@@ -282,6 +369,8 @@ const ComplaintsScreen = ({ navigation, route }) => {
         const complaintType = String(c.ComplaintType || '').toLowerCase();
         return complaintType === 'driver complaints' || complaintType.includes('driver complaint');
       });
+    } else if (dataType === 'assembly') {
+      filtered = filtered.filter(isAssemblyIncident);
     }
 
     if (selectedFilter !== 'All') {
@@ -326,6 +415,13 @@ const ComplaintsScreen = ({ navigation, route }) => {
       <StandardListCard
         accentColor={colors.primary}
         onPress={() => {
+          if (item._source === 'repairIncident') {
+            navigation.navigate('RepairIncidentReview', {
+              docEntry: item.DocEntry,
+              dbName: dbName || 'MUTSPL_TEST',
+            });
+            return;
+          }
           navigation.navigate('ComplaintDetail', {
             complaintNo: item.ComplaintNo,
             dbName: dbName || 'MUTSPL_TEST',
@@ -344,7 +440,9 @@ const ComplaintsScreen = ({ navigation, route }) => {
             <Text style={[styles.incidentTitleText, { color: colors.dark }]}>
               Incident #{incidentTypeCode}-{item.ComplaintNo || '-'}
             </Text>
-            <Text style={[styles.incidentSubtitleText, { color: colors.gray }]}>Bus #{item.BusNo || '-'}</Text>
+            <Text style={[styles.incidentSubtitleText, { color: colors.gray }]}>
+              {item._source === 'repairIncident' ? `Assembly: ${item.AssemblyName || item.Assembly || '-'}` : `Bus #${item.BusNo || '-'}`}
+            </Text>
           </View>
         </View>
 
@@ -388,10 +486,11 @@ const ComplaintsScreen = ({ navigation, route }) => {
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
       <ScreenHeader
-        title={driverUser ? 'My Incidents' : 'Incidents'}
+        title={driverUser || storeUser ? 'My Incidents' : 'Incidents'}
         subtitle={`${filteredComplaints.length} ${
           dataType === 'breakdowns' ? 'Breakdown' : 
           dataType === 'preventive' ? 'Preventive Maintenance' :
+          dataType === 'assembly' ? 'Assembly' :
           dataType === 'complaints' ? 'Complaint' : 
           'Incident'
         }${filteredComplaints.length !== 1 ? 's' : ''}`}
@@ -495,7 +594,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
           <View style={styles.emptyContainer}>
             <MaterialIcons name="inbox" size={64} color={colors.gray} />
             <Text style={[styles.emptyText, { color: colors.gray }]}>
-              No {dataType === 'breakdowns' ? 'breakdowns' : dataType === 'preventive' ? 'preventive maintenance incidents' : dataType === 'complaints' ? 'complaints' : 'incidents'} found
+              No {dataType === 'breakdowns' ? 'breakdowns' : dataType === 'preventive' ? 'preventive maintenance incidents' : dataType === 'assembly' ? 'assembly incidents' : dataType === 'complaints' ? 'complaints' : 'incidents'} found
             </Text>
           </View>
         }
@@ -697,4 +796,3 @@ const styles = StyleSheet.create({
 });
 
 export default ComplaintsScreen;
-

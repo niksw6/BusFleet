@@ -15,6 +15,9 @@ const isSuccess = (response) => (
 
 const getWorkEntryDocEntry = (response) => {
   const data = response?.Data ?? response?.data ?? response;
+  // CreateRepairWorkEntry returns the newly-created WorkEntryDocEntry directly
+  // in Data (for example: { Success: true, Data: 42 }).
+  if (typeof data === 'string' || typeof data === 'number') return data;
   const row = Array.isArray(data) ? data[0] : data;
   const nested = row?.WorkEntry || row?.WorkEntryDetails || row?.Result || row?.Data;
   const nestedRow = Array.isArray(nested) ? nested[0] : nested;
@@ -173,6 +176,7 @@ const RepairWorkScreen = ({ route }) => {
       setWorkEntryDocEntry(createdEntry);
       return createdEntry;
     } catch (error) {
+      console.error('[RepairWork] CreateRepairWorkEntry failed:', error?.message || error);
       Toast.show({ type: 'error', text1: 'Unable to open repair work', text2: error?.message || 'Please try again.' });
       return null;
     } finally {
@@ -373,6 +377,12 @@ const RepairWorkScreen = ({ route }) => {
   const saveWork = async (nextStatus = status) => {
     try {
       setSubmitting(true);
+      console.log('[RepairWork] Save button pressed:', JSON.stringify({
+        action: workEntryDocEntry ? 'Update Repair Work Entry' : 'Create Repair Work Entry',
+        currentWorkEntryDocEntry: workEntryDocEntry,
+        jobCardEntry,
+        nextStatus,
+      }));
       const entryDocEntry = workEntryDocEntry || await createWorkEntry();
       if (!entryDocEntry) return;
       const uploadedImages = await uploadRepairImages();
@@ -387,9 +397,12 @@ const RepairWorkScreen = ({ route }) => {
         Images: uploadedImages,
         Parts: parts,
       };
+      const endpoint = nextStatus === 'C' ? 'CompleteRepairWorkEntry' : 'UpdateRepairWorkEntry';
+      console.log(`[RepairWork] POST ${endpoint} payload:`, JSON.stringify(payload));
       const response = nextStatus === 'C'
         ? await repairService.completeRepairWorkEntry(payload)
         : await repairService.updateRepairWorkEntry(payload);
+      console.log(`[RepairWork] ${endpoint} response:`, JSON.stringify(response));
       if (!isSuccess(response)) throw new Error(response?.Message || 'Repair work update failed.');
       if (uploadedImages.length > 0) {
         await Promise.all(uploadedImages.map(image => repairService.addRepairWorkImage({
@@ -405,6 +418,7 @@ const RepairWorkScreen = ({ route }) => {
       setImages([]);
       Toast.show({ type: 'success', text1: nextStatus === 'C' ? 'Repair submitted for review' : nextStatus === 'P' ? 'Repair work paused' : 'Repair work saved' });
     } catch (error) {
+      console.error('[RepairWork] Save repair work failed:', error?.message || error);
       Toast.show({ type: 'error', text1: 'Unable to save repair work', text2: error?.message || 'Please try again.' });
     } finally {
       setSubmitting(false);

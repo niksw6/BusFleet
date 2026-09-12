@@ -1,4 +1,5 @@
 import { get, post, handleApiError } from '../client';
+import { API_BASE_URL } from '../../constants/config';
 
 export const repairService = {
   getRepairAssemblies: async (companyDB) => {
@@ -143,11 +144,14 @@ export const repairService = {
 
   createRepairWorkEntry: async (payload) => {
     try {
+      const endpoint = 'CreateRepairWorkEntry';
+      console.log(`[Repair API] POST ${endpoint} URL:`, `${API_BASE_URL}${endpoint}`);
       console.log('[Repair API] POST CreateRepairWorkEntry payload:', JSON.stringify(payload));
-      const response = await post('CreateRepairWorkEntry', payload);
+      const response = await post(endpoint, payload);
       console.log('[Repair API] CreateRepairWorkEntry response:', JSON.stringify(response.data));
       return response.data;
     } catch (error) {
+      console.error('[Repair API] CreateRepairWorkEntry failed:', error?.message || error);
       throw new Error(handleApiError(error));
     }
   },
