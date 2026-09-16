@@ -310,13 +310,45 @@ export const renderMechanicsTab = ({ mechanics, theme }) => {
 export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
   const woParts = Array.isArray(parts) ? parts : [];
   const reqParts = Array.isArray(mechanicPartRequests) ? mechanicPartRequests : [];
-  const merged = [...woParts, ...reqParts];
+  // The Job Card detail and mechanic-request feeds can contain the same part
+  // line. Merge those copies so the Parts tab represents quantities, not API
+  // response duplication.
+  const mergedByLine = new Map();
+  [...woParts, ...reqParts].forEach((part, index) => {
+    const itemCode = safeStr(part?.ItemCode || part?.itemCode || part?.Code);
+    const workEntry = safeStr(part?.WorkEntryDocEntry || part?.WorkEntryNo);
+    const line = safeStr(part?.PartLine ?? part?.LineId ?? part?.Line ?? part?.LineNum ?? part?.FaultLine);
+    const key = `${itemCode}::${workEntry}::${line || 'unassigned'}`;
+    const existing = mergedByLine.get(key);
+    if (!existing) {
+      mergedByLine.set(key, { ...part, __sourceIndex: index });
+      return;
+    }
+    // Keep the largest known value per lifecycle quantity. Both endpoints
+    // describe the same backend line, so summing would inflate counts.
+    const quantityFields = [
+      ['ReqQty', 'RequestedQty', 'Qty'],
+      ['ApprovedQty', 'AprQty'],
+      ['IssQty', 'IssuedQty', 'IssueQty'],
+      ['RecQty', 'ReceivedQty'],
+      ['RetQty', 'ReturnedQty'],
+    ];
+    const combined = { ...existing, ...part };
+    quantityFields.forEach((fields) => {
+      const maxValue = Math.max(...fields.map((field) => Number(existing?.[field] ?? part?.[field] ?? 0) || 0));
+      const primary = fields[0];
+      combined[primary] = maxValue;
+    });
+    mergedByLine.set(key, combined);
+  });
+  const merged = Array.from(mergedByLine.values());
   if (merged.length === 0) {
     return <EmptyState icon="build" message="No parts requested for this job card." theme={theme} />;
   }
   const totalReq = merged.reduce((s, p) => s + Number(p.ReqQty ?? p.RequestedQty ?? p.Qty ?? 0), 0);
+  const totalApproved = merged.reduce((s, p) => s + Number(p.ApprovedQty ?? p.AprQty ?? 0), 0);
   const totalIss = merged.reduce((s, p) => s + Number(p.IssQty ?? p.IssuedQty ?? 0), 0);
-  const totalRec = merged.reduce((s, p) => s + Number(p.RecQty ?? p.ReceivedQty ?? 0), 0);
+  const totalRet = merged.reduce((s, p) => s + Number(p.RetQty ?? p.ReturnedQty ?? 0), 0);
   const groupedParts = merged.reduce((groups, part, index) => {
     const mechanicName = safeStr(part.MechanicName || part.MechName || part.mechanicName || part.UserName) || 'Unassigned Parts';
     const mechanicCode = safeStr(part.MechanicCode || part.MechCode || part.mechanicCode || part.UserCode);
@@ -335,13 +367,18 @@ export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
         </View>
         <View style={[psStyles.divider, { backgroundColor: theme.colors.border || '#E0E0E0' }]} />
         <View style={psStyles.summaryCell}>
-          <Text style={[psStyles.summaryNum, { color: theme.colors.info || '#0C5460' }]}>{fmtQty(totalIss)}</Text>
-          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Issued</Text>
+          <Text style={[psStyles.summaryNum, { color: theme.colors.info || '#0C5460' }]}>{fmtQty(totalApproved)}</Text>
+          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Approved</Text>
         </View>
         <View style={[psStyles.divider, { backgroundColor: theme.colors.border || '#E0E0E0' }]} />
         <View style={psStyles.summaryCell}>
-          <Text style={[psStyles.summaryNum, { color: theme.colors.success || '#155724' }]}>{fmtQty(totalRec)}</Text>
-          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Received</Text>
+          <Text style={[psStyles.summaryNum, { color: theme.colors.info || '#0C5460' }]}>{fmtQty(totalIss)}</Text>
+          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Used</Text>
+        </View>
+        <View style={[psStyles.divider, { backgroundColor: theme.colors.border || '#E0E0E0' }]} />
+        <View style={psStyles.summaryCell}>
+          <Text style={[psStyles.summaryNum, { color: '#B45309' }]}>{fmtQty(totalRet)}</Text>
+          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Returned</Text>
         </View>
       </View>
 
@@ -362,8 +399,9 @@ export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
           <View style={[psStyles.tableHeader, { borderBottomColor: theme.colors.border || '#E0E0E0' }]}>
             <Text style={[psStyles.partNameCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>PART</Text>
             <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>REQ</Text>
+            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>APR</Text>
             <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>ISS</Text>
-            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>REC</Text>
+            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>RET</Text>
           </View>
           {group.parts.map((part) => {
             const code = safeStr(part.ItemCode || part.itemCode);
@@ -378,8 +416,9 @@ export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
                   </Text>
                 </View>
                 <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.ReqQty ?? part.RequestedQty ?? part.Qty ?? 0)}</Text>
+                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.info || '#0C5460' }]}>{fmtQty(part.ApprovedQty ?? part.AprQty ?? 0)}</Text>
                 <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.IssQty ?? part.IssuedQty ?? 0)}</Text>
-                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.RecQty ?? part.ReceivedQty ?? 0)}</Text>
+                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: '#B45309' }]}>{fmtQty(part.RetQty ?? part.ReturnedQty ?? 0)}</Text>
               </View>
             );
           })}
@@ -407,7 +446,7 @@ const psStyles = StyleSheet.create({
   tableHeaderText: { fontSize: 10, fontWeight: '800' },
   partRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderBottomWidth: StyleSheet.hairlineWidth },
   partNameCol: { flex: 1, paddingRight: SPACING.sm },
-  qtyCol: { width: 42, textAlign: 'right' },
+  qtyCol: { width: 36, textAlign: 'right' },
   partName: { fontSize: 13, fontWeight: '700' },
   partMeta: { fontSize: 11, marginTop: 2 },
   qtyText: { fontSize: 13, fontWeight: '700' },

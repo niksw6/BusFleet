@@ -21,6 +21,7 @@ const rowsFrom = (response) => {
 };
 
 const workEntryId = (part) => part?.WorkEntryDocEntry ?? part?.WorkEntryEntry ?? part?.WorkEntry ?? part?.DocEntry ?? '';
+const jobCardId = (part) => part?.JobCardEntry ?? part?.JobCardDocEntry ?? part?.JobCard ?? part?.JobCardNo ?? '';
 const lineId = (part) => part?.LineId ?? part?.LineNum ?? part?.PartLine ?? 0;
 const quantity = (part) => Number(part?.ApprovedQty ?? part?.ReqQty ?? part?.Qty ?? 1) || 1;
 
@@ -52,28 +53,31 @@ const RepairPartsRequestsScreen = ({ navigation }) => {
 
   const processPart = async (part, approved) => {
     const key = `${workEntryId(part)}-${lineId(part)}-${part?.ItemCode || ''}`;
+    const repairJobCardEntry = jobCardId(part);
+    if (!repairJobCardEntry) {
+      Toast.show({ type: 'error', text1: 'Job card unavailable', text2: 'This repair-part request is missing its JobCardEntry.' });
+      return;
+    }
     try {
       setWorkingKey(key);
       const payload = storeUser
         ? {
           CompanyDB: dbName,
-          WorkEntryEntry: Number(workEntryId(part)) || workEntryId(part),
-          LineId: Number(lineId(part)) || lineId(part),
-          IssuedQty: quantity(part),
-          UserCode: userCode,
-          ItemCode: part?.ItemCode,
-          ItemName: part?.ItemName,
+          JobCardEntry: Number(repairJobCardEntry) || repairJobCardEntry,
+          StoreUserCode: userCode,
+          Parts: [{
+            LineId: Number(lineId(part)) || lineId(part),
+            IssueQty: quantity(part),
+          }],
         }
         : {
           CompanyDB: dbName,
-          WorkEntryEntry: Number(workEntryId(part)) || workEntryId(part),
+          JobCardEntry: Number(repairJobCardEntry) || repairJobCardEntry,
           LineId: Number(lineId(part)) || lineId(part),
-          ItemCode: part?.ItemCode,
-          ItemName: part?.ItemName,
-          ApprovedQty: approved ? quantity(part) : 0,
+          SupervisorUserCode: userCode,
           Response: approved ? 'A' : 'R',
+          ApprovedQty: approved ? quantity(part) : 0,
           Remarks: part?.Remarks || '',
-          UserCode: userCode,
         };
       const response = storeUser
         ? await repairService.issueRepairPart(payload)
@@ -98,7 +102,7 @@ const RepairPartsRequestsScreen = ({ navigation }) => {
           return <Card key={key} style={styles.card}><Card.Content>
             <Text style={[styles.name, { color: colors.dark }]}>{part?.ItemName || part?.ItemCode || 'Repair part'}</Text>
             <Text style={{ color: colors.gray }}>Code: {part?.ItemCode || '-'} | Quantity: {quantity(part)}</Text>
-            <Text style={{ color: colors.gray }}>Work entry: {workEntryId(part) || '-'}</Text>
+            <Text style={{ color: colors.gray }}>Job card: {jobCardId(part) || '-'} | Work entry: {workEntryId(part) || '-'}</Text>
             {part?.Remarks ? <Text style={{ color: colors.gray }}>Remarks: {part.Remarks}</Text> : null}
             <View style={styles.actions}>
               {storeUser ? <Button mode="contained" onPress={() => processPart(part, true)} loading={workingKey === key} disabled={Boolean(workingKey)}>Issue part</Button> : <>

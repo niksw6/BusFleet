@@ -216,6 +216,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const getPartStatus = (part) => String(part?.Status ?? part?.ApprovalStatus ?? '').trim().toUpperCase();
   const getIssuedQty = (part) => Number(part?.IssQty ?? part?.IssuedQty ?? part?.IssueQty ?? 0) || 0;
   const getReceivedQty = (part) => Number(part?.RecQty ?? part?.ReceivedQty ?? 0) || 0;
+  const getReturnedQty = (part) => Number(part?.RetQty ?? part?.ReturnedQty ?? 0) || 0;
   const getApprovedQty = (part) => Number(getPartQty(part)) || 0;
 
   const isPartFullyReceived = (part) => {
@@ -231,7 +232,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
     // only extra parts raised by a mechanic go through approval.
     if (part?.SupervisorProvided) return true;
     const status = getPartStatus(part);
-    return Number(part?.AprQty ?? part?.ApprovedQty ?? 0) > 0
+    const explicitApproval = [part?.Approved, part?.IsApproved, part?.SupervisorApproved, part?.ApprovalResponse, part?.Response]
+      .some(value => ['A', 'Y', 'YES', 'TRUE', '1', 'APPROVED', true].includes(typeof value === 'string' ? value.trim().toUpperCase() : value));
+    return explicitApproval
+      || Number(part?.AprQty ?? part?.ApprovedQty ?? 0) > 0
       || ['A', 'AP', 'PS', 'IS', 'PR', 'RC', 'APPROVED', 'READY', 'READY TO COLLECT'].includes(status);
   };
 
@@ -308,6 +312,19 @@ const FaultWorkScreen = ({ route, navigation }) => {
       const approvedFromQueue = approvedResults.flatMap(result => (
         result.status === 'fulfilled' ? extractRows(result.value) : []
       ));
+      // Rework can reopen a Work Entry after the dashboard response was
+      // cached. Fetch that one active entry so its latest approval and part
+      // quantities decide whether it is approved or awaiting approval.
+      let activeWorkEntry = existingWorkEntry || null;
+      if (workEntryDocEntry) {
+        try {
+          const response = await workEntryService.getWorkEntry(companyDb, workEntryDocEntry);
+          const data = response?.Data ?? response?.data ?? response;
+          activeWorkEntry = Array.isArray(data) ? data[0] || activeWorkEntry : data || activeWorkEntry;
+        } catch (error) {
+          console.warn('[FaultWork] Active work-entry detail unavailable:', error?.message || error);
+        }
+      }
       const pendingForWorkEntry = extractRows(pendingRequestsResult).filter((part) => {
         const requestedWorkEntry = part?.WorkEntryDocEntry
           ?? part?.WorkEntryDocEntryNo
@@ -362,17 +379,34 @@ const FaultWorkScreen = ({ route, navigation }) => {
         })) : []),
         // Mechanic-requested parts are returned inside the active WorkEntry.
         // Status AP marks them as approved by the Supervisor and ready to use.
-        ...(Array.isArray(existingWorkEntry?.Parts) ? existingWorkEntry.Parts.map(part => ({
+        ...(Array.isArray(activeWorkEntry?.Parts) ? activeWorkEntry.Parts.map(part => ({
           ...part,
           FaultLine: part?.FaultLine ?? faultLine,
-          WorkEntryDocEntry: existingWorkEntry?.DocEntry ?? workEntryDocEntry,
+          WorkEntryDocEntry: activeWorkEntry?.DocEntry ?? activeWorkEntry?.WorkEntryDocEntry ?? workEntryDocEntry,
         })) : []),
       ];
       const uniqueParts = new Map();
-      approved.forEach((part, index) => uniqueParts.set(
-        `${part?.ItemCode || part?.Code || ''}-${part?.FaultLine ?? part?.PartLine ?? part?.LineId ?? index}`,
-        part,
-      ));
+      approved.forEach((part, index) => {
+        const key = `${part?.ItemCode || part?.Code || ''}-${part?.FaultLine ?? part?.PartLine ?? part?.LineId ?? index}`;
+        const existing = uniqueParts.get(key);
+        if (!existing) {
+          uniqueParts.set(key, part);
+          return;
+        }
+        // Preserve approval data from either source. The dashboard copy can
+        // be stale during rework while GetWorkEntry has current quantities.
+        const approvedQty = Math.max(
+          Number(existing?.AprQty ?? existing?.ApprovedQty ?? 0) || 0,
+          Number(part?.AprQty ?? part?.ApprovedQty ?? 0) || 0,
+        );
+        uniqueParts.set(key, {
+          ...existing,
+          ...part,
+          ApprovedQty: approvedQty,
+          AprQty: approvedQty,
+          Approved: isPartApproved(existing) || isPartApproved(part) ? 'Y' : part?.Approved ?? existing?.Approved,
+        });
+      });
       setApprovedParts(Array.from(uniqueParts.values()));
 
       const dashboardRows = extractRows(mechanicDashboardResult);
@@ -424,6 +458,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
 
   const faultName = fault?.Fault || fault?.FaultName || fault?.Description || 'Fault';
   const busNo = fault?.BusNo || '';
+  const jobCardNumber = fault?.JobCardNo || fault?.DocNum || fault?.JobCardDocEntry || docEntry;
   const approvedForCollection = approvedParts.filter(isPartApproved);
   const pendingSupervisorParts = approvedParts.filter(part => !isPartApproved(part));
   const awaitingApprovalParts = [...pendingSupervisorParts, ...pendingRequestedParts].filter((part, index, list) => {
@@ -1282,7 +1317,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
             <Text style={[styles.faultTitle, { color: colors.dark }]}>{faultName}</Text>
           </View>
           <Text style={{ color: colors.gray, fontSize: 13, marginTop: 4 }}>
-            Job Card #{docEntry} {busNo ? `• ${busNo}` : ''}
+            Job Card #: {jobCardNumber} {busNo ? `• ${busNo}` : ''}
+          </Text>
+          <Text style={{ color: colors.gray, fontSize: 13, marginTop: 2 }}>
+            Work Entry #: {workEntryDocEntry || 'Not created'}
           </Text>
           {awaitingVerification && (
             <View style={[styles.awaitingStatusPill, { backgroundColor: '#6D28D915' }]}>
@@ -1553,6 +1591,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
                           Approved: {getPartQty(p)}
                           {getIssuedQty(p) > 0 ? ` • Issued: ${getIssuedQty(p)}` : ''}
                           {getReceivedQty(p) > 0 ? ` • Received: ${getReceivedQty(p)}` : ''}
+                          {getReturnedQty(p) > 0 ? ` • Returned: ${getReturnedQty(p)}` : ''}
                         </Text>
                       </View>
                       {isPartFullyReceived(p) ? (
@@ -1850,6 +1889,9 @@ const FaultWorkScreen = ({ route, navigation }) => {
                     </Text>
                     <Text style={{ color: getReceivedQty(d.part) > 0 ? '#6D28D9' : colors.gray, fontSize: 12, fontWeight: '600' }}>
                       Received: {getReceivedQty(d.part)}
+                    </Text>
+                    <Text style={{ color: getReturnedQty(d.part) > 0 ? '#B45309' : colors.gray, fontSize: 12, fontWeight: '600' }}>
+                      Returned: {getReturnedQty(d.part)}
                     </Text>
                   </View>
                   <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>

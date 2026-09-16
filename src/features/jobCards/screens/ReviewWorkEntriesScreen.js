@@ -1594,6 +1594,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                         <Text style={[styles.metaText, { color: colors.dark }]}>Part: {part?.ItemName || part?.PartName || part?.ItemCode || '-'}</Text>
                         <Text style={[styles.metaText, { color: colors.gray }]}>Requested Qty: {part?.ReqQty ?? part?.Qty ?? part?.Quantity ?? '-'}</Text>
                         <Text style={[styles.metaText, { color: colors.gray }]}>Issued Qty: {part?.IssuedQty ?? part?.IssueQty ?? part?.IssQty ?? 0}</Text>
+                        <Text style={[styles.metaText, { color: colors.gray }]}>Returned Qty: {part?.RetQty ?? part?.ReturnedQty ?? 0}</Text>
                       </View>
                     ))
                   )}

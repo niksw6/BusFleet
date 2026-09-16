@@ -24,7 +24,7 @@ const getValue = (item, keys) => {
 };
 
 const getDocEntry = (response) => {
-  const entryKeys = ['JobCardEntry', 'JobCardDocEntry', 'JobCardID', 'JobCardId', 'JobCardNo', 'DocEntry', 'DocNum'];
+  const entryKeys = ['JobCardEntry', 'JobCardDocEntry', 'JobCardID', 'JobCardId', 'JobCardNo', 'JobCardNumber', 'DocEntry', 'DocNum'];
   const direct = getValue(response, entryKeys);
   if (direct) return direct;
 
@@ -32,6 +32,31 @@ const getDocEntry = (response) => {
   if (typeof data === 'string' || typeof data === 'number') return data;
   const row = getRows(response)[0];
   return getValue(row, entryKeys);
+};
+
+const REPAIR_JOB_CARD_KEYS = [
+  'JobCardEntry', 'JobCardDocEntry', 'RepairJobCardEntry',
+  'RepairJobCardDocEntry', 'JobCardNo', 'JobCardNumber', 'JobCardID', 'JobCardId',
+  'JobEntry', 'JCEntry',
+];
+
+const findRepairJobCardEntry = (value, visited = new Set()) => {
+  if (!value || typeof value !== 'object' || visited.has(value)) return '';
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const entry = findRepairJobCardEntry(item, visited);
+      if (entry) return entry;
+    }
+    return '';
+  }
+  const direct = getValue(value, REPAIR_JOB_CARD_KEYS);
+  if (direct) return direct;
+  for (const nestedValue of Object.values(value)) {
+    const entry = findRepairJobCardEntry(nestedValue, visited);
+    if (entry) return entry;
+  }
+  return '';
 };
 
 const RepairIncidentReviewScreen = ({ route, navigation }) => {
@@ -42,7 +67,9 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
   const docEntry = String(route.params?.docEntry || route.params?.DocEntry || '').trim();
   const userDepot = getUserDepot(user) || '';
   const [incident, setIncident] = useState(null);
-  const [jobCardEntry, setJobCardEntry] = useState('');
+  const [jobCardEntry, setJobCardEntry] = useState(() => String(
+    route.params?.jobCardEntry || route.params?.JobCardEntry || route.params?.jobCardDocEntry || '',
+  ).trim());
   const [mechanics, setMechanics] = useState([]);
   const [selectedMechanics, setSelectedMechanics] = useState([]);
   const [images, setImages] = useState([]);
@@ -54,6 +81,13 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
   const [updatingJobCard, setUpdatingJobCard] = useState(false);
   const [mechanicModalVisible, setMechanicModalVisible] = useState(false);
 
+  const findExistingJobCard = useCallback(async () => {
+    // GetRepairIncident may omit the linked job-card entry after the incident
+    // is accepted. GetRepairJobCard accepts the incident entry for this lookup.
+    const response = await repairService.getRepairJobCard(dbName, docEntry);
+    return String(getDocEntry(response) || findRepairJobCardEntry(response) || '').trim();
+  }, [dbName, docEntry]);
+
   const loadIncident = useCallback(async () => {
     if (!docEntry) {
       setLoading(false);
@@ -64,13 +98,29 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
       const response = await repairService.getRepairIncident(dbName, docEntry);
       const loadedIncident = getRows(response)[0] || null;
       setIncident(loadedIncident);
-      setJobCardEntry(String(getValue(loadedIncident, ['JobCardEntry', 'JobCardDocEntry', 'JobCardNo']) || '').trim());
+      let resolvedJobCardEntry = String(
+        findRepairJobCardEntry(loadedIncident)
+        || findRepairJobCardEntry(response)
+        || route.params?.jobCardEntry
+        || route.params?.JobCardEntry
+        || route.params?.jobCardDocEntry
+        || '',
+      ).trim();
+      if (!resolvedJobCardEntry) {
+        try {
+          resolvedJobCardEntry = await findExistingJobCard();
+        } catch (jobCardLookupError) {
+          // The incident can still be pending, in which case no job card is
+          // expected and the normal Accept/Reject stage remains valid.
+        }
+      }
+      setJobCardEntry(resolvedJobCardEntry);
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Unable to load repair incident', text2: error?.message || 'Please try again.' });
     } finally {
       setLoading(false);
     }
-  }, [dbName, docEntry]);
+  }, [dbName, docEntry, findExistingJobCard]);
 
   useEffect(() => { loadIncident(); }, [loadIncident]);
 
@@ -113,6 +163,21 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
         Remarks: remarks.trim(),
       });
       if (!(response?.Success === true || response?.Status === true || response?.success === true)) {
+        const errorMessage = String(response?.Message || '');
+        if (/already\s*has\s*a\s*job\s*card/i.test(errorMessage)) {
+          try {
+            const existingJobCardEntry = await findExistingJobCard();
+            if (existingJobCardEntry) {
+              setJobCardEntry(existingJobCardEntry);
+              setIncident(current => ({ ...(current || {}), Status: 'A', JobCardEntry: existingJobCardEntry }));
+              Toast.show({ type: 'info', text1: 'Job card already created', text2: 'Continue by assigning a mechanic.' });
+              return;
+            }
+          } catch (jobCardLookupError) {
+            // Fall through to the backend error below if the job-card lookup
+            // cannot determine its entry number.
+          }
+        }
         throw new Error(response?.Message || 'The incident response was not accepted.');
       }
       Toast.show({ type: 'success', text1: decision === 'A' ? 'Repair incident accepted' : 'Repair incident rejected' });
@@ -125,7 +190,7 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
     }
   };
 
-  const isAccepted = ['A', 'ACCEPTED', 'APPROVED'].includes(String(getValue(incident, ['Status', 'Decision', 'ApprovalStatus'])).trim().toUpperCase());
+  const isAccepted = Boolean(jobCardEntry) || ['A', 'ACCEPTED', 'APPROVED'].includes(String(getValue(incident, ['Status', 'Decision', 'ApprovalStatus'])).trim().toUpperCase());
 
   const loadMechanics = async () => {
     const depot = String(getValue(incident, ['Depot', 'DepotCode']) || userDepot).trim();
@@ -252,15 +317,17 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
           <Text style={[styles.detail, { color: colors.dark }]}>Remarks: {getValue(incident, ['Remarks', 'Description', 'IncidentDescription']) || '-'}</Text>
         </View>
       )}
-      <TextInput
-        mode="outlined"
-        label="Response remarks"
-        value={remarks}
-        onChangeText={setRemarks}
-        multiline
-        numberOfLines={4}
-        style={styles.input}
-      />
+      {!jobCardEntry && (
+        <TextInput
+          mode="outlined"
+          label="Response remarks"
+          value={remarks}
+          onChangeText={setRemarks}
+          multiline
+          numberOfLines={4}
+          style={styles.input}
+        />
+      )}
       {isAccepted && !jobCardEntry && (
         <View style={[styles.workflowSection, { borderColor: colors.border || COLORS.border }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>Repair job card</Text>

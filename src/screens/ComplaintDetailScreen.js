@@ -254,12 +254,16 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       hasCompletionSignal,
       allCompleted: allWorkEntriesCompleted,
     } = await resolveWorkEntryCount(incidentData);
-    const workOrderCreated = workOrderCount > 0;
-    const workOrderSubmitted = workOrderCreated;
     const closed = isClosedStatus(incidentStatus);
-    const jobCardClosed = isClosedStatus(jobCardStatus);
+    // Some completed job cards return the terminal state on the incident but
+    // omit/stale the JobCardStatus. Either terminal signal completes the same
+    // lifecycle and must advance every previous Progress Map step.
+    const jobCardClosed = isClosedStatus(jobCardStatus) || closed;
+    const lifecycleCompleted = closed || jobCardClosed;
+    const workOrderCreated = workOrderCount > 0 || lifecycleCompleted;
+    const workOrderSubmitted = workOrderCreated || lifecycleCompleted;
     const verificationPending = isVerificationPendingStatus(jobCardStatus) || hasCompletionSignal;
-    const inProgress = !closed && (
+    const inProgress = lifecycleCompleted || (
       incidentStatus === 'I'
       || jobCardStatus === 'I'
       || jobCardStatus === 'IP'
@@ -278,9 +282,9 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       closed,
       jobCardClosed,
       workOrderCount,
-      canSupervisorClose: supervisorUser && !isPreventive && jobCardCreated && workOrderCreated && allWorkEntriesCompleted && !closed,
+      canSupervisorClose: supervisorUser && !isPreventive && jobCardCreated && workOrderCreated && allWorkEntriesCompleted && !lifecycleCompleted,
       canCloseJobCard: supervisorUser && !isPreventive && jobCardCreated && !jobCardClosed,
-      canCloseIncident: supervisorUser && !isPreventive && jobCardCreated && !closed,
+      canCloseIncident: supervisorUser && !isPreventive && jobCardCreated && !lifecycleCompleted,
     });
   };
 

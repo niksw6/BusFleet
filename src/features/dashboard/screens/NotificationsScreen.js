@@ -109,6 +109,28 @@ const NotificationsScreen = ({ navigation }) => {
     return match?.[1] || null;
   };
 
+  const resolveJobCardReferenceFromNotification = (item) => {
+    const explicitReference = [
+      item?.JobCardDocEntry,
+      item?.jobCardDocEntry,
+      item?.JobCardEntry,
+      item?.jobCardEntry,
+      item?.JobCardNo,
+      item?.jobCardNo,
+      item?.JobcardNo,
+    ].map(value => String(value || '').trim()).find(Boolean);
+    if (explicitReference) return explicitReference;
+
+    // Notifications such as "... received for Job Card 42" may not include
+    // a dedicated JobCard field. Prefer that reference to DocEntry, which can
+    // instead be a notification, incident, or work-entry identifier.
+    const text = `${item?.Message || item?.message || ''} ${item?.Title || item?.title || ''}`;
+    const match = text.match(/job\s*card\s*(?:no\.?|number|#|:|-)?\s*(\d+)/i);
+    if (match?.[1]) return match[1];
+
+    return String(item?.DocEntry || item?.docEntry || item?.ReferenceDocEntry || item?.RefDocEntry || '').trim();
+  };
+
   const formatIncidentTitle = (item) => {
     const incidentDocEntry = resolveIncidentDocEntryFromNotification(item);
     if (!incidentDocEntry) return item?.Message || item?.Title || item?.title || 'Notification';
@@ -140,6 +162,10 @@ const NotificationsScreen = ({ navigation }) => {
     busNo: item?.BusNo || item?.Vehicle || item?.BusCode || item?.BusRegistrationNo || item?.RegNo || '',
     detailDocEntry: item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || item?.JobCardDocEntry || item?.ComplaintNo || null,
     significance: item?.Significance || item?.Severity || item?.Priority || item?.Type || '',
+    // WERQ notifications include both references. Keep them distinct: DocEntry
+    // is commonly the Job Card, while WorkEntryDocEntry identifies the request.
+    jobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardEntry || item?.jobCardEntry || item?.JobCardNo || item?.jobCardNo || item?.DocEntry || item?.docEntry || '',
+    workEntryDocEntry: item?.WorkEntryDocEntry || item?.workEntryDocEntry || item?.WorkEntryNo || item?.workEntryNo || item?.ReferenceDocEntry || item?.RefDocEntry || '',
     ...item,
     id: item?.id || item?.Code || item?.DocEntry,
     code: item?.Code || item?.id || item?.DocEntry,
@@ -362,6 +388,7 @@ const NotificationsScreen = ({ navigation }) => {
     const rawNotificationType = String(item.Type || '').trim().toUpperCase();
     const type = String(item.type || item.Type || '').trim().toUpperCase();
     const docEntry = item.detailDocEntry || item.docEntry || item.DocEntry;
+    const jobCardReference = resolveJobCardReferenceFromNotification(item);
     const notificationText = String(item?.Message || item?.message || item?.Title || item?.title || '').toLowerCase();
     const isRepairJobCardAssignment = ['JR', 'RJ', 'RJC', 'RJA', 'RJT'].includes(type)
       || (notificationText.includes('repair') && (notificationText.includes('job card') || notificationText.includes('assignment')));
@@ -370,10 +397,21 @@ const NotificationsScreen = ({ navigation }) => {
       || notificationText.includes('transferred')
       || ['TRANSFER', 'JOB_CARD_TRANSFER', 'JOBCARDTRANSFER', 'JT', 'JCT'].includes(type)
       || Boolean(item?.TransferJobCard || item?.TransferStatus || item?.ToSupervisorCode || item?.TrnSupCode);
-    const requiresSupervisorVerification = ['WER', 'LBWE'].includes(rawNotificationType) || ['WER', 'LBWE'].includes(type) || (notificationText.includes('work entry') && (
+    const requiresSupervisorVerification = ['WE', 'WER', 'LBWE'].includes(rawNotificationType) || ['WE', 'WER', 'LBWE'].includes(type) || (notificationText.includes('work entry') && (
       notificationText.includes('supervisor inspection')
       || notificationText.includes('inspection is required')
     ));
+    const isWorkEntryRequest = rawNotificationType === 'WERQ' || type === 'WERQ';
+
+    if (supervisorUser && isWorkEntryRequest) {
+      const isToolRequest = notificationText.includes('special tool') || notificationText.includes('tool request');
+      navigation.navigate('PartsApproval', {
+        initialSection: isToolRequest ? 'tools' : 'parts',
+        focusJobCardDocEntry: jobCardReference,
+        focusWorkEntryDocEntry: item?.workEntryDocEntry || item?.WorkEntryDocEntry || item?.WorkEntryNo || item?.ReferenceDocEntry || '',
+      });
+      return;
+    }
     const isBreakdownNotification = () => {
       const scanValues = (value, results = []) => {
         if (!value || typeof value === 'function') return results;
@@ -478,6 +516,7 @@ const NotificationsScreen = ({ navigation }) => {
       if (repairDocEntry) {
         navigation.navigate('RepairIncidentReview', {
           docEntry: repairDocEntry,
+          jobCardEntry: item?.JobCardEntry || item?.jobCardEntry || item?.JobCardDocEntry || item?.jobCardDocEntry || item?.RepairJobCardEntry || item?.repairJobCardEntry || '',
           dbName: dbName || 'MUTSPL_TEST',
         });
         return;
@@ -486,8 +525,8 @@ const NotificationsScreen = ({ navigation }) => {
 
     if (supervisorUser && isJobCardTransferNotification) {
       navigation.navigate('JobCardDetail', {
-        jobCardNo: item?.JobCardNo || item?.jobCardNo || '',
-        docEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.DocEntry || item?.docEntry || docEntry || '',
+        jobCardNo: jobCardReference,
+        docEntry: jobCardReference,
         complaintNo: item?.ComplaintNo || item?.complaintNo || '',
         complaintType: item?.ComplaintType || item?.complaintType || 'Breakdown',
         dbName: dbName || 'MUTSPL_TEST',
@@ -609,8 +648,8 @@ const NotificationsScreen = ({ navigation }) => {
 
     if (type === 'J' || type === 'JB' || type === 'JCT' || type === 'JCA') {
       navigation.navigate('JobCardDetail', {
-        docEntry,
-        jobCardNo: docEntry,
+        docEntry: jobCardReference,
+        jobCardNo: jobCardReference,
         dbName: dbName || 'MUTSPL_TEST',
         complaintType: type === 'JCT' ? 'Breakdown' : type === 'JCA' ? 'Driver Complaint' : undefined,
       });
@@ -624,8 +663,8 @@ const NotificationsScreen = ({ navigation }) => {
 
     if (docEntry) {
       navigation.navigate('JobCardDetail', {
-        docEntry,
-        jobCardNo: docEntry,
+        docEntry: jobCardReference,
+        jobCardNo: jobCardReference,
         dbName: dbName || 'MUTSPL_TEST',
       });
     }
@@ -634,7 +673,7 @@ const NotificationsScreen = ({ navigation }) => {
   const getNotificationIcon = (type, item = {}) => {
     const rawType = String(type || '').trim().toUpperCase();
     const notificationText = `${item?.title || item?.Title || ''} ${item?.message || item?.Message || ''}`.toUpperCase();
-    if (['W', 'WE', 'LBWE', 'WORK', 'WORKENTRY', 'WORK ENTRY'].includes(rawType) || notificationText.includes('WORK ENTRY')) {
+    if (['W', 'WE', 'WERQ', 'LBWE', 'WORK', 'WORKENTRY', 'WORK ENTRY'].includes(rawType) || notificationText.includes('WORK ENTRY')) {
       return 'build';
     }
     switch (type) {
@@ -684,6 +723,8 @@ const NotificationsScreen = ({ navigation }) => {
         return '#9333EA'; // Repair incident
       case 'V':
         return '#6D28D9'; // Verification purple
+      case 'WERQ':
+        return '#EA580C'; // Work-entry request approval
       default:
         return '#0070F2'; // SAP Blue
     }

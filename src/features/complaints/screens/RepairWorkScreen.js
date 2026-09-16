@@ -96,7 +96,7 @@ const RepairWorkScreen = ({ route }) => {
   const [showAdditionalPartsModal, setShowAdditionalPartsModal] = useState(false);
   const [partMode, setPartMode] = useState('configured');
   const [activeModal, setActiveModal] = useState(null);
-  const [detailDraft, setDetailDraft] = useState({ LineId: 0, WorkType: 'Inspection', Description: '', Remarks: '' });
+  const [detailDraft, setDetailDraft] = useState({ LineId: 1, WorkType: 'Inspection', Description: '', Remarks: '' });
   const [componentDraft, setComponentDraft] = useState({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
   const [partDraft, setPartDraft] = useState({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
 
@@ -188,7 +188,7 @@ const RepairWorkScreen = ({ route }) => {
     if (!workEntryDocEntry) return;
     const [approvedResult, issuedResult, pendingResult] = await Promise.allSettled([
       repairService.getApprovedRepairParts(dbName, userCode),
-      repairService.getIssuedRepairParts(dbName, workEntryDocEntry, userCode),
+      repairService.getIssuedRepairParts(dbName, jobCardEntry, userCode),
       repairService.getPendingRepairPartRequests(dbName, userCode),
     ]);
     const rows = [approvedResult, issuedResult, pendingResult].flatMap(result => (
@@ -218,11 +218,11 @@ const RepairWorkScreen = ({ route }) => {
 
   const addDetail = () => setWorkDetails(previous => ([
     ...previous,
-    { LineId: previous.length, WorkType: 'Repair', Description: '', Remarks: '' },
+    { LineId: previous.length + 1, WorkType: 'Repair', Description: '', Remarks: '' },
   ]));
 
   const addWorkDetail = () => {
-    setDetailDraft({ LineId: workDetails.length, WorkType: 'Inspection', Description: '', Remarks: '' });
+    setDetailDraft({ LineId: workDetails.length + 1, WorkType: 'Inspection', Description: '', Remarks: '' });
     setActiveModal('detail');
   };
 
@@ -393,27 +393,19 @@ const RepairWorkScreen = ({ route }) => {
         Status: nextStatus,
         PauseRmk: nextStatus === 'P' ? pauseReason : '',
         Remarks: remarks,
-        WorkDetails: workDetails.filter(detail => detail.Description.trim()).map((detail, index) => ({ ...detail, LineId: index })),
+        // The repair API treats every submitted work detail as a new row and
+        // requires LineId zero for each one; local IDs remain distinct only
+        // for rendering and editing in this screen.
+        WorkDetails: workDetails.filter(detail => detail.Description.trim()).map(detail => ({ ...detail, LineId: 0 })),
         Images: uploadedImages,
         Parts: parts,
       };
-      const endpoint = nextStatus === 'C' ? 'CompleteRepairWorkEntry' : 'UpdateRepairWorkEntry';
-      console.log(`[RepairWork] POST ${endpoint} payload:`, JSON.stringify(payload));
-      const response = nextStatus === 'C'
-        ? await repairService.completeRepairWorkEntry(payload)
-        : await repairService.updateRepairWorkEntry(payload);
-      console.log(`[RepairWork] ${endpoint} response:`, JSON.stringify(response));
+      // The repair collection uses UpdateRepairWorkEntry for working, paused,
+      // resumed, and completed states. Images and parts travel in this same body.
+      console.log('[RepairWork] POST UpdateRepairWorkEntry payload:', JSON.stringify(payload));
+      const response = await repairService.updateRepairWorkEntry(payload);
+      console.log('[RepairWork] UpdateRepairWorkEntry response:', JSON.stringify(response));
       if (!isSuccess(response)) throw new Error(response?.Message || 'Repair work update failed.');
-      if (uploadedImages.length > 0) {
-        await Promise.all(uploadedImages.map(image => repairService.addRepairWorkImage({
-          CompanyDB: dbName,
-          WorkEntryEntry: Number(entryDocEntry) || entryDocEntry,
-          ImgType: image.ImgType,
-          ImgNo: image.ImgNo,
-          ImgPath: image.ImgPath,
-          Remarks: image.Remarks,
-        })));
-      }
       setStatus(nextStatus);
       setImages([]);
       Toast.show({ type: 'success', text1: nextStatus === 'C' ? 'Repair submitted for review' : nextStatus === 'P' ? 'Repair work paused' : 'Repair work saved' });
@@ -446,19 +438,16 @@ const RepairWorkScreen = ({ route }) => {
         Toast.show({ type: 'error', text1: 'Repair work entry is required', text2: 'Create the work entry before requesting an additional part.' });
         return;
       }
-      const response = await repairService.requestRepairAdditionalPart({
-        CompanyDB: dbName,
-        WorkEntryEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+      // Parts are requested as part of UpdateRepairWorkEntry, per the collection.
+      setParts(previous => [...previous, {
         ItemCode: itemCode,
         ItemName: itemName,
         ReqQty: Number(partDraft.ReqQty) || 1,
         Remarks: partDraft.Remarks.trim(),
-      });
-      if (!isSuccess(response)) throw new Error(response?.Message || 'Part request failed.');
+      }]);
       setPartDraft({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
-      await loadRepairPartStatuses();
       setActiveModal(null);
-      Toast.show({ type: 'success', text1: 'Additional part requested' });
+      Toast.show({ type: 'success', text1: 'Part added', text2: 'Save the work entry to send the request.' });
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Unable to request part', text2: error?.message || 'Please try again.' });
     } finally {
@@ -468,15 +457,17 @@ const RepairWorkScreen = ({ route }) => {
 
   const receivePart = async (part) => {
     const lineId = part?.LineId ?? part?.LineNum ?? part?.LineID;
-    const quantity = Number(part?.IssuedQty || part?.IssQty || part?.ApprovedQty || part?.ReqQty || 1);
+    if (!jobCardEntry) {
+      Toast.show({ type: 'error', text1: 'Job card unavailable', text2: 'Cannot receive a repair part without JobCardEntry.' });
+      return;
+    }
     try {
       setSubmitting(true);
       const response = await repairService.receiveRepairPart({
         CompanyDB: dbName,
-        WorkEntryEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        LineId: lineId,
-        ReceivedQty: quantity,
-        UserCode: userCode,
+        JobCardEntry: Number(jobCardEntry) || jobCardEntry,
+        MechanicUserCode: userCode,
+        Parts: [{ LineId: Number(lineId) || lineId }],
       });
       if (!isSuccess(response)) throw new Error(response?.Message || 'Part receipt failed.');
       await loadRepairPartStatuses();
@@ -551,7 +542,7 @@ const RepairWorkScreen = ({ route }) => {
       <Modal visible={activeModal === 'detail'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <View style={styles.modalOverlay}>
           <Card style={styles.modalCard}>
-            <Card.Title title={detailDraft.LineId < workDetails.length ? 'Edit work detail' : 'Add work detail'} />
+            <Card.Title title={detailDraft.LineId <= workDetails.length ? 'Edit work detail' : 'Add work detail'} />
             <Card.Content>
               <TextInput mode="outlined" label="Work type" value={detailDraft.WorkType || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, WorkType: value }))} style={styles.input} />
               <TextInput mode="outlined" label="Description" value={detailDraft.Description || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, Description: value }))} multiline style={styles.input} />
