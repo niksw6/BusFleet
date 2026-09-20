@@ -18,7 +18,7 @@ import { addBreakdown } from '../../../store/slices/dataSlice';
 import Loader from '../../../shared/components/Loader';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { formatDate, formatTime, formatVehicleNumber } from '../../../utils/helpers';
+import { formatDate, formatApiDate, formatTime, formatVehicleNumber } from '../../../utils/helpers';
 import { PRIORITY_LEVELS } from '../../../constants/config';
 
 const CreateBreakdownScreen = ({ navigation }) => {
@@ -55,7 +55,7 @@ const CreateBreakdownScreen = ({ navigation }) => {
 
       const breakdownData = {
         ...formValues,
-        breakdownDate: formatDate(formValues.breakdownDate),
+        breakdownDate: formatApiDate(formValues.breakdownDate),
       };
 
       const response = await complaintService.createBreakdown(breakdownData);

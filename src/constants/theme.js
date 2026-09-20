@@ -1,66 +1,66 @@
 export const COLORS = {
-  // SAP Fiori inspired colors
-  primary: '#1E5AA8',
-  primaryDark: '#174A8A',
-  primaryLight: '#DCE8F8',
-  secondary: '#FF9500',    // SAP Orange
-  success: '#2B7D2B',      // SAP Green
-  danger: '#BB0000',       // SAP Red
-  warning: '#FF9500',      // SAP Orange
-  info: '#1E5AA8',
+  // MUT brand palette based on the provided logo
+  primary: '#0F5A88',
+  primaryDark: '#0B476C',
+  primaryLight: '#D9EDF8',
+  secondary: '#D73D3D',
+  success: '#2B7D2B',
+  danger: '#D73D3D',
+  warning: '#F59E0B',
+  info: '#0F5A88',
   light: '#F5F6F7',
-  dark: '#32363A',
+  dark: '#17212B',
   white: '#FFFFFF',
   black: '#000000',
-  gray: '#6A6D70',
-  grayLight: '#EDEFF0',
-  grayDark: '#32363A',
-  text: '#32363A',
-  textSecondary: '#6A6D70',
+  gray: '#5F6873',
+  grayLight: '#EEF2F6',
+  grayDark: '#17212B',
+  text: '#17212B',
+  textSecondary: '#5F6873',
   background: '#F5F6F7',
   card: '#FFFFFF',
-  border: '#D9DCDD',
-  
-  // Status colors with better visibility
-  statusOpen: '#1E5AA8',
-  statusInProgress: '#FF9500',  // Orange - In Progress
-  statusCompleted: '#2B7D2B',   // Green - Completed
-  statusDeclined: '#BB0000',    // Red - Declined
-  statusCancelled: '#6A6D70',   // Gray - Cancelled
-  
+  border: '#D7DEE5',
+
+  // Status colors
+  statusOpen: '#0F5A88',
+  statusInProgress: '#E8A23A',
+  statusCompleted: '#2B7D2B',
+  statusDeclined: '#D73D3D',
+  statusCancelled: '#5F6873',
+
   // Priority colors
   priorityLow: '#2B7D2B',
-  priorityMedium: '#FF9500',
-  priorityHigh: '#BB0000',
-  priorityCritical: '#8B0000',
-  
+  priorityMedium: '#E8A23A',
+  priorityHigh: '#D73D3D',
+  priorityCritical: '#A42A2A',
+
   // Complaint Type colors
-  typeComplaint: '#1E5AA8',
-  typeBreakdown: '#BB0000',     // Red - breakdown (critical)
-  typePreventive: '#2B7D2B',    // Green - preventive maintenance
-  typeMechanical: '#00689E',    // Teal - mechanical
+  typeComplaint: '#0F5A88',
+  typeBreakdown: '#D73D3D',
+  typePreventive: '#2B7D2B',
+  typeMechanical: '#0F5A88',
 };
 
 export const DARK_COLORS = {
-  primary: '#5F8FD6',
-  primaryDark: '#3F73C1',
-  secondary: '#FF8C5A',
+  primary: '#4F9AC7',
+  primaryDark: '#2D6F9A',
+  secondary: '#E86363',
   success: '#4CAF50',
-  danger: '#F44336',
+  danger: '#E86363',
   warning: '#FFB300',
-  info: '#29B6F6',
-  light: '#1C1C1E',
+  info: '#4F9AC7',
+  light: '#0E1720',
   dark: '#FFFFFF',
-  white: '#1C1C1E',
+  white: '#0E1720',
   black: '#FFFFFF',
-  gray: '#8E8E93',
-  grayLight: '#2C2C2E',
-  grayDark: '#E5E5EA',
+  gray: '#A0ACB9',
+  grayLight: '#1A2A36',
+  grayDark: '#E5E7EB',
   background: '#000000',
-  surface: '#1C1C1E',
-  card: '#2C2C2E',
+  surface: '#0E1720',
+  card: '#16232C',
   text: '#FFFFFF',
-  textSecondary: '#8E8E93',
+  textSecondary: '#A0ACB9',
 };
 
 export const FONTS = {

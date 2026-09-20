@@ -18,7 +18,7 @@ import { addSchedule } from '../../../store/slices/dataSlice';
 import Loader from '../../../shared/components/Loader';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { formatDate, formatVehicleNumber } from '../../../utils/helpers';
+import { formatDate, formatApiDate, formatVehicleNumber } from '../../../utils/helpers';
 
 const CreateScheduleScreen = ({ navigation }) => {
   const dispatch = useDispatch();
@@ -52,7 +52,7 @@ const CreateScheduleScreen = ({ navigation }) => {
 
       const scheduleData = {
         ...formValues,
-        nextServiceDate: formatDate(formValues.nextServiceDate),
+        nextServiceDate: formatApiDate(formValues.nextServiceDate),
       };
 
       const response = await maintenanceService.createSchedule(scheduleData);

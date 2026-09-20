@@ -40,6 +40,7 @@ const FaultMechanicPartsSection = ({
   onChange,
   value = { mechanics: [], parts: [] },
   hideMechanics = false,
+  hidePartAddButton = false,
   customHeaderContent = null,
 }) => {
   const colors = isDarkMode ? DARK_COLORS : COLORS;
@@ -252,6 +253,7 @@ const FaultMechanicPartsSection = ({
           )}
 
           {/* ── Parts Section ── */}
+          {!hidePartAddButton && (
           <View style={[styles.subSection, { marginTop: SPACING.sm }]}>
             <View style={styles.subSectionHeader}>
               <MaterialIcons name="settings" size={16} color="#2B7D2B" />
@@ -337,6 +339,7 @@ const FaultMechanicPartsSection = ({
               </View>
             )}
           </View>
+          )}
         </View>
       )}
 

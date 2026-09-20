@@ -775,7 +775,7 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 <Text style={[styles.infoValue, { color: colors.dark }]}>{priority}</Text>
               </View>
 
-              {effectiveFaultEntries.length > 0 && (
+              {effectiveFaultEntries.length > 0 && normalizeJobCardComplaintType(complaintType) !== 'Breakdown' && (
                 <Text style={[styles.hintText, { color: colors.gray }]}>
                   Add Parts Required under each fault below.
                 </Text>
@@ -788,26 +788,48 @@ const CreateJobCardScreen = ({ route, navigation }) => {
                 <View style={styles.sectionHeaderRow}>
                   <MaterialIcons name="assignment-ind" size={20} color="#0070F2" />
                   <Text style={[styles.sectionTitle, { color: colors.dark, marginBottom: 0, marginLeft: 8 }]}>
-                    Fault Parts
+                    {normalizeJobCardComplaintType(complaintType) === 'Breakdown' ? 'Faults' : 'Fault Parts'}
                   </Text>
                 </View>
-                <Text style={[styles.sectionHint, { color: colors.gray }]}>
-                  Each fault has its own Parts Required. Mechanics/Electricians will self-accept faults once your Team Leader approves this job card.
-                </Text>
+                {normalizeJobCardComplaintType(complaintType) !== 'Breakdown' ? (
+                  <Text style={[styles.sectionHint, { color: colors.gray }]}>
+                    Each fault has its own Parts Required. Mechanics/Electricians will self-accept faults once your Team Leader approves this job card.
+                  </Text>
+                ) : null}
                 {effectiveFaultEntries
-                  .map(({ fault, assignmentKey }) => (
-                    <FaultMechanicPartsSection
-                      key={`fault-${assignmentKey}`}
-                      fault={fault}
-                      faultIndex={assignmentKey}
-                      mechanics={mechanics}
-                      spareParts={spareParts}
-                      isDarkMode={isDarkMode}
-                      value={faultAssignments[assignmentKey] || { mechanics: [], parts: [] }}
-                      onChange={handleFaultAssignmentChange}
-                      hideMechanics
-                    />
-                  ))}
+                  .map(({ fault, assignmentKey }) => {
+                    if (normalizeJobCardComplaintType(complaintType) === 'Breakdown') {
+                      const faultName = fault?.Fault || fault?.FaultCode || fault?.FaultName || '-';
+                      const faultDescription = fault?.Dscption || fault?.Description || fault?.FaultDesc || '';
+                      return (
+                        <View key={`fault-${assignmentKey}`} style={[styles.faultChip, { backgroundColor: colors.light }]}>
+                          <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: '#FFF3E0', alignItems: 'center', justifyContent: 'center' }}>
+                            <MaterialIcons name="warning-amber" size={18} color="#E65100" />
+                          </View>
+                          <View style={styles.faultContent}>
+                            <View style={styles.faultHeader}>
+                              <Text style={[styles.faultText, { color: colors.dark, fontWeight: '700', flex: 1 }]}>{faultName}</Text>
+                            </View>
+                            {faultDescription ? <Text style={[styles.faultDescription, { color: colors.gray }]}>{faultDescription}</Text> : null}
+                          </View>
+                        </View>
+                      );
+                    }
+
+                    return (
+                      <FaultMechanicPartsSection
+                        key={`fault-${assignmentKey}`}
+                        fault={fault}
+                        faultIndex={assignmentKey}
+                        mechanics={mechanics}
+                        spareParts={spareParts}
+                        isDarkMode={isDarkMode}
+                        value={faultAssignments[assignmentKey] || { mechanics: [], parts: [] }}
+                        onChange={handleFaultAssignmentChange}
+                        hideMechanics
+                      />
+                    );
+                  })}
               </View>
             )}
 

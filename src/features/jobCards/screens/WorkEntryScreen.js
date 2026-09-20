@@ -20,7 +20,6 @@ import {
   RefreshControl,
   TextInput as RNTextInput,
   Alert,
-  Image,
 } from 'react-native';
 import { Text, Button, Chip, TextInput, Divider, ActivityIndicator } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
@@ -41,7 +40,7 @@ import {
   updatePartRequestStatus,
 } from '../../../store/slices/workEntrySlice';
 import { PART_REQUEST_STATUS } from '../../../constants/config';
-import { formatDateTime } from '../../../utils/helpers';
+import { formatDateTime, getDateTimeTimestamp } from '../../../utils/helpers';
 
 const isApiSuccess = (res) => {
   if (Array.isArray(res) || !res || typeof res !== 'object') return Array.isArray(res);
@@ -54,6 +53,26 @@ const MAX_IMAGES_PER_PHASE = 2;
 const isAwaitingVerificationStatus = (value) => {
   const status = String(value || '').trim().toUpperCase();
   return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION', 'V', 'VERIFY'].includes(status);
+};
+
+const isFalseFlag = (value) => value === false || value === 0 || ['N', 'NO', 'FALSE', '0'].includes(String(value || '').trim().toUpperCase());
+
+const getBreakdownRepairInfo = (...sources) => {
+  for (const source of sources) {
+    const candidates = [
+      ...(Array.isArray(source) ? source : [source]),
+      ...(Array.isArray(source?.WorkEntries) ? source.WorkEntries : []),
+    ];
+    for (const candidate of candidates) {
+      const repairs = Array.isArray(candidate?.BreakDownRepair)
+        ? candidate.BreakDownRepair
+        : candidate?.BreakDownRepair
+          ? [candidate.BreakDownRepair]
+          : [];
+      if (repairs.length > 0) return repairs[0];
+    }
+  }
+  return null;
 };
 
 const extractApiRows = (res) => {
@@ -137,7 +156,12 @@ const groupPartRequestsByWorkEntry = (rawItems = [], jobCardDocEntry) => {
 };
 
 const WorkEntryScreen = ({ route, navigation }) => {
-  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, fault: routeFault = null, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', complaintNo: routeComplaintNo = '', depot: routeDepot = '' } = route.params || {};
+  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, breakdownRepair: routeBreakdownRepair = null, towRequested: routeTowRequested = false, canRepairOnSite: routeCanRepairOnSite, fault: routeFault = null, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', complaintNo: routeComplaintNo = '', depot: routeDepot = '' } = route.params || {};
+  const breakdownRepair = getBreakdownRepairInfo(routeBreakdownRepair, existingWorkEntry);
+  const routeRepairMode = String(breakdownRepair?.RepairMode || '').trim().toUpperCase();
+  const routeRepairOnSite = String(breakdownRepair?.RepairOnSite || '').trim().toUpperCase();
+  const routeIndicatesRepairOnSite = routeRepairMode === 'R';
+  const routeIndicatesTow = routeRepairMode === 'T' || Boolean(routeTowRequested) || isFalseFlag(routeCanRepairOnSite);
   const dispatch = useDispatch();
 
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
@@ -148,7 +172,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const storeEntries = useSelector(state => state.workEntry.workEntries[String(workOrderDocEntry)] || EMPTY_LIST);
   const storePartsRequests = useSelector(state => state.workEntry.partsRequests[String(workOrderDocEntry)] || EMPTY_LIST);
 
-  const mechanicCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || user?.name || '';
+  const mechanicCode = user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || user?.name || '';
   const mechanicName = user?.FirstName || user?.Name || user?.name || '';
 
   // ─── Local state ─────────────────────────────────────────────────────────────
@@ -166,8 +190,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [incidentFault, setIncidentFault] = useState(routeFault);
   const [customDescription, setCustomDescription] = useState('');
   const [entryRemarks, setEntryRemarks] = useState('');
-  const [repairType, setRepairType] = useState('P');
+  const [repairType, setRepairType] = useState(routeRepairOnSite === 'T' ? 'T' : 'P');
   const isBreakdownJob = String(routeComplaintType || '').toLowerCase().includes('breakdown');
+  const initialRepairOnSite = routeRepairMode === 'T' ? false : (routeRepairMode === 'R' ? true : !routeIndicatesTow);
+  const [canRepairOnSite, setCanRepairOnSite] = useState(initialRepairOnSite);
+  const towWorkflowLocked = routeRepairMode === 'T' || Boolean(routeTowRequested) || towRequestEntryId; 
 
   // Parts Form (per work entry)
   const [showPartsModal, setShowPartsModal] = useState(false);
@@ -180,12 +207,12 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [entryParts, setEntryParts] = useState([]);
   const [showEntryPartsSelector, setShowEntryPartsSelector] = useState(false);
   const [beforeImageDrafts, setBeforeImageDrafts] = useState([]);
+  const [towBeforeImageDrafts, setTowBeforeImageDrafts] = useState([]);
   const [afterImageDrafts, setAfterImageDrafts] = useState([]);
   const [savedImages, setSavedImages] = useState([]);
 
   // Line Breakdown specific states
-  const [canRepairOnSite, setCanRepairOnSite] = useState(true);
-  const [towDepotMode, setTowDepotMode] = useState('default'); // 'default' or 'other'
+  const [towDepotMode, setTowDepotMode] = useState(routeRepairMode === 'T' ? 'default' : 'default'); // 'default' or 'other'
   const [selectedTowDepot, setSelectedTowDepot] = useState(routeDepot || '');
   const [depotsList, setDepotsList] = useState([]);
   const [showDepotsModal, setShowDepotsModal] = useState(false);
@@ -193,7 +220,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
   // breakdown entry). RequestTow must reuse this document rather than create
   // a second line-breakdown work entry.
   const [lineBreakdownWorkEntryId, setLineBreakdownWorkEntryId] = useState(routeWorkEntryDocEntry || null);
-  const [towRequestEntryId, setTowRequestEntryId] = useState(null);
+  const [towRequestEntryId, setTowRequestEntryId] = useState(routeIndicatesTow ? routeWorkEntryDocEntry || null : null);
 
   // Issued Items (from SAP Store)
   const [issuedItems, setIssuedItems] = useState([]);
@@ -221,6 +248,64 @@ const WorkEntryScreen = ({ route, navigation }) => {
     if (Array.isArray(data)) return data[0] || null;
     if (!data || typeof data !== 'object') return null;
     return data?.WorkEntry || data?.WorkEntryDetails || data?.Record || data;
+  };
+
+  const getSavedBeforeImages = (entry) => {
+    const imageSources = [
+      entry?.BeforeImages,
+      entry?.BFImages,
+      entry?.WorkEntryImages,
+      entry?.Images,
+      entry?.Attachments,
+    ].find(Array.isArray) || [];
+
+    return imageSources
+      .filter((image) => {
+        const phase = String(image?.Phase || image?.ImageType || image?.ImagePhase || image?.Type || '').trim().toUpperCase();
+        return !phase || phase === 'BF' || phase === 'BEFORE' || phase === 'BEFOREIMAGE';
+      })
+      .map((image, index) => {
+        const fileName = image?.FileName
+          || image?.fileName
+          || image?.ImgPath
+          || image?.ImagePath
+          || image?.File
+          || image?.Path
+          || '';
+        return {
+          id: image?.id || image?.Id || fileName || image?.Name || `saved-before-${index}`,
+          name: fileName || image?.ImageName || image?.Name || 'Before image',
+          fileName: String(fileName || '').trim(),
+          uri: image?.uri || image?.Uri || image?.ImageUrl || image?.Url || image?.Base64 || image?.ImageBase64 || '',
+        };
+      });
+  };
+
+  const getSavedTowImages = (entry) => {
+    const breakdownRepair = getBreakdownRepairInfo(entry);
+    const repairImages = breakdownRepair
+      ? [breakdownRepair.TowImage1, breakdownRepair.TowImage2].filter(Boolean).map((fileName, index) => ({
+          id: `breakdown-tow-${index}-${fileName}`,
+          name: fileName,
+          fileName: String(fileName).trim(),
+          uri: '',
+        }))
+      : [];
+    if (repairImages.length > 0) return repairImages;
+    const imageSources = [entry?.TowBeforeImages, entry?.TowImages, entry?.TowPhotos, entry?.TowPhoto, entry?.BreakdownPhoto, entry?.BreakdownImages];
+    const source = imageSources.find((image) => image !== undefined && image !== null);
+    const images = Array.isArray(source) ? source : source ? [source] : [];
+    return images.map((image, index) => {
+      const fileName = typeof image === 'string'
+        ? image
+        : image?.FileName || image?.fileName || image?.ImgPath || image?.ImagePath || image?.File || image?.Path || '';
+      return {
+        id: image?.id || image?.Id || fileName || `saved-tow-${index}`,
+        name: fileName || image?.ImageName || image?.Name || 'Tow photo',
+        fileName: String(fileName || '').trim(),
+        uri: image?.uri || image?.Uri || image?.ImageUrl || image?.Url || image?.Base64 || image?.ImageBase64 || '',
+      };
+    });
   };
 
   const normalizeFaultWorkItems = (response) => {
@@ -288,14 +373,56 @@ const WorkEntryScreen = ({ route, navigation }) => {
       if (workEntryResult.status === 'fulfilled' && routeWorkEntryDocEntry) {
         const acceptedEntry = getWorkEntryRecord(workEntryResult.value);
         if (acceptedEntry && typeof acceptedEntry === 'object') {
+          const persistedEntry = { ...(existingWorkEntry || {}), ...acceptedEntry };
+          const persistedBreakdownRepair = getBreakdownRepairInfo(
+            routeBreakdownRepair,
+            existingWorkEntry,
+            acceptedEntry,
+            persistedEntry,
+            storeEntries,
+          );
+          const persistedRepairMode = String(persistedBreakdownRepair?.RepairMode || '').trim().toUpperCase();
+          const loadedWorkEntryDocEntry = acceptedEntry?.WorkEntryDocEntry
+            || acceptedEntry?.WorkEntryNo
+            || acceptedEntry?.WorkEntryEntry
+            || acceptedEntry?.DocEntry
+            || routeWorkEntryDocEntry;
+          const details = Array.isArray(persistedEntry?.Details) ? persistedEntry.Details : [];
+          const towRequested = Boolean(
+            routeTowRequested
+            || persistedEntry?.TowRequested
+            || persistedEntry?.TowRequestEntryId
+            || persistedEntry?.TowRequestDocEntry
+            || persistedRepairMode === 'T'
+            || ['REQUESTED', 'IN PROGRESS', 'PENDING PICKUP', 'PICKUP REQUESTED'].includes(String(persistedEntry?.TowStatus || '').trim().toUpperCase())
+            || details.some((detail) => String(detail?.WorkCode || '').trim().toUpperCase() === 'TOW_REQUEST'),
+          );
+          if (loadedWorkEntryDocEntry) setLineBreakdownWorkEntryId(loadedWorkEntryDocEntry);
+          if (persistedBreakdownRepair) {
+            const repairMode = String(persistedBreakdownRepair.RepairMode || '').trim().toUpperCase();
+            const repairOnSite = String(persistedBreakdownRepair.RepairOnSite || '').trim().toUpperCase();
+            setCanRepairOnSite(repairMode === 'R');
+            setRepairType(repairOnSite === 'T' ? 'T' : 'P');
+            const depotType = String(persistedBreakdownRepair.Depot || persistedBreakdownRepair.DepotName || '').trim().toUpperCase();
+            if (depotType === 'OTHER') setTowDepotMode('other');
+            if (depotType === 'DEFAULT') setTowDepotMode('default');
+            if (persistedBreakdownRepair.DepotName) setSelectedTowDepot(persistedBreakdownRepair.DepotName);
+            else if (persistedBreakdownRepair.Depot) setSelectedTowDepot(persistedBreakdownRepair.Depot);
+          }
+          if (towRequested || isFalseFlag(routeCanRepairOnSite) || isFalseFlag(persistedEntry?.CanRepairOnSite)) {
+            setCanRepairOnSite(false);
+          }
+          if (towRequested) setTowRequestEntryId(loadedWorkEntryDocEntry);
+          const savedBeforeImages = getSavedBeforeImages(persistedEntry);
+          if (savedBeforeImages.length > 0) setBeforeImageDrafts(savedBeforeImages);
+          const savedTowImages = getSavedTowImages(persistedEntry);
+          if (savedTowImages.length > 0) setTowBeforeImageDrafts(savedTowImages);
           dispatch(setWorkEntries({
             docEntry: workOrderDocEntry,
             entries: [{
               ...acceptedEntry,
               ...(existingWorkEntry || {}),
-              WorkEntryDocEntry: acceptedEntry?.WorkEntryDocEntry
-                || acceptedEntry?.DocEntry
-                || routeWorkEntryDocEntry,
+              WorkEntryDocEntry: loadedWorkEntryDocEntry,
             }],
           }));
         }
@@ -314,6 +441,26 @@ const WorkEntryScreen = ({ route, navigation }) => {
         Number(fault?.FaultLine ?? fault?.FaultLineNo ?? fault?.Line ?? fault?.LineNum) === Number(routeFaultLine) + 1
       )) || (jobCardFaults.length === 1 ? jobCardFaults[0] : null);
 
+      const liveBreakdownRepair = getBreakdownRepairInfo(
+        routeBreakdownRepair,
+        existingWorkEntry,
+        storeEntries,
+      );
+      if (liveBreakdownRepair) {
+        const repairMode = String(liveBreakdownRepair.RepairMode || '').trim().toUpperCase();
+        const repairOnSite = String(liveBreakdownRepair.RepairOnSite || '').trim().toUpperCase();
+        setCanRepairOnSite(repairMode === 'R');
+        setRepairType(repairOnSite === 'T' ? 'T' : 'P');
+        if (repairMode === 'T') setCanRepairOnSite(false);
+        const depotType = String(liveBreakdownRepair.Depot || liveBreakdownRepair.DepotName || '').trim().toUpperCase();
+        if (depotType === 'OTHER') setTowDepotMode('other');
+        if (depotType === 'DEFAULT') setTowDepotMode('default');
+        if (liveBreakdownRepair.DepotName) setSelectedTowDepot(liveBreakdownRepair.DepotName);
+        else if (liveBreakdownRepair.Depot) setSelectedTowDepot(liveBreakdownRepair.Depot);
+        const savedTowImages = getSavedTowImages({ WorkEntries: storeEntries, ...liveBreakdownRepair });
+        if (savedTowImages.length > 0) setTowBeforeImageDrafts(savedTowImages);
+      }
+
       if (faultDetailsResult.status === 'fulfilled') {
         // Job-card detail can contain only Fault/Dscption (without FaultCode).
         // Use it to resolve FLT5 from the master list, but never display the
@@ -326,13 +473,19 @@ const WorkEntryScreen = ({ route, navigation }) => {
           jobCardFault?.Dscption,
           faultReference,
         ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean);
-        const matchingFault = rows.find((row) => [row?.FaultCode, row?.Fault, row?.Description]
+        const matchingFault = rows.find((row) => [row?.FaultCode, row?.Fault, row?.FaultName, row?.Description, row?.Code, row?.Name]
           .some(value => faultReferences.includes(String(value || '').trim().toLowerCase())));
         const resolvedFault = jobCardFault || matchingFault || routeFault;
         if (resolvedFault) {
           setIncidentFault({ ...routeFault, ...resolvedFault });
         }
-        const faultCode = String(jobCardFault?.FaultCode || routeFault?.FaultCode || matchingFault?.FaultCode || '').trim();
+        const faultCode = String(
+          matchingFault?.FaultCode
+          || matchingFault?.Code
+          || jobCardFault?.FaultCode
+          || routeFault?.FaultCode
+          || '',
+        ).trim();
         console.log('[WorkEntry] Resolved fault for work list:', JSON.stringify({
           faultCode,
           source: jobCardFault?.FaultCode ? 'JobCardDetail.Faults' : routeFault?.FaultCode ? 'route fault' : 'fault master',
@@ -411,11 +564,21 @@ const WorkEntryScreen = ({ route, navigation }) => {
     setCustomDescription('');
     setEntryRemarks('');
     setEntryParts([]);
-    setBeforeImageDrafts([]);
     setShowAddEntry(false);
   };
 
+  const canUploadTowBreakdownPhoto = Boolean(
+    lineBreakdownWorkEntryId
+    || routeWorkEntryDocEntry
+    || storeEntries.some((entry) => entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code)
+  );
+
   const pickWorkEntryImage = async (phase, useCamera = false) => {
+    if (phase === 'TOW_BF' && !canUploadTowBreakdownPhoto) {
+      Toast.show({ type: 'info', text1: 'Create work entry first', text2: 'Add the breakdown work entry before uploading the tow photo.' });
+      return;
+    }
+
     let ImagePicker;
     try {
       ImagePicker = require('expo-image-picker');
@@ -443,16 +606,20 @@ const WorkEntryScreen = ({ route, navigation }) => {
       name: asset.fileName || `work-entry-${Date.now()}.jpg`,
       mimeType: asset.mimeType || 'image/jpeg',
     }));
-    const updater = phase === 'BF' ? setBeforeImageDrafts : setAfterImageDrafts;
+    const updater = phase === 'TOW_BF'
+      ? setTowBeforeImageDrafts
+      : phase === 'BF' ? setBeforeImageDrafts : setAfterImageDrafts;
     updater((previous) => [...previous, ...selected].slice(0, MAX_IMAGES_PER_PHASE));
   };
 
   const removeImageDraft = (phase, id) => {
-    const updater = phase === 'BF' ? setBeforeImageDrafts : setAfterImageDrafts;
+    const updater = phase === 'TOW_BF'
+      ? setTowBeforeImageDrafts
+      : phase === 'BF' ? setBeforeImageDrafts : setAfterImageDrafts;
     updater((previous) => previous.filter((image) => image.id !== id));
   };
 
-  const persistWorkEntryImages = async (phase, drafts, workEntryDocEntry) => {
+  const persistWorkEntryImages = async (phase, drafts, workEntryDocEntry, recordPhase = phase) => {
     if (!workEntryDocEntry || drafts.length === 0) return;
     const uploadResponse = await workEntryService.uploadImages(drafts);
     const fileNames = Array.isArray(uploadResponse?.FileNames)
@@ -464,17 +631,25 @@ const WorkEntryScreen = ({ route, navigation }) => {
     const records = [];
     for (let index = 0; index < Math.min(fileNames.length, MAX_IMAGES_PER_PHASE - existingCount); index += 1) {
       const fileName = fileNames[index];
-      const response = await workEntryService.saveWorkEntryImage({
-        CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        FaultLine: Number(routeFaultLine) || 0,
-        ImgType: phase,
-        ImgNo: existingCount + index + 1,
-        ImgPath: fileName,
-        Remarks: entryRemarks || completeRemarks || '',
-      });
+      const response = recordPhase === 'TOW_BF'
+        ? await jobCardService.saveJobCardImage({
+            CompanyDB: dbName || 'MUTSPL_TEST',
+            JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
+            ImgNo: 1,
+            ImgPath: fileName,
+            Remarks: entryRemarks || completeRemarks || 'Bus received at depot.',
+          })
+        : await workEntryService.saveWorkEntryImage({
+            CompanyDB: dbName || 'MUTSPL_TEST',
+            WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+            FaultLine: Number(routeFaultLine) || 0,
+            ImgType: phase,
+            ImgNo: existingCount + index + 1,
+            ImgPath: fileName,
+            Remarks: entryRemarks || completeRemarks || '',
+          });
       if (!isApiSuccess(response)) throw new Error(response?.Message || `Failed to save ${phase === 'BF' ? 'before' : 'after'} image.`);
-      records.push({ fileName, phase, uri: drafts[index]?.uri || '' });
+      records.push({ fileName, phase: recordPhase, uri: drafts[index]?.uri || '', workEntryDocEntry });
     }
     setSavedImages((previous) => [...previous, ...records]);
   };
@@ -491,7 +666,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Please select or enter a work description' });
       return;
     }
-    if (isBreakdownJob && beforeImageDrafts.length === 0) {
+    const hasExistingWorkEntryBeforeImage = storeEntries.some((entry) => getSavedBeforeImages(entry).length > 0)
+      || savedImages.some((image) => image.phase === 'BF');
+    if (isBreakdownJob && beforeImageDrafts.length === 0 && !hasExistingWorkEntryBeforeImage) {
       Toast.show({ type: 'error', text1: 'Before image required', text2: 'Upload a before image before saving breakdown work.' });
       return;
     }
@@ -580,8 +757,16 @@ const WorkEntryScreen = ({ route, navigation }) => {
           Description: savedEntry?.Description || savedEntry?.WorkListName || selectedWork?.Name || description,
           Remarks: savedEntry?.Remarks ?? entryRemarks ?? '',
           Details: savedEntry?.Details || breakdownPayload.Details,
+          EntryDate: savedEntry?.EntryDate || savedEntry?.CreatedDate || new Date().toISOString(),
+          BeforeImages: beforeImageDrafts.map((image) => ({
+            FileName: image.name,
+            fileName: image.name,
+            uri: image.uri || '',
+            Phase: 'BF',
+          })),
         };
         dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: visibleEntry }));
+        setBeforeImageDrafts([]);
         if (createdEntryId) setLineBreakdownWorkEntryId(createdEntryId);
         if (!createdEntryId) {
           console.warn('[WorkEntry] Breakdown work entry saved but no WorkEntryDocEntry was returned:', JSON.stringify(breakdownRes));
@@ -645,7 +830,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Please select a depot for the tow' });
       return;
     }
-    if (!lineBreakdownWorkEntryId && beforeImageDrafts.length === 0) {
+    if (towBeforeImageDrafts.length === 0) {
       Toast.show({ type: 'error', text1: 'Breakdown photo required', text2: 'Upload a photo before requesting a tow vehicle.' });
       return;
     }
@@ -706,35 +891,14 @@ const WorkEntryScreen = ({ route, navigation }) => {
       if (towResponse?.Success === false) {
         throw new Error(towResponse?.Message || 'Failed to request tow');
       }
-      await persistWorkEntryImages('BF', beforeImageDrafts, workEntryDocEntry);
+      await persistWorkEntryImages('BF', towBeforeImageDrafts, workEntryDocEntry, 'TOW_BF');
       if (created) {
         dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: { ...created, WorkEntryDocEntry: workEntryDocEntry, TowRequested: true } }));
       }
       setTowRequestEntryId(workEntryDocEntry);
-      setBeforeImageDrafts([]);
       Toast.show({ type: 'success', text1: 'Tow requested', text2: 'Tap Complete Tow once the bus has been picked up.' });
     } catch (err) {
       Toast.show({ type: 'error', text1: err.message || 'Error' });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleCompleteTow = async () => {
-    if (!towRequestEntryId) return;
-    try {
-      setSubmitting(true);
-      const res = await mechanicService.completeTow({
-        CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(towRequestEntryId) || towRequestEntryId,
-        UserCode: mechanicCode,
-        Remarks: entryRemarks || 'Tow vehicle picked up the bus and left for the depot.',
-      });
-      if (res?.Success === false) throw new Error(res?.Message || 'Failed to complete tow');
-      Toast.show({ type: 'success', text1: 'Tow completed', text2: 'The tow has been recorded successfully.' });
-      setAwaitingVerification(true);
-    } catch (err) {
-      Toast.show({ type: 'error', text1: err.message || 'Error completing tow' });
     } finally {
       setSubmitting(false);
     }
@@ -783,15 +947,35 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
   // ─── Mark part received ───────────────────────────────────────────────────────
   const handleMarkReceived = async (request) => {
+    // Approval only authorizes Store to issue the part. It does not mean the
+    // mechanic has received it. Send receipt lines only for quantities that
+    // Store has actually issued and which have not already been received.
+    const receivableParts = (Array.isArray(request?.Parts) ? request.Parts : [])
+      .map((part) => {
+        const issuedQty = Number(part?.IssuedQty ?? part?.IssueQty ?? 0) || 0;
+        const receivedQty = Number(part?.ReceivedQty ?? part?.RecQty ?? 0) || 0;
+        return {
+          PartLine: Number(part?.PartLine ?? part?.LineId ?? part?.Line ?? part?.LineNum) || 0,
+          ReceivedQty: Math.max(issuedQty - receivedQty, 0),
+        };
+      })
+      .filter((part) => part.ReceivedQty > 0);
+
+    if (receivableParts.length === 0) {
+      Toast.show({
+        type: 'info',
+        text1: 'Parts not issued yet',
+        text2: 'Parts can be received only after the Store issues them.',
+      });
+      return;
+    }
+
     try {
       const res = await storeService.receiveJobCardParts({
         CompanyDB: dbName || 'MUTSPL_TEST',
         JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
         UserCode: mechanicCode,
-        Parts: (request?.Parts || []).map((part) => ({
-          PartLine: Number(part?.PartLine ?? part?.LineId ?? part?.Line ?? part?.LineNum) || 0,
-          ReceivedQty: Number(part?.IssuedQty ?? part?.ApprovedQty ?? part?.ReqQty ?? 0) || 0,
-        })),
+        Parts: receivableParts,
       });
       if (res?.Success) {
         const requestCode = request?.RequestCode || request?.WorkEntryDocEntry || '';
@@ -909,6 +1093,54 @@ const WorkEntryScreen = ({ route, navigation }) => {
     || faultCode
     || 'Fault'
   ).trim();
+  const displayedJobCardNo = jobCardNo || resolvedJobCardDocEntry || workOrderDocEntry;
+  const displayedWorkEntryNo = lineBreakdownWorkEntryId
+    || routeWorkEntryDocEntry
+    || storeEntries.find((entry) => entry?.WorkEntryDocEntry || entry?.DocEntry)?.WorkEntryDocEntry
+    || storeEntries.find((entry) => entry?.WorkEntryDocEntry || entry?.DocEntry)?.DocEntry
+    || null;
+  const workEntryBeforeImages = [
+    ...storeEntries.flatMap((entry) => getSavedBeforeImages(entry)),
+    ...savedImages
+      .filter((image) => image.phase === 'BF')
+      .map((image) => ({ id: image.fileName, name: image.fileName, uri: image.uri || '' })),
+    ...beforeImageDrafts,
+  ].filter((image, index, images) => image?.name && images.findIndex((candidate) => candidate.name === image.name) === index);
+
+  const renderWorkEntryBeforeImageSection = () => isBreakdownJob ? (
+    <View style={[styles.card, { backgroundColor: colors.white }]}>
+      <View style={styles.imageHeaderRow}>
+        <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0 }]}>Before Image for Work Entry</Text>
+        <Text style={{ color: colors.gray, fontSize: 12 }}>{beforeImageDrafts.length}/{MAX_IMAGES_PER_PHASE}</Text>
+      </View>
+      <Text style={[styles.completeHint, { color: colors.gray }]}>Upload the image before adding the breakdown work entry.</Text>
+      <View style={styles.imageActions}>
+        <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('BF')}>
+          <MaterialIcons name="photo-library" size={16} color="#00689E" />
+          <Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload Image</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('BF', true)}>
+          <MaterialIcons name="photo-camera" size={16} color="#007A5A" />
+          <Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
+        </TouchableOpacity>
+      </View>
+      {beforeImageDrafts.map((image) => (
+        <View key={image.id} style={styles.imageRow}>
+          <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
+          <TouchableOpacity onPress={() => removeImageDraft('BF', image.id)}>
+            <MaterialIcons name="close" size={18} color="#BB0000" />
+          </TouchableOpacity>
+        </View>
+      ))}
+      {workEntryBeforeImages
+        .filter((image) => !beforeImageDrafts.some((draft) => draft.name === image.name))
+        .map((image) => (
+          <View key={image.id} style={styles.imageRow}>
+            <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
+          </View>
+        ))}
+    </View>
+  ) : null;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
@@ -928,7 +1160,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
             <Text style={[styles.cardSubtitle, { color: colors.gray }]}>{faultCode}</Text>
           ) : null}
           <Text style={[styles.cardSubtitle, { color: colors.gray }]}>
-            WO #{workOrderDocEntry}{jobCardNo ? `  ·  JC #${jobCardNo}` : ''}
+            Job Card #: {displayedJobCardNo || '-'}
+          </Text>
+          <Text style={[styles.cardSubtitle, { color: colors.gray }]}>
+            Work Entry #: {displayedWorkEntryNo || 'Not created'}
           </Text>
           {(awaitingVerification || storeEntries.some(entry => isAwaitingVerificationStatus(entry?.Status || entry?.WorkStatus || entry?.FaultStatus))) && (
             <View style={styles.awaitingPill}>
@@ -938,133 +1173,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
           )}
         </View>
 
-        {/* Breakdown repair type section */}
-        {isBreakdownJob && (
-          <View style={[styles.card, { backgroundColor: colors.white, borderWidth: 1, borderColor: '#FDBA74' }]}> 
-            <View style={styles.sectionHeader}>
-              <MaterialIcons name="build" size={18} color="#F97316" />
-              <Text style={[styles.sectionTitle, { color: '#C2410C' }]}>Breakdown Repair</Text>
-            </View>
-            <Text style={[styles.completeHint, { color: colors.gray, marginBottom: 10 }]}>Choose how this breakdown will be handled.</Text>
-
-            <View style={styles.breakdownSection}>
-              <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginBottom: 6 }]}>Can Repair on Site?</Text>
-              <View style={styles.breakdownToggleRow}>
-                <Button
-                  mode={canRepairOnSite ? 'contained' : 'outlined'}
-                  onPress={() => setCanRepairOnSite(true)}
-                  icon="build"
-                  buttonColor={canRepairOnSite ? '#167A45' : undefined}
-                  style={[styles.breakdownToggleButton, styles.decisionButton]}
-                  labelStyle={styles.decisionButtonLabel}
-                  contentStyle={styles.decisionButtonContent}
-                >
-                  Repair on Site
-                </Button>
-                <Button
-                  mode={!canRepairOnSite ? 'contained' : 'outlined'}
-                  onPress={() => setCanRepairOnSite(false)}
-                  icon="local-shipping"
-                  buttonColor={!canRepairOnSite ? '#C2410C' : undefined}
-                  style={[styles.breakdownToggleButton, styles.decisionButton]}
-                  labelStyle={styles.decisionButtonLabel}
-                  contentStyle={styles.decisionButtonContent}
-                >
-                  Tow to Depot
-                </Button>
-              </View>
-
-              {canRepairOnSite && (
-                <>
-                  <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginTop: 10, marginBottom: 6 }]}>Permanent or Temporary Repair?</Text>
-                  <View style={styles.breakdownToggleRow}>
-                    <Button mode={repairType === 'P' ? 'contained' : 'outlined'} onPress={() => setRepairType('P')} buttonColor={repairType === 'P' ? '#167A45' : undefined} style={styles.breakdownToggleButton} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>
-                      Permanent Repair
-                    </Button>
-                    <Button mode={repairType === 'T' ? 'contained' : 'outlined'} onPress={() => setRepairType('T')} buttonColor={repairType === 'T' ? '#EA580C' : undefined} style={styles.breakdownToggleButton} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>
-                      Temporary Repair
-                    </Button>
-                  </View>
-                  <Text style={[styles.flowHint, { color: repairType === 'P' ? '#166534' : '#9A3412' }]}>
-                    {repairType === 'P'
-                      ? 'Before photo → repair on site → after photo → close work entry → supervisor inspection.'
-                      : 'Before photo → temporary repair → after photo → close work entry → bus returns to depot for depot-team assignment.'}
-                  </Text>
-                </>
-              )}
-
-              {!canRepairOnSite && (
-                <View style={[styles.breakdownTowBox, { backgroundColor: '#FFF7ED', borderColor: '#FDBA74' }]}> 
-                  <Text style={{ color: '#9A4A00', fontWeight: '700', marginBottom: 5 }}>Tow Vehicle Request</Text>
-                  <Text style={{ color: '#9A4A00', fontSize: 12, marginBottom: 8 }}>Upload a breakdown photo, request the tow, then record the bus and towing van at depot arrival.</Text>
-                  <View style={styles.breakdownToggleRow}>
-                    <Button
-                      mode={towDepotMode === 'default' ? 'contained' : 'outlined'}
-                      onPress={() => {
-                        setTowDepotMode('default');
-                        setSelectedTowDepot(routeDepot || selectedTowDepot);
-                      }}
-                      buttonColor={towDepotMode === 'default' ? '#C2410C' : undefined}
-                      labelStyle={styles.decisionButtonLabel}
-                      contentStyle={styles.decisionButtonContent}
-                      style={styles.breakdownToggleButton}
-                    >
-                      Default depot
-                    </Button>
-                    <Button
-                      mode={towDepotMode === 'other' ? 'contained' : 'outlined'}
-                      onPress={() => setTowDepotMode('other')}
-                      buttonColor={towDepotMode === 'other' ? '#C2410C' : undefined}
-                      labelStyle={styles.decisionButtonLabel}
-                      contentStyle={styles.decisionButtonContent}
-                      style={styles.breakdownToggleButton}
-                    >
-                      Other depot
-                    </Button>
-                  </View>
-
-                  {towDepotMode === 'other' && (
-                    <TouchableOpacity style={[styles.selectorBtn, { marginTop: 8, borderColor: '#FDBA74', backgroundColor: colors.white }]} onPress={() => setShowDepotsModal(true)}>
-                      <Text style={[styles.selectorBtnText, { color: selectedTowDepot ? colors.dark : colors.gray }]} numberOfLines={1}>
-                        {selectedTowDepot || 'Select depot'}
-                      </Text>
-                      <MaterialIcons name="expand-more" size={20} color={colors.gray} />
-                    </TouchableOpacity>
-                  )}
-
-                  {!towRequestEntryId ? (
-                    <>
-                      <View style={[styles.imageBox, { borderColor: '#FDBA74', backgroundColor: colors.white }]}>
-                        <Text style={{ color: '#9A4A00', fontWeight: '700', fontSize: 13 }}>Breakdown Photo *</Text>
-                        <View style={styles.imageActions}>
-                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('BF')}>
-                            <MaterialIcons name="photo-library" size={16} color="#00689E" /><Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('BF', true)}>
-                            <MaterialIcons name="photo-camera" size={16} color="#007A5A" /><Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                      <Button mode="contained" icon="local-shipping" buttonColor="#C2410C" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>
-                        Request Tow & Notify Supervisor
-                      </Button>
-                    </>
-                  ) : (
-                    <>
-                      <Text style={[styles.flowHint, { color: '#9A4A00' }]}>Keep this work entry open until the towing vehicle has picked up the bus.</Text>
-                      <Button mode="contained" icon="local-shipping" buttonColor="#C2410C" onPress={handleCompleteTow} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>
-                        Complete Tow
-                      </Button>
-                    </>
-                  )}
-                </View>
-              )}
-            </View>
-          </View>
-        )}
-
         {/* Work Entries */}
-        <View style={[styles.card, { backgroundColor: colors.white }]}> 
+        {renderWorkEntryBeforeImageSection()}
+        <View
+          style={[styles.card, { backgroundColor: colors.white }]}
+        >
           <View style={styles.sectionHeader}>
             <MaterialIcons name="assignment" size={18} color="#0070F2" />
             <Text style={[styles.sectionTitle, { color: colors.dark }]}>Work Entries</Text>
@@ -1082,48 +1195,179 @@ const WorkEntryScreen = ({ route, navigation }) => {
             </TouchableOpacity>
           </View>
 
-          {storeEntries.length === 0 ? (
+          {[...storeEntries].sort((a, b) => getDateTimeTimestamp(
+            b?.EntryDate || b?.CreatedDate || b?.CreateDate || b?.RegDate || b?.DateTime || b?.CreatedAt,
+            b?.EntryTime || b?.CreatedTime || b?.RegTime || b?.Time,
+          ) - getDateTimeTimestamp(
+            a?.EntryDate || a?.CreatedDate || a?.CreateDate || a?.RegDate || a?.DateTime || a?.CreatedAt,
+            a?.EntryTime || a?.CreatedTime || a?.RegTime || a?.Time,
+          )).length === 0 ? (
             <Text style={[styles.emptyText, { color: colors.gray }]}>No work entries yet. Tap Add to begin.</Text>
           ) : (
-            storeEntries.map((entry, i) => (
-              <View key={i} style={[styles.entryRow, { borderColor: colors.border || '#E0E0E0' }]}>
-                <View style={styles.entryLeft}>
-                  <MaterialIcons name="build" size={16} color="#0070F2" />
-                  <View style={styles.entryText}>
-                    <Text style={[styles.entryDesc, { color: colors.dark }]}>
-                      {entry.Description || entry.WorkListName || entry?.Details?.[0]?.WorkDone || '—'}
-                    </Text>
-                    {entry.Remarks ? (
-                      <Text style={[styles.entryRemarks, { color: colors.gray }]}>{entry.Remarks}</Text>
-                    ) : null}
-                    {entry.EntryDate ? (
-                      <Text style={[styles.entryDate, { color: colors.gray }]}>
-                        {formatDateTime(entry.EntryDate)}
-                      </Text>
-                    ) : null}
+            [...storeEntries].sort((a, b) => getDateTimeTimestamp(
+              b?.EntryDate || b?.CreatedDate || b?.CreateDate || b?.RegDate || b?.DateTime || b?.CreatedAt,
+              b?.EntryTime || b?.CreatedTime || b?.RegTime || b?.Time,
+            ) - getDateTimeTimestamp(
+              a?.EntryDate || a?.CreatedDate || a?.CreateDate || a?.RegDate || a?.DateTime || a?.CreatedAt,
+              a?.EntryTime || a?.CreatedTime || a?.RegTime || a?.Time,
+            )).map((entry, i) => {
+              const entryDescription = entry.Description
+                || entry.WorkListName
+                || entry.WorkDone
+                || entry.OtherDescription
+                || entry?.Details?.[0]?.WorkDone
+                || entry?.Details?.[0]?.OtherDescription
+                || '—';
+              const entryDate = entry.EntryDate
+                || entry.CreatedDate
+                || entry.CreateDate
+                || entry.RegDate
+                || entry.DateTime
+                || entry.CreatedAt
+                || '';
+              const entryTime = entry.EntryTime || entry.CreatedTime || entry.RegTime || entry.Time || '';
+              const entryDateTime = entryDate && entryTime && !String(entryDate).includes('T')
+                ? `${entryDate} ${entryTime}`
+                : entryDate || entryTime;
+
+              return (
+                <View key={i} style={[styles.entryRow, { borderColor: colors.border || '#E0E0E0' }]}>
+                  <View style={styles.entryLeft}>
+                    <MaterialIcons name="build" size={16} color="#0070F2" />
+                    <View style={styles.entryText}>
+                      <Text style={[styles.entryDesc, { color: colors.dark }]}>{entryDescription}</Text>
+                      {entry.Remarks ? (
+                        <Text style={[styles.entryRemarks, { color: colors.gray }]}>{entry.Remarks}</Text>
+                      ) : null}
+                      {entryDateTime ? (
+                        <Text style={[styles.entryDate, { color: colors.gray }]}>
+                          Added: {formatDateTime(entryDate, entryTime) || entryDateTime}
+                        </Text>
+                      ) : null}
+                    </View>
                   </View>
+                  {!isBreakdownJob && (
+                    <TouchableOpacity
+                      style={[styles.partsBtn, { borderColor: workEntryLocked ? '#94A3B8' : '#2B7D2B' }]}
+                      onPress={() => {
+                        if (workEntryLocked) return;
+                        setPendingEntryCode(entry.WorkEntryDocEntry || entry.DocEntry || entry.Code || String(i));
+                        setPartsDraft([]);
+                        setShowPartsModal(true);
+                      }}
+                      activeOpacity={0.7}
+                      disabled={workEntryLocked}
+                    >
+                      <MaterialIcons name="settings" size={13} color="#2B7D2B" />
+                      <Text style={[styles.partsBtnText, { color: '#2B7D2B' }]}>Parts</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
-                <TouchableOpacity
-                  style={[styles.partsBtn, { borderColor: workEntryLocked ? '#94A3B8' : '#2B7D2B' }]}
-                  onPress={() => {
-                    if (workEntryLocked) return;
-                    setPendingEntryCode(entry.WorkEntryDocEntry || entry.DocEntry || entry.Code || String(i));
-                    setPartsDraft([]);
-                    setShowPartsModal(true);
-                  }}
-                  activeOpacity={0.7}
-                  disabled={workEntryLocked}
-                >
-                  <MaterialIcons name="settings" size={13} color="#2B7D2B" />
-                  <Text style={[styles.partsBtnText, { color: '#2B7D2B' }]}>Parts</Text>
-                </TouchableOpacity>
-              </View>
-            ))
+              );
+            })
           )}
         </View>
 
+        {/* Breakdown repair type section */}
+        {isBreakdownJob && (
+          <View style={[styles.card, { backgroundColor: colors.white, borderWidth: 1, borderColor: '#FDBA74' }]}>
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="build" size={18} color="#F97316" />
+              <Text style={[styles.sectionTitle, { color: '#C2410C' }]}>Breakdown Repair</Text>
+            </View>
+            <Text style={[styles.completeHint, { color: colors.gray, marginBottom: 10 }]}>Choose how this breakdown will be handled.</Text>
+            <View style={styles.breakdownSection}>
+              <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginBottom: 6 }]}>Can Repair on Site?</Text>
+              <View style={styles.breakdownToggleRow}>
+                <Button mode={canRepairOnSite ? 'contained' : 'outlined'} onPress={() => { if (!towWorkflowLocked) setCanRepairOnSite(true); }} icon="build" buttonColor={canRepairOnSite ? '#167A45' : undefined} style={[styles.breakdownToggleButton, styles.decisionButton]} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent} disabled={towWorkflowLocked}>
+                  Repair on Site
+                </Button>
+                <Button mode={!canRepairOnSite ? 'contained' : 'outlined'} onPress={() => setCanRepairOnSite(false)} icon="local-shipping" buttonColor={!canRepairOnSite ? '#C2410C' : undefined} style={[styles.breakdownToggleButton, styles.decisionButton]} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>
+                  Tow to Depot
+                </Button>
+              </View>
+              {canRepairOnSite && (
+                <>
+                  <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginTop: 10, marginBottom: 6 }]}>Permanent or Temporary Repair?</Text>
+                  <View style={styles.breakdownToggleRow}>
+                    <Button mode={repairType === 'P' ? 'contained' : 'outlined'} onPress={() => setRepairType('P')} buttonColor={repairType === 'P' ? '#167A45' : undefined} style={styles.breakdownToggleButton} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>Permanent Repair</Button>
+                    <Button mode={repairType === 'T' ? 'contained' : 'outlined'} onPress={() => setRepairType('T')} buttonColor={repairType === 'T' ? '#EA580C' : undefined} style={styles.breakdownToggleButton} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>Temporary Repair</Button>
+                  </View>
+                  <Text style={[styles.flowHint, { color: repairType === 'P' ? '#166534' : '#9A3412' }]}>
+                    {repairType === 'P' ? 'Before photo → repair on site → after photo → close work entry → supervisor inspection.' : 'Before photo → temporary repair → after photo → close work entry → bus returns to depot for depot-team assignment.'}
+                  </Text>
+                </>
+              )}
+              {!canRepairOnSite && (
+                <View style={[styles.breakdownTowBox, { backgroundColor: '#FFF7ED', borderColor: '#FDBA74' }]}>
+                  <Text style={{ color: '#9A4A00', fontWeight: '700', marginBottom: 5 }}>Tow Vehicle Request</Text>
+                  <Text style={{ color: '#9A4A00', fontSize: 12, marginBottom: 8 }}>Upload a breakdown photo, request the tow, then record the bus and towing van at depot arrival.</Text>
+                  <View style={styles.breakdownToggleRow}>
+                    <Button mode={towDepotMode === 'default' ? 'contained' : 'outlined'} onPress={() => { setTowDepotMode('default'); setSelectedTowDepot(routeDepot || selectedTowDepot); }} buttonColor={towDepotMode === 'default' ? '#C2410C' : undefined} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent} style={styles.breakdownToggleButton}>Default depot</Button>
+                    <Button mode={towDepotMode === 'other' ? 'contained' : 'outlined'} onPress={() => setTowDepotMode('other')} buttonColor={towDepotMode === 'other' ? '#C2410C' : undefined} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent} style={styles.breakdownToggleButton}>Other depot</Button>
+                  </View>
+                  {towDepotMode === 'other' && (
+                    <TouchableOpacity style={[styles.selectorBtn, { marginTop: 8, borderColor: '#FDBA74', backgroundColor: colors.white }]} onPress={() => setShowDepotsModal(true)}>
+                      <Text style={[styles.selectorBtnText, { color: selectedTowDepot ? colors.dark : colors.gray }]} numberOfLines={1}>{selectedTowDepot || 'Select depot'}</Text>
+                      <MaterialIcons name="expand-more" size={20} color={colors.gray} />
+                    </TouchableOpacity>
+                  )}
+                  {!towRequestEntryId ? (
+                    <>
+                      <View style={[styles.imageBox, { borderColor: '#FDBA74', backgroundColor: colors.white }]}>
+                        <Text style={{ color: '#9A4A00', fontWeight: '700', fontSize: 13 }}>Breakdown Photo *</Text>
+                        <View style={styles.imageActions}>
+                          <TouchableOpacity
+                            style={[styles.addLineBtn, { borderColor: canUploadTowBreakdownPhoto ? '#00689E' : '#CBD5E1', flex: 1 }, canUploadTowBreakdownPhoto ? null : { opacity: 0.5 }]}
+                            onPress={() => pickWorkEntryImage('TOW_BF')}
+                            disabled={!canUploadTowBreakdownPhoto}
+                          >
+                            <MaterialIcons name="photo-library" size={16} color={canUploadTowBreakdownPhoto ? '#00689E' : '#94A3B8'} />
+                            <Text style={{ color: canUploadTowBreakdownPhoto ? '#00689E' : '#94A3B8', fontWeight: '600', marginLeft: 4 }}>Upload</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.addLineBtn, { borderColor: canUploadTowBreakdownPhoto ? '#007A5A' : '#CBD5E1', flex: 1, marginLeft: 8 }, canUploadTowBreakdownPhoto ? null : { opacity: 0.5 }]}
+                            onPress={() => pickWorkEntryImage('TOW_BF', true)}
+                            disabled={!canUploadTowBreakdownPhoto}
+                          >
+                            <MaterialIcons name="photo-camera" size={16} color={canUploadTowBreakdownPhoto ? '#007A5A' : '#94A3B8'} />
+                            <Text style={{ color: canUploadTowBreakdownPhoto ? '#007A5A' : '#94A3B8', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
+                          </TouchableOpacity>
+                        </View>
+                        {towBeforeImageDrafts.map((image) => (
+                          <View key={image.id} style={styles.imageRow}>
+                            <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
+                            <TouchableOpacity onPress={() => removeImageDraft('TOW_BF', image.id)}>
+                              <MaterialIcons name="close" size={18} color="#BB0000" />
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </View>
+                      <Button mode="contained" icon="local-shipping" buttonColor="#C2410C" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>Request Tow & Notify Supervisor</Button>
+                    </>
+                  ) : (
+                    <>
+                      {towBeforeImageDrafts.length > 0 && (
+                        <View style={{ marginTop: 8 }}>
+                          {towBeforeImageDrafts.map((image) => (
+                            <View key={image.id} style={styles.imageRow}>
+                              <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                      <Text style={[styles.flowHint, { color: '#9A4A00' }]}>Tow request is already submitted. Supervisor will complete the tow once the bus is at depot.</Text>
+                      <Button mode="contained" icon="local-shipping" buttonColor="#C2410C" disabled={true} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>Tow Requested</Button>
+                    </>
+                  )}
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
         {/* ── Parts Requests ── */}
-        {storePartsRequests.length > 0 && (
+        {canRepairOnSite && storePartsRequests.length > 0 && (
           <View style={[styles.card, { backgroundColor: colors.white }]}>
             <View style={styles.sectionHeader}>
               <MaterialIcons name="inventory" size={18} color="#2B7D2B" />
@@ -1135,6 +1379,12 @@ const WorkEntryScreen = ({ route, navigation }) => {
               const status = String(req.Status || '').toUpperCase();
               const isIssued = ['I', 'IS', 'PS', 'PR'].includes(status);
               const isReceived = ['R', 'RC'].includes(status);
+              const isApproved = ['A', 'AP'].includes(status);
+              const hasReceivableIssuedPart = (Array.isArray(req.Parts) ? req.Parts : []).some((part) => {
+                const issuedQty = Number(part?.IssuedQty ?? part?.IssueQty ?? 0) || 0;
+                const receivedQty = Number(part?.ReceivedQty ?? part?.RecQty ?? 0) || 0;
+                return issuedQty > receivedQty;
+              });
               const requestCode = req.RequestCode || req.Code || String(i);
 
               return (
@@ -1157,14 +1407,15 @@ const WorkEntryScreen = ({ route, navigation }) => {
                     </Text>
                   ))}
 
-                  {isIssued && !isReceived && (
+                  {(isIssued || isApproved) && !isReceived && (
                     <TouchableOpacity
-                      style={[styles.receiveBtn, { backgroundColor: '#0070F2' }]}
+                      style={[styles.receiveBtn, { backgroundColor: hasReceivableIssuedPart ? '#0070F2' : '#94A3B8' }]}
                       onPress={() => handleMarkReceived(req)}
                       activeOpacity={0.7}
+                      disabled={!hasReceivableIssuedPart}
                     >
                       <MaterialIcons name="check-circle" size={16} color="#FFF" />
-                      <Text style={styles.receiveBtnText}>Part Received</Text>
+                      <Text style={styles.receiveBtnText}>{hasReceivableIssuedPart ? 'Part Received' : 'Mark Received'}</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -1238,6 +1489,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
         )}
 
         {/* ── Complete Work ── */}
+        {canRepairOnSite && (
         <View style={[styles.card, { backgroundColor: colors.white }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>Finish Work</Text>
           <Text style={[styles.completeHint, { color: colors.gray }]}>
@@ -1294,6 +1546,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
             {workEntryLocked ? 'Completed' : submitting ? 'Completing…' : (isBreakdownJob && !canRepairOnSite) ? 'Use Tow Workflow Above' : 'Complete Work'}
           </Button>
         </View>
+        )}
       </ScrollView>
 
       {/* ── Add Work Entry Modal ── */}
@@ -1336,72 +1589,48 @@ const WorkEntryScreen = ({ route, navigation }) => {
               style={styles.modalInput}
             />
 
-            {isBreakdownJob && (
-              <View style={[styles.imageBox, { borderColor: colors.border || '#E0E0E0' }]}>
-                <View style={styles.imageHeaderRow}>
-                  <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13 }}>Before Image</Text>
-                  <Text style={{ color: colors.gray, fontSize: 12 }}>{beforeImageDrafts.length}/{MAX_IMAGES_PER_PHASE}</Text>
-                </View>
-                <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 8 }}>Required before saving breakdown work.</Text>
-                <View style={styles.imageActions}>
-                  <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#00689E', flex: 1 }]} onPress={() => pickWorkEntryImage('BF')}>
-                    <MaterialIcons name="photo-library" size={16} color="#00689E" />
-                    <Text style={{ color: '#00689E', fontWeight: '600', marginLeft: 4 }}>Upload Image</Text>
+            {!isBreakdownJob && (
+              <>
+                {/* ── Parts used in this work entry ── */}
+                <View style={{ marginTop: 8, marginBottom: 4 }}>
+                  <Text style={[styles.partsSectionLabel, { color: colors.dark }]}>Parts Used</Text>
+
+                  {entryParts.map((p, i) => (
+                    <View key={i} style={[styles.partDraftRow, { borderColor: colors.border || '#E0E0E0' }]}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.partName, { color: colors.dark }]}>
+                          {p.ItemName || p.Name || p.ItemCode}
+                        </Text>
+                        <Text style={{ color: colors.gray, fontSize: 11 }}>{p.ItemCode}</Text>
+                      </View>
+                      <RNTextInput
+                        value={String(p.Qty)}
+                        onChangeText={(v) => {
+                          const updated = [...entryParts];
+                          updated[i] = { ...updated[i], Qty: v };
+                          setEntryParts(updated);
+                        }}
+                        keyboardType="numeric"
+                        style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
+                      />
+                      <Text style={{ color: colors.gray, fontSize: 11, marginHorizontal: 4 }}>{p.UoM || 'Nos'}</Text>
+                      <TouchableOpacity onPress={() => setEntryParts(entryParts.filter((_, j) => j !== i))}>
+                        <MaterialIcons name="close" size={18} color="#BB0000" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+
+                  <TouchableOpacity
+                    style={[styles.addPartBtn, { borderColor: '#0070F2' }]}
+                    onPress={() => setShowEntryPartsSelector(true)}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialIcons name="add" size={16} color="#0070F2" />
+                    <Text style={[styles.addPartBtnText, { color: '#0070F2' }]}>Add Part</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.addLineBtn, { borderColor: '#007A5A', flex: 1, marginLeft: 8 }]} onPress={() => pickWorkEntryImage('BF', true)}>
-                    <MaterialIcons name="photo-camera" size={16} color="#007A5A" />
-                    <Text style={{ color: '#007A5A', fontWeight: '600', marginLeft: 4 }}>Capture</Text>
-                  </TouchableOpacity>
                 </View>
-                {beforeImageDrafts.map((image) => (
-                  <View key={image.id} style={styles.imageRow}>
-                    <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
-                    <TouchableOpacity onPress={() => removeImageDraft('BF', image.id)}>
-                      <MaterialIcons name="close" size={18} color="#BB0000" />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
+              </>
             )}
-
-            {/* ── Parts used in this work entry ── */}
-            <View style={{ marginTop: 8, marginBottom: 4 }}>
-              <Text style={[styles.partsSectionLabel, { color: colors.dark }]}>Parts Used</Text>
-
-              {entryParts.map((p, i) => (
-                <View key={i} style={[styles.partDraftRow, { borderColor: colors.border || '#E0E0E0' }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.partName, { color: colors.dark }]}>
-                      {p.ItemName || p.Name || p.ItemCode}
-                    </Text>
-                    <Text style={{ color: colors.gray, fontSize: 11 }}>{p.ItemCode}</Text>
-                  </View>
-                  <RNTextInput
-                    value={String(p.Qty)}
-                    onChangeText={(v) => {
-                      const updated = [...entryParts];
-                      updated[i] = { ...updated[i], Qty: v };
-                      setEntryParts(updated);
-                    }}
-                    keyboardType="numeric"
-                    style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
-                  />
-                  <Text style={{ color: colors.gray, fontSize: 11, marginHorizontal: 4 }}>{p.UoM || 'Nos'}</Text>
-                  <TouchableOpacity onPress={() => setEntryParts(entryParts.filter((_, j) => j !== i))}>
-                    <MaterialIcons name="close" size={18} color="#BB0000" />
-                  </TouchableOpacity>
-                </View>
-              ))}
-
-              <TouchableOpacity
-                style={[styles.addPartBtn, { borderColor: '#0070F2' }]}
-                onPress={() => setShowEntryPartsSelector(true)}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="add" size={16} color="#0070F2" />
-                <Text style={[styles.addPartBtnText, { color: '#0070F2' }]}>Add Part</Text>
-              </TouchableOpacity>
-            </View>
 
             <View style={styles.modalActions}>
               <Button mode="outlined" onPress={resetEntryForm} style={{ flex: 1, marginRight: 8 }}>

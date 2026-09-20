@@ -8,6 +8,7 @@ import { useNavigation } from '@react-navigation/native';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { dashboardService } from '../api/services';
 import { setNotifications, setUnreadCount } from '../store/slices/notificationSlice';
+import { normalizeNotificationItem } from '../utils/notificationUtils';
 
 /**
  * Reusable Screen Header Component
@@ -39,22 +40,15 @@ const ScreenHeader = ({
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const depotName = String(user?.Depot || user?.depot || '').trim();
 
+  const mapHeaderNotificationItem = (item, index) => normalizeNotificationItem(item, index);
+
   const handleNotificationPress = async () => {
     try {
       setLoadingNotifications(true);
       const userId = user?.User || user?.user || user?.username || user?.Code || user?.code || '';
       const response = await dashboardService.getNotifications(dbName || 'MUTSPL_TEST', userId);
       const rows = Array.isArray(response?.Data) ? response.Data : Array.isArray(response?.data) ? response.data : [];
-      const loadedNotifications = rows.map((item, index) => ({
-        ...item,
-        id: item?.id || item?.Code || item?.DocEntry || `notification-${index}`,
-        code: item?.Code || item?.id || item?.DocEntry,
-        title: item?.Title || item?.title || item?.Message || 'Notification',
-        message: item?.Message || item?.message || '',
-        type: String(item?.Type || item?.type || '').trim().toUpperCase(),
-        read: String(item?.Read || '').trim().toUpperCase() === 'Y',
-        timestamp: item?.Date || item?.timestamp || null,
-      }));
+      const loadedNotifications = rows.map(mapHeaderNotificationItem);
       dispatch(setNotifications(loadedNotifications));
       dispatch(setUnreadCount(loadedNotifications.filter(item => !item.read).length));
       if (typeof onNotificationPress === 'function') {

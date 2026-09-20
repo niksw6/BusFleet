@@ -77,7 +77,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   ).trim().toLowerCase().includes('supervisor'));
 
   const getAccessibleTabs = () => {
-    const tabs = [{ key: 'Details', label: 'Overview', shortLabel: 'Info', icon: 'dashboard' }];
+    // Mechanics work from their parts and work-entry queues; the supervisor
+    // overview is not relevant in the mechanic login.
+    const tabs = mechanicUser ? [] : [{ key: 'Details', label: 'Overview', shortLabel: 'Info', icon: 'dashboard' }];
     if (supervisorUser) {
       tabs.push({ key: 'Mechanics', label: 'Mechanics', shortLabel: 'Mechs', icon: 'engineering' });
       tabs.push({ key: 'PartDetails', label: 'Part Details', shortLabel: 'Parts', icon: 'inventory-2' });
@@ -201,7 +203,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   );
 
   const resolveUserCode = () => String(
-    user?.Code
+    user?.UserCode
+    || user?.EmpCode
+    || user?.Code
     || user?.code
     || user?.User
     || user?.user
@@ -269,6 +273,29 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     remarks: String(row?.Remarks || '').trim(),
   });
 
+  const matchedRowForId = (rows = [], workEntryId) => {
+    const target = String(workEntryId || '').trim();
+    return (Array.isArray(rows) ? rows : []).find((row) => String(asWorkEntryId(row) || '').trim() === target) || null;
+  };
+
+  const getBreakdownRepairInfo = (...sources) => {
+    for (const source of sources) {
+      const candidates = [
+        ...(Array.isArray(source) ? source : [source]),
+        ...(Array.isArray(source?.WorkEntries) ? source.WorkEntries : []),
+      ];
+      for (const candidate of candidates) {
+        const repairs = Array.isArray(candidate?.BreakDownRepair)
+          ? candidate.BreakDownRepair
+          : candidate?.BreakDownRepair
+            ? [candidate.BreakDownRepair]
+            : [];
+        if (repairs.length > 0) return repairs[0];
+      }
+    }
+    return null;
+  };
+
   const getDisplayText = (...candidates) => {
     const extract = (value) => {
       if (value === null || value === undefined) return '';
@@ -308,26 +335,91 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     return '';
   };
 
-  const mapWorkEntryForView = (entry, index = 0) => ({
-    ...entry,
-    AssignedMechanics: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-',
-    MechanicStartDt: entry?.StartDate || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
-    MechanicStartTm: entry?.StartTime || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
-    MechanicsTotalHrs: entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours ?? null,
-    WorkDoneDetails: getDisplayText(entry?.WorkDone, entry?.FinalRemarks, entry?.Remarks, entry?.Description),
-    DetailedFaults: Array.isArray(entry?.DetailedFaults) && entry.DetailedFaults.length > 0
-      ? entry.DetailedFaults
-      : (Array.isArray(entry?.Faults) && entry.Faults.length > 0
-        ? entry.Faults
-        : [{ FaultCode: entry?.FaultCode || entry?.Fault, FaultDesc: getDisplayText(entry?.FaultName, entry?.Description), Status: entry?.Status }]),
-    DetailedParts: Array.isArray(entry?.DetailedParts) && entry.DetailedParts.length > 0
-      ? entry.DetailedParts
-      : (Array.isArray(entry?.Parts) ? entry.Parts : []),
-    DetailedSpecialTools: Array.isArray(entry?.DetailedSpecialTools) && entry.DetailedSpecialTools.length > 0
-      ? entry.DetailedSpecialTools
-      : (Array.isArray(entry?.SpecialTools) ? entry.SpecialTools : []),
-    __fallbackKey: `entry-${asWorkEntryId(entry) || index}`,
-  });
+  const mapWorkEntryForView = (entry, index = 0) => {
+    const breakdownRepair = getBreakdownRepairInfo(entry) || getBreakdownRepairInfo(entry?.WorkEntries) || getBreakdownRepairInfo(entry?.BreakDownRepair);
+    const rawRepairMode = String(
+      breakdownRepair?.RepairMode
+      || entry?.RepairMode
+      || entry?.RepairType
+      || entry?.BreakdownRepairMode
+      || entry?.CanRepairOnSite
+      || ''
+    ).trim().toUpperCase();
+    const towStatus = String(
+      entry?.TowStatus
+      || entry?.TowRequestStatus
+      || entry?.TowState
+      || entry?.TowStatusCode
+      || entry?.TowRequestState
+      || breakdownRepair?.TowStatus
+      || ''
+    ).trim();
+    const towStatusNormalized = towStatus.toUpperCase();
+    const hasTowImage = Boolean(String(breakdownRepair?.TowImage1 || entry?.TowImage1 || '').trim() || String(breakdownRepair?.TowImage2 || entry?.TowImage2 || '').trim());
+    const towCompleted = Boolean(
+      entry?.TowCompleted
+      || entry?.TowDone
+      || entry?.TowComplete
+      || /^(completed|complete|done|finished|closed|c)$/.test(towStatusNormalized)
+      || /^(completed|complete|done|finished|closed|c)$/.test(String(entry?.Status || '').trim().toUpperCase())
+      || (rawRepairMode === 'T' && hasTowImage)
+      || (rawRepairMode === 'T' && String(entry?.TowStatus || '').trim().toUpperCase() === 'COMPLETED')
+      || (String(breakdownRepair?.RepairMode || '').trim().toUpperCase() === 'T' && Boolean(breakdownRepair))
+    );
+    const towRequested = Boolean(
+      entry?.TowRequested
+      || entry?.TowRequestEntryId
+      || entry?.TowRequestDocEntry
+      || rawRepairMode === 'T'
+      || breakdownRepair
+      || towCompleted
+      || /^(requested|in progress|pending pickup|pickup requested)$/.test(towStatusNormalized)
+      || /^(requested|in progress|pending pickup|pickup requested)$/.test(String(entry?.Status || '').trim().toUpperCase())
+    );
+    const repairOnSite = String(
+      breakdownRepair?.RepairOnSite
+      || entry?.RepairOnSite
+      || entry?.CanRepairOnSite
+      || ''
+    ).trim();
+
+    return {
+      ...entry,
+      AssignedMechanics: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-',
+      MechanicStartDt: entry?.StartDate || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
+      MechanicStartTm: entry?.StartTime || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
+      MechanicsTotalHrs: entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours ?? null,
+      WorkDoneDetails: getDisplayText(entry?.WorkDone, entry?.FinalRemarks, entry?.Remarks, entry?.Description),
+      DetailedFaults: Array.isArray(entry?.DetailedFaults) && entry.DetailedFaults.length > 0
+        ? entry.DetailedFaults
+        : (Array.isArray(entry?.Faults) && entry.Faults.length > 0
+          ? entry.Faults
+          : [{ FaultCode: entry?.FaultCode || entry?.Fault, FaultDesc: getDisplayText(entry?.FaultName, entry?.Description), Status: entry?.Status }]),
+      DetailedParts: Array.isArray(entry?.DetailedParts) && entry.DetailedParts.length > 0
+        ? entry.DetailedParts
+        : (Array.isArray(entry?.Parts) ? entry.Parts : []),
+      DetailedSpecialTools: Array.isArray(entry?.DetailedSpecialTools) && entry.DetailedSpecialTools.length > 0
+        ? entry.DetailedSpecialTools
+        : (Array.isArray(entry?.SpecialTools) ? entry.SpecialTools : []),
+      TowRequested: towRequested,
+      TowCompleted: towCompleted,
+      TowStatus: towCompleted ? 'Completed' : (towStatus || String(entry?.TowRequestStatus || entry?.TowRequestState || '').trim() || 'Not requested'),
+      TowDepot: String(breakdownRepair?.Depot || breakdownRepair?.DepotName || entry?.TowDepot || entry?.TowDestination || entry?.TowDestinationType || entry?.Depot || '').trim(),
+      TowDestinationType: String(breakdownRepair?.DepotName || breakdownRepair?.Depot || entry?.TowDestinationType || entry?.TowDepotType || entry?.TowMode || '').trim(),
+      RepairMode: rawRepairMode || String(breakdownRepair?.RepairMode || '').trim().toUpperCase() || '-',
+      RepairOnSite: repairOnSite,
+      CanRepairOnSite: entry?.CanRepairOnSite === true || String(repairOnSite || '').trim().toLowerCase() === 'true' || String(entry?.CanRepairOnSite || '').trim().toLowerCase() === 'true',
+      TowImage1: String(breakdownRepair?.TowImage1 || entry?.TowImage1 || entry?.TowBeforeImage1 || entry?.TowBeforeImages?.[0] || '').trim(),
+      TowImage2: String(breakdownRepair?.TowImage2 || entry?.TowImage2 || entry?.TowBeforeImage2 || entry?.TowBeforeImages?.[1] || '').trim(),
+      TowImages: Array.isArray(entry?.TowImages)
+        ? entry.TowImages
+        : (Array.isArray(entry?.TowBeforeImages)
+          ? entry.TowBeforeImages
+          : [breakdownRepair?.TowImage1, breakdownRepair?.TowImage2].filter(Boolean)),
+      BreakDownRepair: breakdownRepair || entry?.BreakDownRepair || null,
+      __fallbackKey: `entry-${asWorkEntryId(entry) || index}`,
+    };
+  };
 
   const isApiSuccess = (response) => response?.Success !== false && response?.Status !== false;
   const getEntryStatus = (entry) => {
@@ -423,10 +515,13 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       String(member?.UserCode || member?.MechanicCode || member?.MechCode || member?.EmpCode || member?.Code || '').trim()
         === String(code || '').trim()
     ));
-    const userCodes = [...new Set([
+    const currentMechanicCandidates = [
+      routeMechanicCode,
+      resolveUserCode(),
       ...getMechanicIdentityCandidates(jobCardSnapshot),
       ...teamMemberCodes.map((value) => String(value || '').trim()).filter(Boolean),
-    ])];
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+    const userCodes = [...new Set(currentMechanicCandidates)];
     if (userCodes.length === 0) {
       return { faults: [], mechanics: [], workEntries: [], parts: [], operations: [] };
     }
@@ -465,7 +560,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           };
         }));
 
-    const relatedRows = rows.filter((row) => {
+    const preferredMechanicCodes = new Set([
+      String(routeMechanicCode || '').trim(),
+      String(resolveUserCode() || '').trim(),
+    ].filter(Boolean));
+
+    const matchingRows = rows.filter((row) => {
       const rowDocRefs = [row?.DocEntry, row?.JobCardDocEntry, row?.JCDocEnt, row?.JobCardEntry, row?.JobCardId]
         .map((value) => String(value || '').trim()).filter(Boolean);
       const rowJobRefs = [row?.JobCardNo, row?.JCDocNum, row?.DocNum, row?.JobCardNum]
@@ -474,14 +574,32 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         || rowJobRefs.some((value) => targetJobRefs.has(value));
     });
 
-    const faults = relatedRows.map((row, index) => ({
+    const relatedRows = matchingRows.filter((row) => {
+      if (mechanicUser || (!supervisorUser && !teamLeaderUser && !driverUser)) {
+        const codeMatchesCurrentMechanic = [
+          row?.MechanicCode,
+          row?.MechCode,
+          row?.AssignedMechanic?.Code,
+          row?.AssignedTo,
+          row?.UserCode,
+          row?.EmpCode,
+        ].some((value) => preferredMechanicCodes.has(String(value || '').trim()));
+        return codeMatchesCurrentMechanic || row?.MechanicName === routeMechanicName || row?.MechanicName === resolveUserCode();
+      }
+      return true;
+    });
+
+    const fallbackRows = matchingRows;
+    const finalRelatedRows = relatedRows.length > 0 ? relatedRows : fallbackRows;
+
+    const faults = finalRelatedRows.map((row, index) => ({
       FaultCode: String(row?.FaultCode || row?.Fault || `FLT${index + 1}`).trim(),
       FaultDesc: String(row?.FaultName || row?.Description || row?.Fault || row?.FaultCode || '').trim(),
       Status: String(row?.Status || row?.FaultStatus || row?.WorkStatus || '').trim(),
     }));
 
     const mechanicMap = new Map();
-    relatedRows.forEach((row, index) => {
+    finalRelatedRows.forEach((row, index) => {
       const name = String(
         row?.AssignedMechanic?.UserName
         || row?.MechanicName
@@ -504,7 +622,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       }
     });
 
-    const nestedEntries = relatedRows.flatMap((row) => {
+    const nestedEntries = finalRelatedRows.flatMap((row) => {
       const rowEntries = Array.isArray(row?.WorkEntries)
         ? row.WorkEntries
         : (row?.WorkEntry && typeof row.WorkEntry === 'object' ? [row.WorkEntry] : []);
@@ -549,7 +667,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       }))
       .filter((entry) => entry?.WorkEntryDocEntry || entry?.WorkDoneDetails || entry?.AssignedMechanics);
 
-    const parts = relatedRows.flatMap((row) => {
+    const parts = finalRelatedRows.flatMap((row) => {
       const fault = row?.FaultCode || row?.Fault || row?.FaultName || '';
       const faultLine = row?.FaultLine ?? row?.LineId ?? '';
       const faultParts = Array.isArray(row?.Parts) ? row.Parts : [];
@@ -565,7 +683,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       }));
     });
 
-    const operations = relatedRows.flatMap((row) => (
+    const operations = finalRelatedRows.flatMap((row) => (
       (Array.isArray(row?.WorkEntries) ? row.WorkEntries : []).flatMap((entry) => (
         (Array.isArray(entry?.Details) ? entry.Details : []).map((detail) => ({
           ...detail,
@@ -637,14 +755,19 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const normalizePartRow = (part, fallbackFaultCode = 'FLT001') => ({
     ...part,
     Fault: String(part?.Fault || part?.FaultCode || part?.FaultRef || fallbackFaultCode || '').trim(),
+    FaultLine: part?.FaultLine ?? part?.FaultLn ?? part?.LineId ?? part?.LineNum ?? '',
     ItemCode: String(part?.ItemCode || part?.Code || '').trim(),
     ItemName: String(part?.ItemName || part?.Name || '').trim(),
     ReqQty: Number(part?.ReqQty ?? part?.RequiredQty ?? part?.Qty ?? 0) || 0,
+    HasReqQty: part?.ReqQty !== undefined || part?.RequiredQty !== undefined || part?.Qty !== undefined,
     AddQty: Number(part?.AddQty ?? 0) || 0,
+    HasAddQty: part?.AddQty !== undefined && part?.AddQty !== null && part?.AddQty !== '',
     IssQty: Number(part?.IssQty ?? part?.IssuedQty ?? 0) || 0,
+    HasIssQty: part?.IssQty !== undefined || part?.IssuedQty !== undefined,
     Whs: String(part?.Whs || part?.WhsCode || part?.Warehouse || part?.StoreWarehouse || '').trim(),
     WhsName: String(part?.WhsName || part?.WarehouseName || '').trim(),
     Status: String(part?.Status || 'R').trim(),
+    HasStatus: Boolean(String(part?.Status ?? '').trim()),
   });
 
   const hasSubmittedWorkOrder = !loadingWorkOrderEntries && workOrderEntries.length > 0;
@@ -685,7 +808,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const isOwnedByCurrentMechanic = (record) => {
     const code = getMechanicCodeForView(record);
     const name = getMechanicNameForView(record);
-    return (code && currentUserCode && code === currentUserCode)
+    const hasNoMechanicIdentity = !code && !name;
+    return hasNoMechanicIdentity
+      || (code && currentUserCode && code === currentUserCode)
       || (name && currentUserName && name.toLowerCase() === currentUserName.toLowerCase());
   };
   const isInTeamLeaderScope = (record) => {
@@ -747,27 +872,37 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       setLoadingWorkOrderEntries(true);
       const companyDb = dbName || 'MUTSPL_TEST';
       const dashboardEntryRows = Array.isArray(dashboardEntries) ? dashboardEntries : [];
-      if (dashboardEntryRows.length === 0) {
+
+      const candidateIds = Array.from(new Set(
+        dashboardEntryRows
+          .map((row) => String(asWorkEntryId(row) || '').trim())
+          .filter(Boolean)
+      ));
+
+      if (candidateIds.length === 0) {
         setWorkOrderEntries([]);
         return [];
       }
 
       const fullEntries = await Promise.all(
-        dashboardEntryRows.map(async (row) => {
-          const workEntryId = asWorkEntryId(row);
-          if (!workEntryId) return row;
+        candidateIds.map(async (workEntryId) => {
           try {
             const fullResponse = await workEntryService.getWorkEntry(companyDb, workEntryId);
             const fullRecord = extractSingleRecord(fullResponse);
-            return fullRecord ? { ...row, ...fullRecord } : row;
+            if (!fullRecord) {
+              const matchedRow = dashboardEntryRows.find((row) => String(asWorkEntryId(row) || '').trim() === String(workEntryId));
+              return matchedRow || null;
+            }
+            return { ...matchedRowForId(dashboardEntryRows, workEntryId), ...fullRecord, WorkEntryDocEntry: asWorkEntryId(fullRecord) || workEntryId };
           } catch (entryError) {
-          console.log('GetWorkEntry enrichment skipped for entry:', workEntryId, entryError?.message || entryError);
-            return row;
+            console.log('GetWorkEntry enrichment skipped for entry:', workEntryId, entryError?.message || entryError);
+            const matchedRow = dashboardEntryRows.find((row) => String(asWorkEntryId(row) || '').trim() === String(workEntryId));
+            return matchedRow || null;
           }
         })
       );
 
-      const entries = fullEntries.map((entry, index) => mapWorkEntryForView(entry, index));
+      const entries = fullEntries.filter(Boolean).map((entry, index) => mapWorkEntryForView(entry, index));
 
       setWorkOrderEntries(entries);
       setExpandedEntryKeys(entries);
@@ -1136,13 +1271,79 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
       if (sourceData) {
         const fallbackFaultCode = String(normalizedFaults?.[0]?.FaultCode || normalizedFaults?.[0]?.Fault || 'FLT001');
+        const activeMechanicCodeOnLoad = String(
+          routeMechanicCode
+          || sourceData?.MechanicCode
+          || sourceData?.AssignedMechanic?.Code
+          || sourceData?.AssignedTo
+          || resolveUserCode()
+          || ''
+        ).trim();
+        const loadDashboardCodes = Array.from(new Set([
+          activeMechanicCodeOnLoad,
+          routeMechanicName,
+          resolveUserCode(),
+          sourceData?.MechanicName,
+          sourceData?.AssignedMechanic?.UserName,
+        ].map((value) => String(value || '').trim()).filter(Boolean)));
+
+        let activeMechanicDashboardRows = [];
+        for (const dashboardUserCode of loadDashboardCodes) {
+          try {
+            const dashboardResponse = await mechanicService.getMechanicDashboard(companyDb, dashboardUserCode);
+            const dashboardRows = extractDashboardItems(dashboardResponse?.Data ?? dashboardResponse ?? []);
+            const jobCardMatches = dashboardRows.filter((row) => {
+              const rowDocRefs = [row?.DocEntry, row?.JobCardDocEntry, row?.JCDocEnt, row?.JobCardEntry, row?.JobCardId]
+                .map((value) => String(value || '').trim()).filter(Boolean);
+              const rowJobRefs = [row?.JobCardNo, row?.JCDocNum, row?.DocNum, row?.JobCardNum]
+                .map((value) => String(value || '').trim()).filter(Boolean);
+              return rowDocRefs.includes(String(sourceData?.DocEntry || sourceData?.JobCardDocEntry || docEntry || '').trim())
+                || rowJobRefs.includes(String(jobCardNo || sourceData?.JobCardNo || sourceData?.DocNum || '').trim())
+                || rowDocRefs.includes(String(docEntry || '').trim());
+            });
+            if (jobCardMatches.length > 0) {
+              activeMechanicDashboardRows = jobCardMatches;
+              console.log('[JobCardDetail] GetMechanicDashboard matched job card for user:', dashboardUserCode, 'rows=', activeMechanicDashboardRows.length);
+              break;
+            }
+          } catch (dashboardError) {
+            console.warn('[JobCardDetail] GetMechanicDashboard on-load failed for:', dashboardUserCode, dashboardError?.message || dashboardError);
+          }
+        }
+
+        // GetJobCardDetail now returns FaultLine on every fault. Parts refer to
+        // that line, so resolve their display fault from it instead of falling
+        // back to the first fault on the job card.
+        const faultByLine = new Map(
+          normalizedFaults
+            .map((fault) => [
+              String(fault?.FaultLine ?? fault?.LineId ?? fault?.LineNum ?? '').trim(),
+              String(fault?.FaultCode || fault?.Fault || '').trim(),
+            ])
+            .filter(([line, fault]) => line && fault)
+        );
+        const normalizePartWithFault = (part) => {
+          const normalizedPart = normalizePartRow(part, fallbackFaultCode);
+          const faultLine = String(normalizedPart?.FaultLine ?? '').trim();
+          return {
+            ...normalizedPart,
+            Fault: faultByLine.get(faultLine) || normalizedPart.Fault,
+          };
+        };
         const sourceWorkEntries = Array.isArray(sourceData?.WorkEntries) ? sourceData.WorkEntries : [];
         const normalizedParts = Array.isArray(sourceData?.Parts)
-          ? sourceData.Parts.map((part) => normalizePartRow(part, fallbackFaultCode))
+          ? sourceData.Parts.map(normalizePartWithFault)
           : [];
+        const sourceWorkEntriesForDisplay = sourceWorkEntries.map((entry, index) => mapWorkEntryForView(entry, index));
 
-        const dashboardData = await hydrateFromMechanicDashboard(sourceData);
-        const dashboardParts = dashboardData.parts.map((part) => normalizePartRow(part, fallbackFaultCode));
+        const dashboardData = await hydrateFromMechanicDashboard({
+          ...sourceData,
+          DashboardRows: activeMechanicDashboardRows,
+        });
+        const mechanicDashboardEntries = Array.isArray(activeMechanicDashboardRows) && activeMechanicDashboardRows.length > 0
+          ? activeMechanicDashboardRows
+          : [];
+        const dashboardParts = dashboardData.parts.map(normalizePartWithFault);
         const partMap = new Map();
         [...normalizedParts, ...dashboardParts].forEach((part, index) => {
           const key = [
@@ -1181,6 +1382,20 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           ...dashboardData.operations,
         ];
 
+        if (sourceWorkEntriesForDisplay.length > 0) {
+          setWorkOrderEntries(sourceWorkEntriesForDisplay);
+          setExpandedEntryKeys(sourceWorkEntriesForDisplay);
+        } else if (activeMechanicDashboardRows.length > 0) {
+          const dashboardEntries = activeMechanicDashboardRows
+            .flatMap((row) => Array.isArray(row?.WorkEntries) ? row.WorkEntries : [])
+            .map((entry, index) => mapWorkEntryForView({ ...row, ...entry }, index))
+            .filter((entry) => entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.DocNum || entry?.WorkDoneDetails);
+          if (dashboardEntries.length > 0) {
+            setWorkOrderEntries(dashboardEntries);
+            setExpandedEntryKeys(dashboardEntries);
+          }
+        }
+
         setWorkOrder({
           ...sourceData,
           Mechanics: mergedMechanics,
@@ -1190,6 +1405,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             const status = String(fault?.Status || '').trim();
             return arr.findIndex((candidate) => (
               String(candidate?.FaultCode || candidate?.Fault || '').trim() === faultCode
+              && String(candidate?.FaultLine ?? candidate?.LineId ?? candidate?.LineNum ?? '').trim()
+                === String(fault?.FaultLine ?? fault?.LineId ?? fault?.LineNum ?? '').trim()
               && String(candidate?.Status || '').trim() === status
             )) === index;
           }),
@@ -1208,6 +1425,17 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           setWorkOrderEntries(dashboardData.workEntries);
           setExpandedEntryKeys(dashboardData.workEntries);
           enrichedWorkEntries = dashboardData.workEntries;
+        }
+
+        if (mechanicDashboardEntries.length > 0 && (!Array.isArray(enrichedWorkEntries) || enrichedWorkEntries.length === 0)) {
+          const dashboardFromOnLoad = mechanicDashboardEntries
+            .flatMap((row) => Array.isArray(row?.WorkEntries) ? row.WorkEntries : [])
+            .map((entry, index) => mapWorkEntryForView({ ...row, ...entry }, index));
+          if (dashboardFromOnLoad.length > 0) {
+            setWorkOrderEntries(dashboardFromOnLoad);
+            setExpandedEntryKeys(dashboardFromOnLoad);
+            enrichedWorkEntries = dashboardFromOnLoad;
+          }
         }
 
         const relatedPartRequests = await fetchMechanicPartRequests({
@@ -1846,12 +2074,22 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                 <Text style={[styles.faultName, { color: colors.dark }]}>
                   &gt; {fault?.FaultCode || fault?.Fault || '-'}
                 </Text>
-                <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
-                  {fault?.FaultDesc || fault?.Dscption || '-'}
-                </Text>
-                <Text style={[styles.faultMeta, { color: colors.gray, marginLeft: SPACING.md }]}>
-                  Status: {fault?.Status || '-'} | TotalHrs: {fault?.TotalHrs ?? '-'}
-                </Text>
+                {(fault?.FaultDesc || fault?.Dscption) ? (
+                  <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
+                    {fault?.FaultDesc || fault?.Dscption}
+                  </Text>
+                ) : null}
+                {[
+                  fault?.Status ? `Status: ${fault.Status}` : '',
+                  fault?.TotalHrs !== undefined && fault?.TotalHrs !== null && fault?.TotalHrs !== '' ? `TotalHrs: ${fault.TotalHrs}` : '',
+                ].filter(Boolean).length > 0 ? (
+                  <Text style={[styles.faultMeta, { color: colors.gray, marginLeft: SPACING.md }]}>
+                    {[
+                      fault?.Status ? `Status: ${fault.Status}` : '',
+                      fault?.TotalHrs !== undefined && fault?.TotalHrs !== null && fault?.TotalHrs !== '' ? `TotalHrs: ${fault.TotalHrs}` : '',
+                    ].filter(Boolean).join(' | ')}
+                  </Text>
+                ) : null}
               </View>
             ))}
           </View>
@@ -1886,12 +2124,24 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                 <Text style={[styles.faultName, { color: colors.dark }]}>
                   &gt; {part?.ItemCode || '-'} - {part?.ItemName || '-'}
                 </Text>
-                <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
-                  ReqQty: {part?.ReqQty ?? '-'} | IssQty: {part?.IssQty ?? '-'} | AddQty: {part?.AddQty ?? '-'}
-                </Text>
-                <Text style={[styles.faultMeta, { color: colors.gray, marginLeft: SPACING.md }]}>
-                  Whs: {part?.Whs || '-'} | Fault: {part?.Fault || '-'} | Status: {part?.Status || '-'}
-                </Text>
+                {[
+                  part?.HasReqQty ? `ReqQty: ${part.ReqQty}` : '',
+                  part?.HasIssQty ? `IssQty: ${part.IssQty}` : '',
+                  part?.HasAddQty ? `AddQty: ${part.AddQty}` : '',
+                ].filter(Boolean).length > 0 ? (
+                  <Text style={[styles.faultDesc, { color: colors.gray, marginLeft: SPACING.md }]}>
+                    {[
+                      part?.HasReqQty ? `ReqQty: ${part.ReqQty}` : '',
+                      part?.HasIssQty ? `IssQty: ${part.IssQty}` : '',
+                      part?.HasAddQty ? `AddQty: ${part.AddQty}` : '',
+                    ].filter(Boolean).join(' | ')}
+                  </Text>
+                ) : null}
+                {[part?.Fault ? `Fault: ${part.Fault}` : '', part?.HasStatus && part?.Status ? `Status: ${part.Status}` : ''].filter(Boolean).length > 0 ? (
+                  <Text style={[styles.faultMeta, { color: colors.gray, marginLeft: SPACING.md }]}>
+                    {[part?.Fault ? `Fault: ${part.Fault}` : '', part?.HasStatus && part?.Status ? `Status: ${part.Status}` : ''].filter(Boolean).join(' | ')}
+                  </Text>
+                ) : null}
               </View>
             ))}
           </View>
@@ -2267,6 +2517,39 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                       </Text>
                     </View>
 
+                    {(entry?.TowRequested || entry?.TowStatus || entry?.TowDepot || entry?.TowDestinationType || entry?.RepairMode || entry?.TowImage1 || entry?.TowImage2 || entry?.BreakDownRepair) && (
+                      <>
+                        <View style={styles.workOrderEntryRow}>
+                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow:</Text>
+                          <Text style={[styles.workOrderEntryValue, { color: '#C2410C', fontWeight: '700' }]}>{
+                            entry?.TowCompleted || String(entry?.RepairMode || '').trim().toUpperCase() === 'T'
+                              ? 'Completed'
+                              : entry?.TowRequested
+                                ? (entry?.TowStatus || 'Requested')
+                                : (entry?.TowStatus || 'Not requested')
+                          }</Text>
+                        </View>
+                        <View style={styles.workOrderEntryRow}>
+                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Depot:</Text>
+                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.TowDepot || entry?.TowDestinationType || 'DEFAULT'}</Text>
+                        </View>
+                        <View style={styles.workOrderEntryRow}>
+                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair Mode:</Text>
+                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.RepairMode || (entry?.BreakDownRepair ? entry.BreakDownRepair.RepairMode : '-') || '-'}</Text>
+                        </View>
+                        <View style={styles.workOrderEntryRow}>
+                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair On Site:</Text>
+                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.RepairOnSite || (entry?.BreakDownRepair ? entry.BreakDownRepair.RepairOnSite : '') || '-'}</Text>
+                        </View>
+                        {(entry?.TowImage1 || entry?.TowImage2) && (
+                          <View style={styles.workOrderEntryRow}>
+                            <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Images:</Text>
+                            <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{[entry?.TowImage1, entry?.TowImage2].filter(Boolean).join(' | ')}</Text>
+                          </View>
+                        )}
+                      </>
+                    )}
+
                     {Array.isArray(entry?.DetailedFaults) && entry.DetailedFaults.length > 0 && (
                       <View style={styles.entryDetailsSection}>
                         <Text style={[styles.entryDetailsTitle, { color: colors.gray }]}>Faults:</Text>
@@ -2384,6 +2667,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const incidentIsClosed = ['C', 'CM', 'CLOSED', 'COMPLETED'].includes(String(
     workOrder?.ComplaintStatus || workOrder?.IncidentStatus || workOrder?.CmplaintStatus || '',
   ).trim().toUpperCase());
+  const jobCardDisplayNo = String(workOrder?.JobCardNo || jobCardNo || '').trim();
+  const incidentDisplayNo = String(workOrder?.ComplaintNo || workOrder?.IncidentNo || workOrder?.CmplaintNo || complaintNo || '').trim();
 
   if (loading) {
     return <Loader />;
@@ -2433,6 +2718,18 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               <Text style={[styles.infoValue, { color: colors.dark }]}>
                 {`${getDisplayDate(workOrder)} ${getDisplayTime(workOrder)}`.trim()}
               </Text>
+            </View>
+
+            <View style={styles.infoRow}>
+              <MaterialIcons name="confirmation-number" size={16} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Incident No:</Text>
+              <Text style={[styles.infoValue, { color: colors.dark, fontWeight: 'bold' }]}>{incidentDisplayNo || '-'}</Text>
+            </View>
+
+            <View style={styles.infoRow}>
+              <MaterialIcons name="assignment" size={16} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Job Card No:</Text>
+              <Text style={[styles.infoValue, { color: colors.dark, fontWeight: 'bold' }]}>{jobCardDisplayNo || '-'}</Text>
             </View>
           </View>
         </View>

@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "FleetDataApp",
+    "name": "MUT",
     "slug": "fleetdataapp",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "splash": {
       "resizeMode": "contain",
-      "backgroundColor": "#0066CC"
+      "backgroundColor": "#0F5A88"
     },
     "assetBundlePatterns": [
       "**/*"

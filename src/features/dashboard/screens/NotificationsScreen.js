@@ -11,15 +11,17 @@ import {
 } from 'react-native';
 import { Text, IconButton } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
+import { useFocusEffect } from '@react-navigation/native';
 import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 import { getLogs, clearLogs } from '../../../utils/logger';
 
 import { setNotifications, setUnreadCount, markAsRead, markAllAsRead } from '../../../store/slices/notificationSlice';
-import { dashboardService, complaintService } from '../../../api/services';
+import { dashboardService, complaintService, workEntryService, jobCardService, mechanicService } from '../../../api/services';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDateTime } from '../../../utils/helpers';
 import { isTeamLeaderUser, isMechanicUser, isFieldStaffUser, isSupervisorUser, isStoreUser } from '../../../utils/roleAccess';
+import { normalizeNotificationItem, ensureUniqueNotificationKeys } from '../../../utils/notificationUtils';
 
 const NotificationsScreen = ({ navigation }) => {
   const dispatch = useDispatch();
@@ -34,6 +36,9 @@ const NotificationsScreen = ({ navigation }) => {
   const [showLogs, setShowLogs] = useState(false);
   const [logEntries, setLogEntries] = useState([]);
   const [hasBackendCountMismatch, setHasBackendCountMismatch] = useState(false);
+  const [towNotificationModal, setTowNotificationModal] = useState(null);
+  const [towImageDrafts, setTowImageDrafts] = useState([]);
+  const [towSubmitting, setTowSubmitting] = useState(false);
 
   const openLogs = () => {
     setLogEntries(getLogs());
@@ -50,6 +55,12 @@ const NotificationsScreen = ({ navigation }) => {
     Clipboard.setString(logEntries.join('\n'));
     Toast.show({ type: 'success', text1: 'Logs copied to clipboard' });
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchNotifications();
+    }, [dbName, user?.User, user?.user, user?.username, user?.Code, user?.code])
+  );
 
   const resolveUserIdCandidates = () => {
     const candidates = [
@@ -85,13 +96,19 @@ const NotificationsScreen = ({ navigation }) => {
   };
 
   const resolveIncidentDocEntryFromNotification = (item) => {
-    const directCandidates = [
-      item?.ComplaintNo,
-      item?.complaintNo,
+    const typeCode = String(item?.Type || item?.type || '').trim().toUpperCase();
+    const complaintSpecificCandidates = [
+      item?.Incident,
+      item?.incident,
       item?.IncidentNo,
       item?.incidentNo,
+      item?.ComplaintNo,
+      item?.complaintNo,
       item?.IncidentDocEntry,
       item?.incidentDocEntry,
+    ];
+
+    const genericCandidates = [
       item?.ReferenceDocEntry,
       item?.RefDocEntry,
       item?.detailDocEntry,
@@ -99,9 +116,13 @@ const NotificationsScreen = ({ navigation }) => {
       item?.DocEntry,
     ];
 
-    const direct = directCandidates
+    const candidateList = typeCode === 'D'
+      ? complaintSpecificCandidates.concat(genericCandidates.filter((value) => !['DocEntry', 'docEntry'].includes(String(value || '').trim()) && !String(value || '').includes('job'))) // defensive: keep complaint fields first
+      : complaintSpecificCandidates.concat(genericCandidates);
+
+    const direct = candidateList
       .map((value) => String(value || '').trim())
-      .find(Boolean);
+      .find((value) => value && !/^job[-_ ]?card/i.test(value) && !/^jc\d+/i.test(value) && !/^jc$/i.test(value));
     if (direct) return direct;
 
     const text = `${item?.title || ''} ${item?.message || ''}`;
@@ -111,6 +132,8 @@ const NotificationsScreen = ({ navigation }) => {
 
   const resolveJobCardReferenceFromNotification = (item) => {
     const explicitReference = [
+      item?.JobCard,
+      item?.jobCard,
       item?.JobCardDocEntry,
       item?.jobCardDocEntry,
       item?.JobCardEntry,
@@ -121,14 +144,11 @@ const NotificationsScreen = ({ navigation }) => {
     ].map(value => String(value || '').trim()).find(Boolean);
     if (explicitReference) return explicitReference;
 
-    // Notifications such as "... received for Job Card 42" may not include
-    // a dedicated JobCard field. Prefer that reference to DocEntry, which can
-    // instead be a notification, incident, or work-entry identifier.
     const text = `${item?.Message || item?.message || ''} ${item?.Title || item?.title || ''}`;
-    const match = text.match(/job\s*card\s*(?:no\.?|number|#|:|-)?\s*(\d+)/i);
+    const match = text.match(/job\s*card\s*(?:no\.?|number|#|:|-)?\s*([A-Za-z0-9-]+)/i);
     if (match?.[1]) return match[1];
 
-    return String(item?.DocEntry || item?.docEntry || item?.ReferenceDocEntry || item?.RefDocEntry || '').trim();
+    return '';
   };
 
   const formatIncidentTitle = (item) => {
@@ -145,38 +165,7 @@ const NotificationsScreen = ({ navigation }) => {
     return baseTitle.replace(/incident\s*#\s*\d+/i, `Incident #${typeCode}-${incidentDocEntry}`);
   };
 
-  const mapNotificationItem = (item) => {
-    const rawType = String(item?.Type || '').trim().toUpperCase();
-    // LBWE (Line Breakdown Work Entry) follows the same verification flow as
-    // WE (Work Entry).
-    const normalizedType = ['WE', 'WER', 'LBWE'].includes(rawType) ? 'V' : rawType;
-    const workEntryDoc = String(item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || '').trim();
-    const defaultTitle = item?.Message || item?.Title || item?.title || 'Notification';
-    const resolvedTitle = ['WE', 'LBWE'].includes(rawType)
-      ? `Mechanic completed Work Entry ${workEntryDoc || '-'}`
-      : formatIncidentTitle(item);
-
-    return {
-    creatorName: item?.CreatedBy || item?.CreatorName || item?.UserName || item?.AssignBy || item?.SprvsrNm || item?.DriverName || '',
-    priority: item?.Priority || item?.Severity || item?.Significance || '',
-    busNo: item?.BusNo || item?.Vehicle || item?.BusCode || item?.BusRegistrationNo || item?.RegNo || '',
-    detailDocEntry: item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || item?.JobCardDocEntry || item?.ComplaintNo || null,
-    significance: item?.Significance || item?.Severity || item?.Priority || item?.Type || '',
-    // WERQ notifications include both references. Keep them distinct: DocEntry
-    // is commonly the Job Card, while WorkEntryDocEntry identifies the request.
-    jobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardEntry || item?.jobCardEntry || item?.JobCardNo || item?.jobCardNo || item?.DocEntry || item?.docEntry || '',
-    workEntryDocEntry: item?.WorkEntryDocEntry || item?.workEntryDocEntry || item?.WorkEntryNo || item?.workEntryNo || item?.ReferenceDocEntry || item?.RefDocEntry || '',
-    ...item,
-    id: item?.id || item?.Code || item?.DocEntry,
-    code: item?.Code || item?.id || item?.DocEntry,
-    title: resolvedTitle || defaultTitle,
-    message: item?.Message || item?.message || '',
-    read: String(item?.Read || '').trim().toUpperCase() === 'Y',
-    type: normalizedType,
-    timestamp: item?.Date || item?.timestamp || null,
-    docEntry: item?.DocEntry || item?.ReferenceDocEntry || item?.RefDocEntry || item?.JobCardDocEntry || item?.ComplaintNo,
-    };
-  };
+  const mapNotificationItem = (item, index = 0) => normalizeNotificationItem(item, index);
 
   const parseBackendDateTimeToMs = (dateValue, timeValue) => {
     const rawDate = String(dateValue || '').trim();
@@ -222,31 +211,6 @@ const NotificationsScreen = ({ navigation }) => {
     return raw;
   };
 
-  const ensureUniqueNotificationKeys = (items = []) => {
-    const seen = new Map();
-    return (Array.isArray(items) ? items : []).map((item, index) => {
-      const baseKey = [
-        item?.id,
-        item?.code,
-        item?.type,
-        item?.docEntry,
-        item?.detailDocEntry,
-        item?.timestamp,
-        item?.title,
-      ]
-        .map((value) => String(value || '').trim())
-        .filter(Boolean)
-        .join('|') || `notification-${index}`;
-
-      const occurrence = seen.get(baseKey) || 0;
-      seen.set(baseKey, occurrence + 1);
-
-      return {
-        ...item,
-        _listKey: occurrence === 0 ? baseKey : `${baseKey}#${occurrence + 1}`,
-      };
-    });
-  };
 
   const inferComplaintTypeFromNotification = (item) => {
     const explicit = String(item?.ComplaintType || item?.complaintType || '').trim();
@@ -277,7 +241,7 @@ const NotificationsScreen = ({ navigation }) => {
         ? notificationsResponse.Data
         : (Array.isArray(notificationsResponse?.data) ? notificationsResponse.data : []);
 
-      let mappedNotifications = notificationData.map(mapNotificationItem);
+      let mappedNotifications = notificationData.map((item, index) => mapNotificationItem(item, index));
 
       mappedNotifications.sort((a, b) => getNotificationSortMs(b) - getNotificationSortMs(a));
       mappedNotifications = ensureUniqueNotificationKeys(mappedNotifications);
@@ -316,6 +280,11 @@ const NotificationsScreen = ({ navigation }) => {
       return false;
     }
 
+    const explicitType = String(item?.Type || item?.type || '').trim().toUpperCase();
+    const resolvedComplaintType = explicitType === 'D'
+      ? 'Driver Complaint'
+      : (String(item?.ComplaintType || item?.complaintType || '').trim() || inferComplaintTypeFromNotification(item));
+
     let matchedIncident = null;
     try {
       const incidentsResponse = await complaintService.getIncidents(companyDb, null, null, user?.Depot || user?.depot || '');
@@ -331,7 +300,9 @@ const NotificationsScreen = ({ navigation }) => {
     const payload = {
       complaintNo: matchedIncident?.DocEntry || incidentDocEntry,
       dbName: companyDb,
-      complaintType: matchedIncident?.ComplaintType || item?.ComplaintType || inferComplaintTypeFromNotification(item),
+      complaintType: explicitType === 'D'
+        ? 'Driver Complaint'
+        : matchedIncident?.ComplaintType || resolvedComplaintType,
       jobCardNo: matchedIncident?.JobCardNo || matchedIncident?.JobcardNo || item?.JobCardNo || item?.jobCardNo || item?.JobcardNo || '',
       source: matchedIncident?._source || 'incident',
       busNo: matchedIncident?.BusNo || item?.busNo || item?.BusNo || item?.Vehicle || '',
@@ -397,11 +368,12 @@ const NotificationsScreen = ({ navigation }) => {
       || notificationText.includes('transferred')
       || ['TRANSFER', 'JOB_CARD_TRANSFER', 'JOBCARDTRANSFER', 'JT', 'JCT'].includes(type)
       || Boolean(item?.TransferJobCard || item?.TransferStatus || item?.ToSupervisorCode || item?.TrnSupCode);
-    const requiresSupervisorVerification = ['WE', 'WER', 'LBWE'].includes(rawNotificationType) || ['WE', 'WER', 'LBWE'].includes(type) || (notificationText.includes('work entry') && (
+    const requiresSupervisorVerification = ['WE', 'WER', 'LBWE', 'TOW'].includes(rawNotificationType) || ['WE', 'WER', 'LBWE', 'TOW'].includes(type) || (notificationText.includes('work entry') && (
       notificationText.includes('supervisor inspection')
       || notificationText.includes('inspection is required')
     ));
     const isWorkEntryRequest = rawNotificationType === 'WERQ' || type === 'WERQ';
+    const isTowNotification = rawNotificationType === 'TOW' || type === 'TOW';
 
     if (supervisorUser && isWorkEntryRequest) {
       const isToolRequest = notificationText.includes('special tool') || notificationText.includes('tool request');
@@ -549,12 +521,78 @@ const NotificationsScreen = ({ navigation }) => {
       return;
     }
 
+    if (supervisorUser && isTowNotification) {
+      const towWorkEntryDocEntry = String(
+        item?.WorkEntryDocEntry
+        || item?.workEntryDocEntry
+        || item?.WorkEntryNo
+        || item?.workEntryNo
+        || item?.ReferenceDocEntry
+        || item?.RefDocEntry
+        || item?.detailDocEntry
+        || item?.docEntry
+        || docEntry
+        || ''
+      ).trim();
+      const towJobCardDocEntry = String(
+        item?.JobCardDocEntry
+        || item?.jobCardDocEntry
+        || item?.JobCardEntry
+        || item?.jobCardEntry
+        || item?.JobCardNo
+        || item?.jobCardNo
+        || jobCardReference
+        || item?.DocEntry
+        || item?.docEntry
+        || ''
+      ).trim();
+      setTowImageDrafts([]);
+      setTowNotificationModal({
+        item,
+        workEntryDocEntry: towWorkEntryDocEntry,
+        jobCardDocEntry: towJobCardDocEntry,
+      });
+      return;
+    }
+
     if (supervisorUser && requiresSupervisorVerification) {
       navigation.navigate('ReviewWorkEntries', {
         focusWorkEntryDocEntry: item?.WorkEntryDocEntry || docEntry,
         focusJobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || '',
         repair: rawNotificationType === 'WER' || type === 'WER',
         createDriverComplaintAfterApproval: rawNotificationType === 'LBWE' || type === 'LBWE',
+      });
+      return;
+    }
+
+    if (type === 'D') {
+      const complaintSpecificValue = [
+        item?.Incident,
+        item?.incident,
+        item?.IncidentNo,
+        item?.incidentNo,
+        item?.ComplaintNo,
+        item?.complaintNo,
+        item?.IncidentDocEntry,
+        item?.incidentDocEntry,
+      ]
+        .map((value) => String(value || '').trim())
+        .find((value) => Boolean(value));
+
+      const incidentDocEntry = complaintSpecificValue || resolveIncidentDocEntryFromNotification(item) || '';
+
+      if (incidentDocEntry) {
+        const navigatedToIncident = await navigateToIncidentDetail(item, incidentDocEntry);
+        if (navigatedToIncident) {
+          return;
+        }
+      }
+
+      navigation.navigate('ComplaintDetail', {
+        complaintNo: incidentDocEntry,
+        dbName: dbName || 'MUTSPL_TEST',
+        complaintType: 'Driver Complaint',
+        source: 'incident',
       });
       return;
     }
@@ -730,55 +768,317 @@ const NotificationsScreen = ({ navigation }) => {
     }
   };
 
-  const renderNotificationItem = ({ item }) => (
-    <TouchableOpacity
-      style={[
-        styles.notificationCard,
-        {
-          backgroundColor: colors.white,
-          borderLeftColor: item.read ? colors.grayLight : getNotificationColor(item.type || item.Type),
-        },
-      ]}
-      onPress={() => handleNotificationPress(item)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.notificationContent}>
-        <View style={styles.textContainer}>
-          <View style={styles.titleRow}>
-            <View style={[styles.inlineIcon, { backgroundColor: getNotificationColor(item.type || item.Type) + '20' }]}>
-              <MaterialIcons name={getNotificationIcon(item.type || item.Type, item)} size={14} color={getNotificationColor(item.type || item.Type)} />
-            </View>
-            <Text style={[styles.title, { color: colors.dark, fontWeight: item.read ? 'normal' : 'bold' }]} numberOfLines={1}>
-              {item.title || 'Notification'}
-            </Text>
-          </View>
-          <Text style={[styles.message, { color: colors.gray }]} numberOfLines={2}>
-            {item.message || item.Message}
-          </Text>
-          <View style={styles.metaRow}>
-            <Text style={[styles.metaText, { color: colors.gray }]} numberOfLines={1}>
-              By: {item.creatorName || 'System'}
-            </Text>
-            <Text style={[styles.metaText, { color: colors.gray }]} numberOfLines={1}>
-              Significance: {getSignificanceLabel(item)}
-            </Text>
-          </View>
-          {!!item.busNo && (
-            <Text style={[styles.metaText, { color: colors.gray }]} numberOfLines={1}>
-              Bus: {item.busNo}
-            </Text>
-          )}
-          <Text style={[styles.time, { color: colors.gray }]}>
-            {formatDateTime(item.timestamp || item.Date)}
-          </Text>
-        </View>
+  const applyPickedTowImage = (result) => {
+    const asset = (result?.assets || [])[0];
+    if (!asset?.uri) return;
 
-        {!item.read && (
-          <View style={[styles.unreadIndicator, { backgroundColor: colors.primary }]} />
-        )}
-      </View>
-    </TouchableOpacity>
-  );
+    const newImage = {
+      id: `${Date.now()}-${asset.uri}`,
+      uri: asset.uri,
+      name: asset.fileName || `tow-${Date.now()}.jpg`,
+      mimeType: asset.mimeType || 'image/jpeg',
+    };
+    setTowImageDrafts([newImage]);
+  };
+
+  const pickTowImageFromCamera = async () => {
+    try {
+      let ImagePicker;
+      try {
+        ImagePicker = require('expo-image-picker');
+      } catch (error) {
+        Toast.show({ type: 'error', text1: 'Image picker unavailable' });
+        return;
+      }
+
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission?.granted) {
+        Toast.show({ type: 'error', text1: 'Permission denied', text2: 'Camera access is required to capture the tow image.' });
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.7,
+      });
+      if (result?.canceled) return;
+
+      applyPickedTowImage(result);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Camera capture failed', text2: error?.message || 'Unable to capture the image.' });
+    }
+  };
+
+  const pickTowImageFromLibrary = async () => {
+    try {
+      let ImagePicker;
+      try {
+        ImagePicker = require('expo-image-picker');
+      } catch (error) {
+        Toast.show({ type: 'error', text1: 'Image picker unavailable' });
+        return;
+      }
+
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission?.granted) {
+        Toast.show({ type: 'error', text1: 'Permission denied', text2: 'Media access is required to upload the tow image.' });
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: false,
+        quality: 0.7,
+      });
+      if (result?.canceled) return;
+
+      applyPickedTowImage(result);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Image selection failed', text2: error?.message || 'Unable to pick the image.' });
+    }
+  };
+
+  const handleCompleteTowFromNotification = async () => {
+    const modalData = towNotificationModal || {};
+    const workEntryDocEntry = String(modalData.workEntryDocEntry || '').trim();
+    const jobCardDocEntry = String(modalData.jobCardDocEntry || '').trim();
+    if (!workEntryDocEntry || !jobCardDocEntry || towImageDrafts.length === 0) {
+      Toast.show({ type: 'error', text1: 'Tow image required', text2: 'Select and upload an image before completing the tow.' });
+      return;
+    }
+
+    try {
+      setTowSubmitting(true);
+      const uploadResponse = await workEntryService.uploadImages(towImageDrafts);
+      const fileNames = Array.isArray(uploadResponse?.FileNames)
+        ? uploadResponse.FileNames
+        : String(uploadResponse?.FileName || '').split(',').map(value => value.trim()).filter(Boolean);
+      if (fileNames.length === 0) throw new Error('No uploaded image filename returned.');
+
+      const imageSaveResponse = await jobCardService.saveJobCardImage({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
+        ImgNo: 2,
+        ImgPath: fileNames[0],
+        Remarks: 'Bus received at depot.',
+      });
+
+      if (imageSaveResponse?.Success === false || imageSaveResponse?.Status === false) {
+        throw new Error(imageSaveResponse?.Message || 'Failed to save tow image.');
+      }
+
+      const towResponse = await mechanicService.completeTow({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: user?.User || user?.user || user?.username || user?.Code || user?.code || '',
+        Remarks: 'Tow completed by supervisor after image capture.',
+      });
+
+      if (towResponse?.Success === false || towResponse?.Status === false) {
+        throw new Error(towResponse?.Message || 'Unable to complete tow.');
+      }
+
+      Toast.show({ type: 'success', text1: 'Tow completed', text2: 'Supervisor tow workflow is now complete.' });
+      setTowNotificationModal(null);
+      setTowImageDrafts([]);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Tow completion failed', text2: error?.message || 'Unable to complete tow.' });
+    } finally {
+      setTowSubmitting(false);
+    }
+  };
+
+  const getPriorityBadge = (priorityValue) => {
+    const normalized = String(priorityValue || '').trim().toUpperCase();
+    if (normalized === 'H' || normalized === 'HIGH') return { label: 'High', color: '#B91C1C' };
+    if (normalized === 'M' || normalized === 'MEDIUM') return { label: 'Medium', color: '#B45309' };
+    if (normalized === 'L' || normalized === 'LOW') return { label: 'Low', color: '#047857' };
+    return null;
+  };
+
+  const getNotificationTypeBadge = (typeValue) => {
+    const normalized = String(typeValue || '').trim().toUpperCase();
+    const labels = {
+      D: 'Driver Complaint',
+      B: 'Breakdown',
+      BTA: 'Breakdown Team Assign',
+      BTR: 'Breakdown Team Reject',
+      TOW: 'TOW',
+      J: 'Job Card',
+      JCA: 'Complaint Assignment',
+      JCT: 'Breakdown Transfer',
+      JB: 'Job Breakdown',
+      T: 'Team',
+      P: 'Parts',
+      W: 'Work Entry',
+      WE: 'Work Entry',
+      WER: 'Work Entry Review',
+      WERQ: 'Work Entry Request',
+      LBWE: 'Line Breakdown Work Entry',
+      R: 'Repair',
+      RI: 'Repair Incident',
+      V: 'Verification',
+    };
+
+    const shortCode = normalized || 'N';
+    const label = labels[normalized] || normalized || 'Notification';
+    return { shortCode, label, color: getNotificationColor(normalized) };
+  };
+
+  const formatNotificationDate = (dateValue, timeValue) => {
+    const dateText = String(dateValue || '').trim();
+    const timeText = String(timeValue || '').trim();
+    if (!dateText && !timeText) return '';
+
+    const normalizeSlashDate = (value) => {
+      const slashMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
+      if (!slashMatch) return null;
+
+      const [, monthPart, dayPart, yearPart, hourPart = '0', minutePart = '0', secondPart = '0', ampm = ''] = slashMatch;
+      const month = Number(monthPart);
+      const day = Number(dayPart);
+      const year = Number(yearPart);
+      let hours = Number(hourPart);
+      if (ampm && ampm.toUpperCase() === 'PM' && hours !== 12) hours += 12;
+      if (ampm && ampm.toUpperCase() === 'AM' && hours === 12) hours = 0;
+
+      return { year, month, day, hours, minutes: Number(minutePart), seconds: Number(secondPart) };
+    };
+
+    const parseDateLike = (value) => {
+      const slashValue = normalizeSlashDate(value);
+      if (slashValue) return slashValue;
+
+      const fullSource = value && !/\d{1,2}:\d{2}/.test(value) && timeText ? `${value} ${timeText}` : value;
+      const date = new Date(fullSource);
+      if (Number.isNaN(date.getTime())) return null;
+
+      return {
+        year: date.getFullYear(),
+        month: date.getMonth() + 1,
+        day: date.getDate(),
+        hours: date.getHours(),
+        minutes: date.getMinutes(),
+        seconds: date.getSeconds(),
+      };
+    };
+
+    const parsed = parseDateLike(dateText || timeText);
+    if (!parsed) return dateText || timeText;
+
+    const day = String(parsed.day).padStart(2, '0');
+    const month = String(parsed.month).padStart(2, '0');
+    const year = parsed.year;
+    const hours24 = parsed.hours;
+    const minutes = String(parsed.minutes).padStart(2, '0');
+    const seconds = String(parsed.seconds).padStart(2, '0');
+    const hours12 = hours24 % 12 || 12;
+    const ampm = hours24 >= 12 ? 'pm' : 'am';
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const thisDate = new Date(year, month - 1, day);
+
+    if (thisDate.getTime() === today.getTime()) {
+      return `Today ${String(hours12).padStart(2, '0')}:${minutes}:${seconds} ${ampm}`;
+    }
+    if (thisDate.getTime() === yesterday.getTime()) {
+      return `Yesterday ${String(hours12).padStart(2, '0')}:${minutes}:${seconds} ${ampm}`;
+    }
+
+    return `${day}/${month}/${year} ${String(hours12).padStart(2, '0')}:${minutes}:${seconds} ${ampm}`;
+  };
+
+  const renderNotificationItem = ({ item }) => {
+    const rawText = item?.Message || item?.message || item?.Title || item?.title || 'Notification';
+    const detailValues = [
+      item?.Incident,
+      item?.JobCard,
+      item?.WorkEntry,
+      item?.incident,
+      item?.jobCard,
+      item?.workEntry,
+    ].map(value => String(value ?? '').trim()).filter(value => value !== '' && value !== '0');
+
+    const referenceBadges = [
+      detailValues.includes(String(item?.Incident ?? '').trim()) && item?.Incident !== '' && item?.Incident !== 0 ? { label: 'Incident', value: String(item.Incident) } : null,
+      detailValues.includes(String(item?.JobCard ?? '').trim()) && item?.JobCard !== '' && item?.JobCard !== 0 ? { label: 'JobCard', value: String(item.JobCard) } : null,
+      detailValues.includes(String(item?.WorkEntry ?? '').trim()) && item?.WorkEntry !== '' && item?.WorkEntry !== 0 ? { label: 'WorkEntry', value: String(item.WorkEntry) } : null,
+    ].filter(Boolean);
+
+    const typeValue = item?.Type || item?.type || '';
+    const dateText = formatNotificationDate(item?.Date, item?.Time);
+    const priorityBadge = getPriorityBadge(item?.Priority || item?.priority || item?.Severity || item?.severity || '');
+    const typeBadge = getNotificationTypeBadge(typeValue);
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.notificationCard,
+          {
+            backgroundColor: colors.white,
+            borderLeftColor: item.read ? colors.grayLight : getNotificationColor(item.type || item.Type),
+          },
+        ]}
+        onPress={() => handleNotificationPress(item)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.notificationContent}>
+          <View style={styles.textContainer}>
+            <View style={styles.titleRow}>
+              <View style={[styles.inlineIcon, { backgroundColor: getNotificationColor(item.type || item.Type) + '20' }]}>
+                <MaterialIcons name={getNotificationIcon(item.type || item.Type, item)} size={14} color={getNotificationColor(item.type || item.Type)} />
+              </View>
+              <Text style={[styles.title, { color: colors.dark, fontWeight: item.read ? 'normal' : 'bold' }]} numberOfLines={2}>
+                {rawText}
+              </Text>
+            </View>
+
+            {referenceBadges.length > 0 && (
+              <View style={styles.referenceBadgeRow}>
+                {referenceBadges.map((badge) => (
+                  <View key={`${badge.label}-${badge.value}`} style={[styles.referenceBadge, { backgroundColor: colors.light, borderColor: colors.border }]}>
+                    <Text style={[styles.referenceBadgeLabel, { color: colors.gray }]}>{badge.label}</Text>
+                    <Text style={[styles.referenceBadgeValue, { color: colors.dark }]}>{badge.value}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            <View style={styles.bottomRow}>
+              <View style={styles.bottomLeft}>
+                {!!typeValue && (
+                  <View style={[styles.typeBadge, { backgroundColor: '#F3F4F6', borderColor: '#D1D5DB' }]}>
+                    <Text style={[styles.typeBadgeShort, { color: colors.dark }]}>{typeBadge.shortCode}</Text>
+                    <Text style={[styles.typeBadgeLabel, { color: colors.dark }]}>{typeBadge.label}</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.bottomRight}>
+                {!!priorityBadge && (
+                  <View style={[styles.priorityBadge, { backgroundColor: priorityBadge.color }]}>
+                    <Text style={styles.priorityBadgeText}>{priorityBadge.label}</Text>
+                  </View>
+                )}
+                {!!dateText && (
+                  <View style={[styles.dateBadge, { backgroundColor: colors.light }]}>
+                    <Text style={[styles.dateBadgeText, { color: colors.dark }]}>{dateText}</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+
+          {!item.read && (
+            <View style={[styles.unreadIndicator, { backgroundColor: colors.primary }]} />
+          )}
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
@@ -862,6 +1162,68 @@ const NotificationsScreen = ({ navigation }) => {
           </View>
         }
       />
+
+      <Modal visible={Boolean(towNotificationModal)} transparent animationType="slide" onRequestClose={() => {
+        setTowNotificationModal(null);
+        setTowImageDrafts([]);
+      }}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.towModal, { backgroundColor: colors.white }]}>
+            <View style={styles.modalHeaderRow}>
+              <Text style={[styles.modalTitle, { color: colors.dark }]}>Tow Completion</Text>
+              <TouchableOpacity onPress={() => {
+                setTowNotificationModal(null);
+                setTowImageDrafts([]);
+              }}>
+                <MaterialIcons name="close" size={22} color={colors.dark} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.modalText, { color: colors.gray }]}>Capture or upload the tow image, then complete the tow for this work entry.</Text>
+
+            {towImageDrafts.length > 0 ? (
+              <View style={[styles.imagePreviewBox, { borderColor: colors.border }]}>
+                {towImageDrafts.map((image) => (
+                  <View key={image.id} style={styles.previewRow}>
+                    <Text numberOfLines={1} style={{ color: colors.dark, flex: 1 }}>{image.name}</Text>
+                    <TouchableOpacity onPress={() => setTowImageDrafts([])}>
+                      <MaterialIcons name="close" size={18} color="#BB0000" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            <View style={styles.towModalActions}>
+              <View style={styles.towActionRow}>
+                <TouchableOpacity onPress={pickTowImageFromCamera} style={[styles.towActionButton, { backgroundColor: '#0F5A88' }]}>
+                  <MaterialIcons name="camera-alt" size={16} color="#fff" />
+                  <Text style={styles.towActionText}>Capture</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={pickTowImageFromLibrary} style={[styles.towActionButton, { backgroundColor: '#00689E' }]}>
+                  <MaterialIcons name="photo-library" size={16} color="#fff" />
+                  <Text style={styles.towActionText}>Upload</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity
+                onPress={handleCompleteTowFromNotification}
+                disabled={towSubmitting || towImageDrafts.length === 0}
+                style={[
+                  styles.towActionButton,
+                  {
+                    backgroundColor: towImageDrafts.length === 0 ? '#94A3B8' : '#C2410C',
+                    minHeight: 52,
+                  },
+                ]}
+              >
+                <MaterialIcons name="local-shipping" size={18} color="#FFFFFF" />
+                <Text style={[styles.towActionText, { color: '#FFFFFF', fontSize: 15, fontWeight: '800' }]}>{towSubmitting ? 'Completing...' : 'Complete Tow'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -937,9 +1299,107 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
   title: {
-    fontSize: 15,
-    lineHeight: 19,
+    fontSize: 14,
+    lineHeight: 18,
     flex: 1,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  detailText: {
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
+    flexShrink: 1,
+  },
+  referenceBadgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  referenceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    gap: 4,
+  },
+  referenceBadgeLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  referenceBadgeValue: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  bottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    marginTop: 4,
+    gap: 8,
+  },
+  bottomLeft: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  bottomRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    flexShrink: 0,
+  },
+  typeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    gap: 6,
+  },
+  typeBadgeShort: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  typeBadgeLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  priorityBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  priorityBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFF',
+    textTransform: 'uppercase',
+  },
+  dateBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  dateBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
   },
   message: {
     fontSize: 13,
@@ -966,6 +1426,78 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     marginLeft: 6,
     marginTop: 6,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.lg,
+  },
+  towModal: {
+    width: '90%',
+    maxWidth: 420,
+    maxHeight: '80%',
+    borderRadius: BORDER_RADIUS.xl,
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.lg,
+    paddingBottom: SPACING.xl,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    justifyContent: 'flex-start',
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  modalText: {
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: SPACING.md,
+  },
+  imagePreviewBox: {
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    padding: SPACING.sm,
+    marginBottom: SPACING.md,
+  },
+  previewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  towModalActions: {
+    gap: 12,
+    marginTop: SPACING.md,
+    paddingBottom: 4,
+  },
+  towActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 4,
+  },
+  towActionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: BORDER_RADIUS.md,
+    gap: 8,
+  },
+  towActionText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   quickActionBtn: {
     marginTop: 8,

@@ -47,10 +47,13 @@ export const jobCardService = {
   /** Close a job card after every work entry is supervisor-verified. */
   closeJobCard: async (companyDB, docEntry) => {
     try {
-      const response = await post('CloseJobCard', {
+      const payload = {
         CompanyDB: companyDB,
-        DocEntry: Number(docEntry) || docEntry,
-      });
+        JobCardDocEntry: Number(docEntry) || docEntry,
+      };
+      console.log('📤 Closing job card via CloseJobCard:', JSON.stringify(payload));
+      const response = await post('CloseJobCard', payload);
+      console.log('📥 CloseJobCard response:', response.data);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -73,6 +76,19 @@ export const jobCardService = {
       return response.data;
     } catch (error) {
       console.error('❌ CloseIncident error:', error);
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  /**
+   * Save one uploaded image metadata against a job card.
+   * Used for tow-vehicle / breakdown job-card images.
+   */
+  saveJobCardImage: async (payload) => {
+    try {
+      const response = await post('SaveJobCardImage', payload);
+      return response.data;
+    } catch (error) {
       throw new Error(handleApiError(error));
     }
   },

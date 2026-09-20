@@ -96,12 +96,12 @@ const extractSpecialToolsForFault = (workEntry, faultItem) => {
 };
 
 const FaultWorkScreen = ({ route, navigation }) => {
-  const { docEntry, faultLine, fault, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, isWorkStarted } = route.params || {};
+  const { docEntry, faultLine, fault, complaintType: routeComplaintType, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, isWorkStarted } = route.params || {};
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const userCode = user?.Code || user?.code || user?.User || user?.user || user?.name || '';
+  const userCode = user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || user?.name || '';
   const createDetailId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const getInitialSavedImages = () => {
@@ -207,17 +207,14 @@ const FaultWorkScreen = ({ route, navigation }) => {
     ItemName: String(row?.ItemName || row?.Name || row?.Dscription || row?.Description || row?.ItemCode || row?.Code || '').trim(),
   })).filter(row => row.ItemCode || row.ItemName);
 
-  const getPartQty = (part) => {
-    const values = [part?.ApprovedQty, part?.AprQty, part?.Qty, part?.ReqQty, part?.RequestedQty];
-    const positive = values.find(value => Number(value) > 0);
-    return positive ?? values.find(value => value !== undefined && value !== null && value !== '') ?? 1;
-  };
+  const getRequestedQty = (part) => Number(part?.ReqQty ?? part?.RequestedQty ?? part?.Qty ?? 0) || 0;
+  const getPartQty = (part) => getRequestedQty(part) || 1;
 
   const getPartStatus = (part) => String(part?.Status ?? part?.ApprovalStatus ?? '').trim().toUpperCase();
   const getIssuedQty = (part) => Number(part?.IssQty ?? part?.IssuedQty ?? part?.IssueQty ?? 0) || 0;
   const getReceivedQty = (part) => Number(part?.RecQty ?? part?.ReceivedQty ?? 0) || 0;
   const getReturnedQty = (part) => Number(part?.RetQty ?? part?.ReturnedQty ?? 0) || 0;
-  const getApprovedQty = (part) => Number(getPartQty(part)) || 0;
+  const getApprovedQty = (part) => Number(part?.AprQty ?? part?.ApprovedQty ?? part?.Approved ?? 0) || 0;
 
   const isPartFullyReceived = (part) => {
     const approvedQty = getApprovedQty(part);
@@ -227,16 +224,19 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const isPartApproved = (part) => {
-    // Parts embedded with an assigned fault were selected by the Supervisor
-    // while creating the Job Card. They are pre-approved by business rule;
-    // only extra parts raised by a mechanic go through approval.
-    if (part?.SupervisorProvided) return true;
     const status = getPartStatus(part);
+    const approvedQty = getApprovedQty(part);
     const explicitApproval = [part?.Approved, part?.IsApproved, part?.SupervisorApproved, part?.ApprovalResponse, part?.Response]
       .some(value => ['A', 'Y', 'YES', 'TRUE', '1', 'APPROVED', true].includes(typeof value === 'string' ? value.trim().toUpperCase() : value));
-    return explicitApproval
-      || Number(part?.AprQty ?? part?.ApprovedQty ?? 0) > 0
-      || ['A', 'AP', 'PS', 'IS', 'PR', 'RC', 'APPROVED', 'READY', 'READY TO COLLECT'].includes(status);
+    const statusApproved = ['AP', 'PS', 'IS', 'PR', 'RC', 'RR', 'RETURNED', 'APPROVED', 'READY', 'READY TO COLLECT'].includes(status);
+
+    // Only treat a part as approved when the backend says so.
+    // A supervisor-selected part without actual approval data must remain in
+    // the awaiting-approval bucket until GetMechanicDashboard returns a real
+    // approved quantity/status.
+    if (approvedQty > 0) return true;
+    if (explicitApproval && (statusApproved || status === 'AP' || status === 'A')) return true;
+    return statusApproved;
   };
 
   // Strict check for return eligibility — ignores SupervisorProvided shortcut,
@@ -244,7 +244,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const isPartReturnEligible = (part) => {
     const status = getPartStatus(part);
     return ['AP', 'A', 'IS', 'PR', 'PS', 'RC', 'APPROVED'].includes(status)
-      || Number(part?.AprQty ?? part?.ApprovedQty ?? 0) > 0;
+      || getApprovedQty(part) > 0;
   };
 
   // Receipt is a Job Card backend line operation, never a UI-list-index operation.
@@ -399,12 +399,16 @@ const FaultWorkScreen = ({ route, navigation }) => {
           Number(existing?.AprQty ?? existing?.ApprovedQty ?? 0) || 0,
           Number(part?.AprQty ?? part?.ApprovedQty ?? 0) || 0,
         );
+        const mergedStatus = String(part?.Status ?? existing?.Status ?? '').trim().toUpperCase();
+        const mergedApproved = isPartApproved(existing) || isPartApproved(part) ? 'Y' : (
+          approvedQty > 0 || ['AP', 'APPROVED', 'A'].includes(mergedStatus) ? 'Y' : (part?.Approved ?? existing?.Approved)
+        );
         uniqueParts.set(key, {
           ...existing,
           ...part,
           ApprovedQty: approvedQty,
           AprQty: approvedQty,
-          Approved: isPartApproved(existing) || isPartApproved(part) ? 'Y' : part?.Approved ?? existing?.Approved,
+          Approved: mergedApproved,
         });
       });
       setApprovedParts(Array.from(uniqueParts.values()));
@@ -470,6 +474,12 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const savedBeforeImages = savedImages.filter((image) => String(image.imgType || '').toUpperCase() === 'BF');
   const savedAfterImages = savedImages.filter((image) => String(image.imgType || '').toUpperCase() === 'AF');
   const hasSavedBeforeImage = savedBeforeImages.length > 0;
+  const incidentType = String(
+    routeComplaintType || fault?.ComplaintType || fault?.IncidentType || fault?.FormType || fault?.JobType || fault?.Type || ''
+  ).trim().toUpperCase();
+  const isDriverIncident = incidentType.includes('DRIVER') || incidentType.includes('COMPLAINT') || ['D', 'JCA'].includes(incidentType);
+  const hasAfterImageForCompletion = savedAfterImages.length + afterImageDrafts.length >= MIN_IMAGES_PER_FAULT;
+  const canCompleteDriverIncident = Boolean(String(finalRemarks || '').trim()) && hasAfterImageForCompletion;
 
   const extractBase64Content = (response) => {
     const seen = new Set();
@@ -911,7 +921,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Final remarks required', text2: 'Add final remarks before completing the work.' });
       return;
     }
-    if (afterImageDrafts.length < MIN_IMAGES_PER_FAULT) {
+    if (!hasAfterImageForCompletion) {
       Toast.show({ type: 'error', text1: 'After image required', text2: 'Upload the after image before completing the work.' });
       return;
     }
@@ -922,8 +932,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
     try {
       setSubmitting(true);
       const companyDb = dbName || 'MUTSPL_TEST';
-      await persistSelectedImages('AF', afterImageDrafts, workEntryDocEntry);
-      setAfterImageDrafts([]);
+      if (afterImageDrafts.length > 0) {
+        await persistSelectedImages('AF', afterImageDrafts, workEntryDocEntry);
+        setAfterImageDrafts([]);
+      }
       const response = await mechanicService.completeWork({
         CompanyDB: companyDb,
         WorkEntryDocEntry: workEntryDocEntry,
@@ -1147,11 +1159,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Part line unavailable', text2: 'This part has no PartLine or FaultLine from the backend.' });
       return;
     }
-    const approvedQty = getApprovedQty(part);
+    const issuedQty = getIssuedQty(part);
     const alreadyReceived = getReceivedQty(part);
-    const remainingQty = Math.max(approvedQty - alreadyReceived, 0);
+    const remainingQty = Math.max(issuedQty - alreadyReceived, 0);
     if (remainingQty <= 0) {
-      Toast.show({ type: 'info', text1: 'Already fully received' });
+      Toast.show({ type: 'info', text1: 'Part not issued yet', text2: 'Parts can be received only after the Store issues them.' });
       return;
     }
     setReceiveTarget({
@@ -1169,9 +1181,13 @@ const FaultWorkScreen = ({ route, navigation }) => {
       Toast.show({ type: 'error', text1: 'Job card unavailable', text2: 'Unable to resolve JobCardDocEntry for receipt.' });
       return;
     }
-    const approvedQty = Number(getPartQty(part));
+    const issuedQty = getIssuedQty(part);
     const alreadyReceived = getReceivedQty(part);
-    const remainingQty = Math.max(approvedQty - alreadyReceived, 0);
+    const remainingQty = Math.max(issuedQty - alreadyReceived, 0);
+    if (remainingQty <= 0) {
+      Toast.show({ type: 'info', text1: 'Part not issued yet', text2: 'Parts can be received only after the Store issues them.' });
+      return;
+    }
     const enteredQty = Number(receivedQty);
     if (!enteredQty || enteredQty <= 0 || enteredQty > remainingQty) {
       Toast.show({ type: 'error', text1: 'Enter a valid quantity', text2: `Received quantity must be between 1 and ${remainingQty}.` });
@@ -1588,10 +1604,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
                       <View style={{ flex: 1 }}>
                         <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{p.ItemName}</Text>
                         <Text style={{ color: colors.gray, fontSize: 12 }}>
-                          Approved: {getPartQty(p)}
-                          {getIssuedQty(p) > 0 ? ` • Issued: ${getIssuedQty(p)}` : ''}
-                          {getReceivedQty(p) > 0 ? ` • Received: ${getReceivedQty(p)}` : ''}
-                          {getReturnedQty(p) > 0 ? ` • Returned: ${getReturnedQty(p)}` : ''}
+                          Requested: {Number(p?.ReqQty ?? p?.RequestedQty ?? p?.Qty ?? 0) || 0}
+                          {` • Approved: ${getApprovedQty(p)}`}
+                          {` • Issued: ${getIssuedQty(p)}`}
+                          {` • Received: ${getReceivedQty(p)}`}
+                          {` • Return: ${getReturnedQty(p)}`}
                         </Text>
                       </View>
                       {isPartFullyReceived(p) ? (
@@ -1600,9 +1617,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
                         </Chip>
                       ) : (
                         <TouchableOpacity
-                          style={[styles.smallBtn, { backgroundColor: '#2B7D2B' }]}
+                          style={[styles.smallBtn, { backgroundColor: getIssuedQty(p) > getReceivedQty(p) ? '#2B7D2B' : '#94A3B8' }]}
                           onPress={() => openReceivePart(p)}
                           activeOpacity={0.8}
+                          disabled={getIssuedQty(p) <= getReceivedQty(p)}
                         >
                           <Text style={styles.smallBtnText}>{getReceivedQty(p) > 0 ? 'Receive More' : 'Mark Received'}</Text>
                         </TouchableOpacity>
@@ -1735,6 +1753,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
             {/* Complete */}
             <View style={[styles.card, { backgroundColor: colors.white, marginBottom: SPACING.lg, marginHorizontal: SPACING.md }] }>
               <Text style={[styles.sectionTitle, { color: colors.dark }]}>Complete Work</Text>
+              {isDriverIncident && !canCompleteDriverIncident ? (
+                <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 8 }}>
+                  Add final remarks and at least one after image to enable completion.
+                </Text>
+              ) : null}
 
               <TextInput
                 label="Final Remarks"
@@ -1818,10 +1841,10 @@ const FaultWorkScreen = ({ route, navigation }) => {
               </View>
 
               <TouchableOpacity
-                style={[styles.primaryBtn, { backgroundColor: workEntryLocked ? '#64748B' : colors.success, marginTop: SPACING.sm }]}
+                style={[styles.primaryBtn, { backgroundColor: workEntryLocked || (isDriverIncident && !canCompleteDriverIncident) ? '#94A3B8' : colors.success, marginTop: SPACING.sm }]}
                 onPress={handleCompleteWork}
                 activeOpacity={0.8}
-                disabled={submitting || workEntryLocked}
+                disabled={submitting || workEntryLocked || (isDriverIncident && !canCompleteDriverIncident)}
               >
                 <MaterialIcons name="done-all" size={18} color="#FFF" />
                 <Text style={styles.primaryBtnText}>{workEntryLocked ? 'Completed' : submitting ? 'Completing…' : 'Complete Work'}</Text>

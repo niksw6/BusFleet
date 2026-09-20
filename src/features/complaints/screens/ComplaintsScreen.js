@@ -16,7 +16,7 @@ import FAB from '../../../shared/components/FAB';
 import StandardListCard from '../../../shared/components/StandardListCard';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { formatDate, truncateText, getStatusName, getComplaintTypeBadge } from '../../../utils/helpers';
+import { formatDateTime, getDateTimeTimestamp, truncateText, getStatusName, getComplaintTypeBadge } from '../../../utils/helpers';
 import { complaintService, maintenanceService, repairService } from '../../../api/services';
 import { isSupervisorUser, isDriverUser, isStoreUser } from '../../../utils/roleAccess';
 
@@ -64,24 +64,7 @@ const getSortableIncidentTimestamp = (item) => {
     item?.CreatedTime,
   ];
 
-  const rawDate = String(dateCandidates.find(Boolean) || '').trim();
-  const rawTime = String(timeCandidates.find(Boolean) || '').trim();
-
-  if (!rawDate) return 0;
-
-  const cleanedDate = rawDate.replace(/\//g, '-');
-  const match = cleanedDate.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (!match) return 0;
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const digitsOnly = String(rawTime).replace(/\D/g, '');
-  const hour = Number(digitsOnly.slice(0, 2) || '0');
-  const minute = Number(digitsOnly.slice(2, 4) || '0');
-
-  const ts = Date.UTC(year, month - 1, day, hour, minute, 0);
-  return Number.isFinite(ts) ? ts : 0;
+  return getDateTimeTimestamp(dateCandidates.find(Boolean), timeCandidates.find(Boolean));
 };
 
 const matchesDriverIncident = (incident, driverIdentity, driverDisplayName) => {
@@ -460,7 +443,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
           <View style={styles.dateContainer}>
             <MaterialIcons name="calendar-today" size={14} color={colors.gray} />
             <Text style={[styles.date, { color: colors.gray }]}>
-              {item.ComplaintDate} {item.ComplaintTime}
+              {formatDateTime(item.ComplaintDate, item.ComplaintTime) || '-'}
             </Text>
           </View>
           <View style={styles.footerBadgesRow}>

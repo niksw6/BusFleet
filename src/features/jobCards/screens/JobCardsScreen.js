@@ -15,7 +15,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import StandardListCard from '../../../shared/components/StandardListCard';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { jobCardService } from '../../../api/services';
-import { getStatusName, formatJobCardDisplayNo, getJobTypeCode, formatTime } from '../../../utils/helpers';
+import { getStatusName, formatDateTime, getDateTimeTimestamp, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
 
 const normalizeJobCardFilter = (filter) => {
   if (filter === 'C') return 'CM';
@@ -94,6 +94,14 @@ const JobCardsScreen = ({ navigation, route }) => {
   const filterJobCards = () => {
     let filtered = [...jobCards];
 
+    filtered.sort((a, b) => getDateTimeTimestamp(
+      b?.RegDate || b?.ComplaintDate || b?.IncidentDate || b?.CreateDate || b?.DocDate,
+      b?.RegTime || b?.ComplaintTime || b?.IncidentTime || b?.CreateTime || b?.DocTime || b?.BrkTime,
+    ) - getDateTimeTimestamp(
+      a?.RegDate || a?.ComplaintDate || a?.IncidentDate || a?.CreateDate || a?.DocDate,
+      a?.RegTime || a?.ComplaintTime || a?.IncidentTime || a?.CreateTime || a?.DocTime || a?.BrkTime,
+    ));
+
     if (selectedFilter !== 'All') {
       if (selectedFilter === 'VERIFY') {
         filtered = filtered.filter(isAwaitingVerification);
@@ -166,29 +174,10 @@ const JobCardsScreen = ({ navigation, route }) => {
     return item.RegDate || item.ComplaintDate || item.IncidentDate || item.CreateDate || item.DocDate || '';
   };
 
-  const getDisplayTime = (item) => {
-    const raw =
-      item.RegTime ||
-      item.ComplaintTime ||
-      item.IncidentTime ||
-      item.CreateTime ||
-      item.DocTime ||
-      item.BrkTime;
-
-    if (!raw) return '';
-    const value = String(raw).trim();
-    if (!value || value === 'HH12:MI AM') return '';
-
-    const placeholderPattern = /HH(\d{1,2})?:MI\s*(AM|PM)?/i;
-    const placeholderMatch = value.match(placeholderPattern);
-    if (placeholderMatch) {
-      const hours = placeholderMatch[1] ? placeholderMatch[1].padStart(2, '0') : '';
-      const amPm = placeholderMatch[2] ? ` ${placeholderMatch[2].toUpperCase()}` : '';
-      return hours ? `${hours}:00${amPm}` : '';
-    }
-
-    return formatTime(value) || value;
-  };
+  const getDisplayDateTime = (item) => formatDateTime(
+    getDisplayDate(item),
+    item.RegTime || item.ComplaintTime || item.IncidentTime || item.CreateTime || item.DocTime || item.BrkTime,
+  );
 
   const renderJobCard = ({ item }) => (
     <StandardListCard
@@ -303,12 +292,10 @@ const JobCardsScreen = ({ navigation, route }) => {
               </Text>
             </View>
           ) : null}
-          {getDisplayTime(item) ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 8 }}>
+          {getDisplayDateTime(item) ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <MaterialIcons name="access-time" size={12} color={colors.gray} />
-              <Text style={[styles.date, { color: colors.gray }]}>
-                {getDisplayTime(item)}
-              </Text>
+              <Text style={[styles.date, { color: colors.gray }]}>{getDisplayDateTime(item)}</Text>
             </View>
           ) : null}
         </View>

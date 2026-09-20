@@ -19,7 +19,7 @@ import FAB from '../../../shared/components/FAB';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { complaintService, dashboardService, jobCardService, maintenanceService, teamService, mechanicService } from '../../../api/services';
-import { formatDate } from '../../../utils/helpers';
+import { formatDateTime, getDateTimeTimestamp } from '../../../utils/helpers';
 import { isMechanicUser, isStoreUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
 
 const looksLikeJobCard = (item) => {
@@ -147,6 +147,55 @@ const extractArrayItems = (data) => {
   return [];
 };
 
+const getMechanicItemStatus = (item) => {
+  const workEntries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
+  const workEntry = workEntries.find((entry) => entry?.Status || entry?.WorkStatus);
+  return String(
+    workEntry?.Status
+    || workEntry?.WorkStatus
+    || item?.Status
+    || item?.FaultStatus
+    || item?.WorkStatus
+    || '',
+  ).trim().toUpperCase();
+};
+
+const isOpenMechanicItem = (item) => [
+  '',
+  'PENDING',
+  'P',
+  'NEW',
+  'O',
+  'OPEN',
+].includes(getMechanicItemStatus(item));
+
+const isInProgressMechanicItem = (item) => [
+  'A',
+  'ACCEPTED',
+  'I',
+  'IN PROGRESS',
+  'INPROGRESS',
+  'STARTED',
+  'IP',
+  'RW',
+  'REWORK',
+  'REWORK REQUIRED',
+  'WC',
+  'WORK COMPLETED',
+  'AWAITING VERIFICATION',
+].includes(getMechanicItemStatus(item));
+
+const isCompletedMechanicItem = (item) => [
+  'C',
+  'CM',
+  'COMPLETE',
+  'COMPLETED',
+  'SV',
+  'CL',
+  'SUPERVISOR VERIFIED',
+  'CLOSED',
+].includes(getMechanicItemStatus(item));
+
 const isBreakdownAssignmentItem = (item) => {
   if (!item || typeof item !== 'object') return false;
   if (String(item?.Type || item?.type || item?.NotificationType || '').trim().toUpperCase() === 'JCA') return false;
@@ -265,7 +314,10 @@ const DashboardScreen = ({ navigation }) => {
 
       if (teamLeaderUser) {
         try {
-          const teamResponse = await teamService.getMechanicalDashboard(dbName || 'MUTSPL_TEST', user?.User || user?.user || user?.Code || user?.code || user?.name || '');
+          const teamLeaderCode = String(
+            user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || user?.name || ''
+          ).trim();
+          const teamResponse = await teamService.getMechanicalDashboard(dbName || 'MUTSPL_TEST', teamLeaderCode);
           const jobCards = extractTeamLeaderJobCards(teamResponse?.Data ?? teamResponse);
           const scoped = userTeamCode
             ? jobCards.filter((c) => !c?.TeamCode || String(c?.TeamCode || '').trim() === userTeamCode)
@@ -319,7 +371,7 @@ const DashboardScreen = ({ navigation }) => {
               RegDate: item.IncidentDate,
               RegTime: item.IncidentTime,
             }))
-            .sort((a, b) => new Date(b.IncidentDate || 0) - new Date(a.IncidentDate || 0))
+            .sort((a, b) => getDateTimeTimestamp(b.IncidentDate, b.IncidentTime) - getDateTimeTimestamp(a.IncidentDate, a.IncidentTime))
             .slice(0, 10);
           setRecentIncidents(sortedOwn);
         } catch (e) {
@@ -333,6 +385,8 @@ const DashboardScreen = ({ navigation }) => {
       if (showMechanicDashboard) {
         let jobCards = [];
         let breakdownJobs = [];
+        let mechanicJobCards = [];
+        let mechanicDashboardLoaded = false;
 
         try {
           const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null, userDepot);
@@ -343,10 +397,14 @@ const DashboardScreen = ({ navigation }) => {
         }
 
         try {
-          const mechanicUserCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || '';
+          const mechanicUserCode = String(
+            user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || ''
+          ).trim();
           if (mechanicUserCode) {
             const mechanicJobsResponse = await mechanicService.getMechanicDashboard(dbName || 'MUTSPL_TEST', mechanicUserCode);
             const mechanicJobs = extractArrayItems(mechanicJobsResponse?.Data ?? mechanicJobsResponse ?? []);
+            mechanicJobCards = mechanicJobs;
+            mechanicDashboardLoaded = true;
             breakdownJobs = mechanicJobs.filter(isBreakdownAssignmentItem);
           }
         } catch (mechanicJobsError) {
@@ -371,11 +429,17 @@ const DashboardScreen = ({ navigation }) => {
           return status === 'C' || status === 'CM' || status === 'COMPLETED';
         }).length;
 
+        const countMechanicFaults = (predicate = () => true) => mechanicJobCards.filter(predicate).length;
+        const mechanicFaultCount = countMechanicFaults();
+        const mechanicOpenCount = countMechanicFaults(isOpenMechanicItem);
+        const mechanicInProgressCount = countMechanicFaults(isInProgressMechanicItem);
+        const mechanicCompletedCount = countMechanicFaults(isCompletedMechanicItem);
+
         setStats({
-          total: jobCards.length,
-          open: openCount,
-          inProgress: inProgressCount,
-          completed: completedCount,
+          total: mechanicDashboardLoaded ? mechanicFaultCount : jobCards.length,
+          open: mechanicDashboardLoaded ? mechanicOpenCount : openCount,
+          inProgress: mechanicDashboardLoaded ? mechanicInProgressCount : inProgressCount,
+          completed: mechanicDashboardLoaded ? mechanicCompletedCount : completedCount,
         });
 
         setRecentIncidents([]);
@@ -513,11 +577,7 @@ const DashboardScreen = ({ navigation }) => {
 
         // Sort by date (most recent first) and take last 10
         const sorted = incidents
-          .sort((a, b) => {
-            const dateA = new Date(a.IncidentDate || 0);
-            const dateB = new Date(b.IncidentDate || 0);
-            return dateB - dateA;
-          })
+          .sort((a, b) => getDateTimeTimestamp(b.IncidentDate, b.IncidentTime) - getDateTimeTimestamp(a.IncidentDate, a.IncidentTime))
           .slice(0, 10);
 
         setRecentIncidents(sorted);
@@ -570,7 +630,7 @@ const DashboardScreen = ({ navigation }) => {
           <View style={styles.incidentDetail}>
             <MaterialIcons name="calendar-today" size={14} color={colors.gray} />
             <Text style={[styles.incidentDetailText, { color: colors.gray }]}>
-              {date ? formatDate(date) : 'N/A'}
+              {formatDateTime(date, time) || 'N/A'}
             </Text>
           </View>
           {time && (
@@ -616,10 +676,10 @@ const DashboardScreen = ({ navigation }) => {
             <View style={styles.kpiSection}>
               <View style={styles.sectionHeader}>
                 <Text style={[styles.sectionTitle, { color: colors.dark }]}>
-                  {showMechanicDashboard ? 'Job Cards Overview' : 'Performance Overview'}
+                  {showMechanicDashboard ? 'Faults Overview' : 'Performance Overview'}
                 </Text>
                 <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
-                  {showMechanicDashboard ? 'Real-time job card tracking' : 'Real-time incident tracking'}
+                  {showMechanicDashboard ? 'Real-time fault tracking' : 'Real-time incident tracking'}
                 </Text>
               </View>
               
@@ -629,7 +689,7 @@ const DashboardScreen = ({ navigation }) => {
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
                     if (showMechanicDashboard) {
-                      navigation.navigate('JobCards');
+                      navigation.navigate('MechanicDashboard');
                       return;
                     }
                     navigation.navigate('Complaints');
@@ -643,7 +703,7 @@ const DashboardScreen = ({ navigation }) => {
                   </View>
                   <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.total}</Text>
                   <Text style={[styles.kpiLabel, { color: colors.gray }]}>
-                    {showMechanicDashboard ? 'Total Job Cards' : 'Total Incidents'}
+                    {showMechanicDashboard ? 'Total Faults' : 'Total Incidents'}
                   </Text>
                 </TouchableOpacity>
 
@@ -652,7 +712,7 @@ const DashboardScreen = ({ navigation }) => {
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
                     if (showMechanicDashboard) {
-                      navigation.navigate('JobCards');
+                      navigation.navigate('MechanicDashboard', { initialTab: 'TO_ACCEPT' });
                       return;
                     }
                     navigation.navigate('Complaints', { initialFilter: 'O' });
@@ -673,7 +733,7 @@ const DashboardScreen = ({ navigation }) => {
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
                     if (showMechanicDashboard) {
-                      navigation.navigate('JobCards');
+                      navigation.navigate('MechanicDashboard', { initialTab: 'IN_PROGRESS' });
                       return;
                     }
                     navigation.navigate('Complaints', { initialFilter: 'I' });
@@ -694,7 +754,7 @@ const DashboardScreen = ({ navigation }) => {
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
                     if (showMechanicDashboard) {
-                      navigation.navigate('JobCards');
+                      navigation.navigate('MechanicDashboard', { initialTab: 'COMPLETED' });
                       return;
                     }
                     navigation.navigate('Complaints', { initialFilter: 'CM' });

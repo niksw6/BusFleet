@@ -18,7 +18,7 @@ import { addFuelLog } from '../../../store/slices/dataSlice';
 import Loader from '../../../shared/components/Loader';
 import ConfirmationModal from '../../../shared/components/ConfirmationModal';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { formatDate, formatTime, formatVehicleNumber } from '../../../utils/helpers';
+import { formatDate, formatApiDate, formatTime, formatVehicleNumber } from '../../../utils/helpers';
 
 const CreateFuelLogScreen = ({ navigation }) => {
   const dispatch = useDispatch();
@@ -55,7 +55,7 @@ const CreateFuelLogScreen = ({ navigation }) => {
 
       const fuelData = {
         ...formValues,
-        fuelDate: formatDate(formValues.fuelDate),
+        fuelDate: formatApiDate(formValues.fuelDate),
       };
 
       const response = await maintenanceService.createFuelLog(fuelData);

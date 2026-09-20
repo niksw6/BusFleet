@@ -62,7 +62,7 @@ const WorkOrderApiDetailScreen = ({ route, navigation }) => {
 
   const isMechanic = isMechanicUser(user);
   const canManage = isSupervisorUser(user) || isTechnicalHeadUser(user) || isDepotHeadUser(user);
-  const mechanicCode = user?.Code || user?.code || user?.User || '';
+  const mechanicCode = user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || '';
   const mechanicName = user?.FirstName || user?.Name || user?.name || '';
 
   const [loading, setLoading] = useState(true);

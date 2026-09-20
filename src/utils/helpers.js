@@ -93,7 +93,14 @@ export const formatDate = (date) => {
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const year = d.getFullYear();
-  return `${day}/${month}/${year}`;
+  return `${day}-${month}-${year}`;
+};
+
+export const formatApiDate = (date) => {
+  if (!date) return '';
+  const d = parseDate(date);
+  if (!d) return '';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
 export const formatTime = (date) => {
@@ -105,9 +112,43 @@ export const formatTime = (date) => {
   return `${hours}:${minutes}`;
 };
 
-export const formatDateTime = (date) => {
+export const formatDisplayTime = (date) => {
   if (!date) return '';
-  return `${formatDate(date)} ${formatTime(date)}`;
+  const d = parseDate(date);
+  if (!d) return '';
+  const hours24 = d.getHours();
+  const hours = String(hours24 % 12 || 12).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  return `${hours}:${minutes}:${seconds} ${hours24 >= 12 ? 'PM' : 'AM'}`;
+};
+
+export const formatDateTime = (date, timeValue = '') => {
+  if (!date && !timeValue) return '';
+  const parsed = parseDateTime(date, timeValue);
+  if (!parsed) return '';
+  return `${formatDate(parsed)} ${formatDisplayTime(parsed)}`;
+};
+
+export const parseDateTime = (dateValue, timeValue = '') => {
+  if (!dateValue && !timeValue) return null;
+  if (dateValue && timeValue) {
+    const dateText = String(dateValue).trim();
+    const rawTimeText = String(timeValue).trim();
+    const compactTime = rawTimeText.match(/^\d{3,4}$/);
+    const timeText = compactTime
+      ? `${rawTimeText.padStart(4, '0').slice(0, 2)}:${rawTimeText.padStart(4, '0').slice(2)}`
+      : rawTimeText;
+    if (!/[T ]\d{1,2}:\d{2}/.test(dateText)) {
+      return parseDate(`${dateText} ${timeText}`);
+    }
+  }
+  return parseDate(dateValue || timeValue);
+};
+
+export const getDateTimeTimestamp = (dateValue, timeValue = '') => {
+  const parsed = parseDateTime(dateValue, timeValue);
+  return parsed ? parsed.getTime() : 0;
 };
 
 export const calculateDuration = (startTime, endTime) => {

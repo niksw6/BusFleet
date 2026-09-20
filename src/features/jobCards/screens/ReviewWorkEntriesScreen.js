@@ -19,7 +19,7 @@ import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { dashboardService, jobCardService, masterService, mechanicService, repairService, storeService, teamService, workEntryService } from '../../../api/services';
-import { formatDate, formatTime } from '../../../utils/helpers';
+import { formatDateTime, getDateTimeTimestamp } from '../../../utils/helpers';
 
 const isAwaitingVerificationStatus = (value) => {
   const status = String(value || '').trim().toUpperCase();
@@ -119,6 +119,37 @@ const extractImageRecords = (entry) => {
   return records;
 };
 
+const extractBreakdownRepairRecords = (entry) => {
+  const candidates = [entry, ...(Array.isArray(entry?.WorkEntries) ? entry.WorkEntries : [])];
+  for (const candidate of candidates) {
+    const repairs = Array.isArray(candidate?.BreakDownRepair)
+      ? candidate.BreakDownRepair
+      : candidate?.BreakDownRepair
+        ? [candidate.BreakDownRepair]
+        : [];
+    if (repairs.length > 0) return repairs[0];
+  }
+  return null;
+};
+
+const getTowWorkflowState = (entry) => {
+  const repair = extractBreakdownRepairRecords(entry);
+  const towImages = [repair?.TowImage1, repair?.TowImage2].filter(Boolean).map((fileName, index) => ({
+    id: `${fileName || 'tow'}-${index}`,
+    fileName: String(fileName || '').trim(),
+    type: 'TOW',
+  }));
+  const repairMode = String(repair?.RepairMode || '').trim().toUpperCase();
+  const isTow = repairMode === 'T' || String(entry?.TowStatus || '').trim().toUpperCase() === 'TOW';
+  return {
+    repair,
+    repairMode,
+    isTow,
+    towImages,
+    depot: String(repair?.Depot || repair?.DepotName || entry?.Depot || '').trim(),
+  };
+};
+
 const extractWorkDetailsRecords = (entry) => {
   const rows = [
     ...(Array.isArray(entry?.WorkDetails) ? entry.WorkDetails : []),
@@ -216,25 +247,6 @@ const getStatusTone = (statusValue) => {
   return { fg: '#6D28D9', bg: '#EDE9FE' };
 };
 
-const formatHourToken = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) return '-';
-  if (/^\d{1,2}$/.test(raw)) {
-    const hour = Number(raw);
-    if (Number.isFinite(hour)) {
-      const h = Math.max(0, Math.min(23, hour));
-      return `${String(h).padStart(2, '0')}:00`;
-    }
-  }
-  if (/^\d{1,2}:\d{2}$/.test(raw)) {
-    const [h, m] = raw.split(':').map((token) => Number(token));
-    if (Number.isFinite(h) && Number.isFinite(m)) {
-      return `${String(Math.max(0, Math.min(23, h))).padStart(2, '0')}:${String(Math.max(0, Math.min(59, m))).padStart(2, '0')}`;
-    }
-  }
-  return raw;
-};
-
 const formatDateToken = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return '-';
@@ -243,12 +255,7 @@ const formatDateToken = (value) => {
 };
 
 const formatDateTimeToken = (dateValue, timeValue) => {
-  const dateText = formatDateToken(dateValue);
-  const timeText = formatHourToken(timeValue);
-  if (dateText === '-' && timeText === '-') return '-';
-  if (dateText === '-') return `Time: ${timeText}`;
-  if (timeText === '-') return `Date: ${dateText}`;
-  return `${dateText} ${timeText}`;
+  return formatDateTime(dateValue, timeValue) || '-';
 };
 
 const parseDateTimeToken = (dateValue, timeValue) => {
@@ -315,6 +322,7 @@ const extractPendingWorkEntryIdsFromNotifications = (notifications = []) => {
   rows.forEach((item) => {
     const type = String(item?.Type || item?.type || '').trim().toUpperCase();
     const text = `${item?.Message || item?.message || ''} ${item?.Title || item?.title || ''}`.toLowerCase();
+    const isTowNotification = type === 'TOW' || text.includes('tow');
     const isWorkEntryVerificationText = text.includes('work entry') && (
       text.includes('verify')
       || text.includes('approve')
@@ -324,7 +332,7 @@ const extractPendingWorkEntryIdsFromNotifications = (notifications = []) => {
     // LBWE (Line Breakdown Work Entry) is verified through the same queue as
     // WE. Keep the raw backend type here because stored notifications retain
     // their original Type even when the UI normalizes it to V.
-    const isVerificationItem = ['WE', 'LBWE', 'V'].includes(type) || isWorkEntryVerificationText;
+    const isVerificationItem = ['WE', 'LBWE', 'V'].includes(type) || isWorkEntryVerificationText || isTowNotification;
     if (!isVerificationItem) return;
 
     const candidates = [
@@ -409,7 +417,7 @@ const mapPartRowForDisplay = (row, index) => ({
   ItemName: row?.ItemName || row?.PartName || row?.ItemCode || 'Item',
   Qty: row?.ReqQty ?? row?.Qty ?? row?.Quantity ?? 1,
   IssuedQty: row?.IssuedQty ?? row?.IssueQty ?? row?.IssQty ?? 0,
-  ReceivedQty: row?.ReceivedQty ?? 0,
+  ReceivedQty: row?.ReceivedQty ?? row?.RecQty ?? 0,
   Status: row?.Status || row?.ApprovalStatus || '',
   Remarks: row?.Remarks || '',
   Warehouse: row?.Warehouse || row?.StoreWarehouse || '',
@@ -508,6 +516,8 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
   const [actioningWorkEntry, setActioningWorkEntry] = useState(null);
   const [showDenyModal, setShowDenyModal] = useState(false);
   const [denyReason, setDenyReason] = useState('');
+  const [towImageDrafts, setTowImageDrafts] = useState([]);
+  const [towWorkflowByEntry, setTowWorkflowByEntry] = useState({});
   const [reassignmentTarget, setReassignmentTarget] = useState(null);
   const [reassignmentTeams, setReassignmentTeams] = useState([]);
   const [selectedReassignmentTeam, setSelectedReassignmentTeam] = useState(null);
@@ -818,6 +828,12 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         }),
       }));
 
+      normalizedWithParts.sort((a, b) => {
+        const latestEntryTimestamp = (card) => (Array.isArray(card?.workEntries) ? card.workEntries : [])
+          .reduce((latest, entry) => Math.max(latest, getDateTimeTimestamp(entry?.date, entry?.time)), 0);
+        return latestEntryTimestamp(b) - latestEntryTimestamp(a);
+      });
+
       if (focusJobCard) {
         normalizedWithParts.sort((a, b) => {
           const aFocus = String(a?.jobCardDocEntry || a?.jobCardNo || '').trim() === focusJobCard ? 1 : 0;
@@ -988,6 +1004,118 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
       baseScale.setValue(nextScale);
       pinchScale.setValue(1);
       setPreviewScale(Number(nextScale.toFixed(2)));
+    }
+  };
+
+  const pickTowImageForSupervisor = async () => {
+    const selected = selectedWorkEntry;
+    const workEntryDocEntry = toCleanString(selected?.entry?.workEntryDocEntry);
+    if (!workEntryDocEntry) {
+      Toast.show({ type: 'error', text1: 'Missing work entry', text2: 'Unable to locate this work entry.' });
+      return;
+    }
+
+    let ImagePicker;
+    try {
+      ImagePicker = require('expo-image-picker');
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Image picker unavailable', text2: 'Rebuild the Android app after installing native modules.' });
+      return;
+    }
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission?.granted) {
+      Toast.show({ type: 'error', text1: 'Permission denied', text2: 'Media library permission is required.' });
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: false,
+      selectionLimit: 1,
+      quality: 0.7,
+    });
+    if (result?.canceled) return;
+
+    const selectedImages = (result?.assets || []).slice(0, 1).filter((asset) => asset?.uri).map((asset) => ({
+      id: `${Date.now()}-${asset.uri}`,
+      uri: asset.uri,
+      name: asset.fileName || `tow-${Date.now()}.jpg`,
+      mimeType: asset.mimeType || 'image/jpeg',
+    }));
+
+    if (selectedImages.length === 0) return;
+    setTowImageDrafts(selectedImages);
+  };
+
+  const saveSupervisorTowImage = async () => {
+    const selected = selectedWorkEntry;
+    const workEntryDocEntry = toCleanString(selected?.entry?.workEntryDocEntry);
+    const jobCardDocEntry = toCleanString(selected?.entry?.jobCardDocEntry || selected?.parentItem?.jobCardDocEntry || '');
+    if (!workEntryDocEntry || !jobCardDocEntry || towImageDrafts.length === 0) {
+      Toast.show({ type: 'error', text1: 'Tow image required', text2: 'Please select an image before saving.' });
+      return;
+    }
+
+    try {
+      setActioningWorkEntry(workEntryDocEntry);
+      const uploadResponse = await workEntryService.uploadImages(towImageDrafts);
+      const fileNames = Array.isArray(uploadResponse?.FileNames)
+        ? uploadResponse.FileNames
+        : String(uploadResponse?.FileName || '').split(',').map((value) => value.trim()).filter(Boolean);
+      if (fileNames.length === 0) throw new Error('No uploaded image filename returned.');
+
+      const payload = {
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
+        ImgNo: 2,
+        ImgPath: fileNames[0],
+        Remarks: 'Bus received at depot.',
+      };
+
+      const response = await jobCardService.saveJobCardImage(payload);
+      if (response?.Success === false || response?.Status === false) {
+        throw new Error(response?.Message || 'Failed to save tow image.');
+      }
+
+      const nextMap = { ...towWorkflowByEntry, [workEntryDocEntry]: { ...(towWorkflowByEntry[workEntryDocEntry] || {}), towImageSaved: true } };
+      setTowWorkflowByEntry(nextMap);
+      setTowImageDrafts([]);
+      Toast.show({ type: 'success', text1: 'Tow image saved', text2: 'The tow image has been recorded for the supervisor review.' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Tow image failed', text2: error?.message || 'Unable to save tow image.' });
+    } finally {
+      setActioningWorkEntry(null);
+    }
+  };
+
+  const handleSupervisorCompleteTow = async () => {
+    const selected = selectedWorkEntry;
+    const workEntryDocEntry = toCleanString(selected?.entry?.workEntryDocEntry);
+    if (!workEntryDocEntry) {
+      Toast.show({ type: 'error', text1: 'Missing work entry', text2: 'Unable to identify the tow request.' });
+      return;
+    }
+
+    try {
+      setActioningWorkEntry(workEntryDocEntry);
+      const response = await mechanicService.completeTow({
+        CompanyDB: dbName || 'MUTSPL_TEST',
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: resolveCurrentUserCode(),
+        Remarks: 'Tow completed by supervisor review flow.',
+      });
+      if (response?.Success === false || response?.Status === false) {
+        throw new Error(response?.Message || 'Unable to complete tow.');
+      }
+
+      const nextMap = { ...towWorkflowByEntry, [workEntryDocEntry]: { ...(towWorkflowByEntry[workEntryDocEntry] || {}), towCompleted: true } };
+      setTowWorkflowByEntry(nextMap);
+      Toast.show({ type: 'success', text1: 'Tow completed', text2: 'The tow request has been completed by the supervisor.' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Tow completion failed', text2: error?.message || 'Unable to complete tow.' });
+    } finally {
+      setActioningWorkEntry(null);
     }
   };
 
@@ -1286,7 +1414,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
         <Text style={[styles.metaText, { color: colors.gray }]}>Mechanic: {entry.mechanicName}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Fault: {entry.faultName}</Text>
-        <Text style={[styles.metaText, { color: colors.gray }]}>Date: {entry.date ? formatDate(entry.date) : '-'} {entry.time ? ` ${formatTime(entry.time)}` : ''}</Text>
+        <Text style={[styles.metaText, { color: colors.gray }]}>Date: {formatDateTime(entry.date, entry.time) || '-'}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Start: {formatDateTimeToken(entry.startDate, entry.startTime)}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>End: {formatDateTimeToken(entry.completeDate, entry.completeTime)}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Labour: {entry.labourHoursDisplay || '-'}</Text>
@@ -1485,6 +1613,8 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                 { label: 'Verify Remarks', value: entry?.verifyRemarks || '-' },
                 { label: 'Final Remarks', value: entry?.finalRemarks || '-' },
               ];
+              const towState = getTowWorkflowState(entry);
+              const towCompleted = Boolean(towWorkflowByEntry[toCleanString(entry?.workEntryDocEntry)]?.towCompleted);
 
               return (
                 <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.modalBody}>
@@ -1504,6 +1634,51 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       ))}
                     </View>
                   </View>
+
+                  {towState.isTow && (
+                    <View style={[styles.infoCard, { borderColor: '#FDBA74', backgroundColor: '#FFF7ED' }]}>
+                      <Text style={[styles.infoCardTitle, { color: '#9A4A00' }]}>Tow Workflow</Text>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Repair Mode</Text>
+                        <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.repairMode === 'T' ? 'Tow to Depot' : towState.repairMode || 'Tow'}</Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Depot</Text>
+                        <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.depot || '-'}</Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Tow Images</Text>
+                        <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.towImages.length > 0 ? towState.towImages.map((img) => img.fileName).join(', ') : 'No tow image yet'}</Text>
+                      </View>
+                      <View style={styles.actionsRow}>
+                        <TouchableOpacity onPress={pickTowImageForSupervisor} style={[styles.actionBtn, { backgroundColor: '#00689E' }]}>
+                          <MaterialIcons name="photo-library" size={16} color="#FFFFFF" />
+                          <Text style={styles.actionBtnText}>Upload / Capture Tow Image</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={saveSupervisorTowImage} style={[styles.actionBtn, { backgroundColor: '#007A5A' }]} disabled={towImageDrafts.length === 0 || !!actioningWorkEntry}>
+                          <Text style={styles.actionBtnText}>{towImageDrafts.length > 0 ? 'Save Tow Image' : 'Select Tow Image'}</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {towImageDrafts.length > 0 && (
+                        <View style={{ marginTop: 8 }}>
+                          {towImageDrafts.map((image) => (
+                            <View key={image.id} style={[styles.imageRow, { borderColor: '#FDBA74' }]}>
+                              <Text numberOfLines={1} style={{ color: '#7C2D12', flex: 1, fontSize: 12 }}>{image.name}</Text>
+                              <TouchableOpacity onPress={() => setTowImageDrafts((prev) => prev.filter((item) => item.id !== image.id))}>
+                                <MaterialIcons name="close" size={18} color="#BB0000" />
+                              </TouchableOpacity>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                      <View style={styles.actionsRow}>
+                        <TouchableOpacity onPress={handleSupervisorCompleteTow} style={[styles.actionBtn, { backgroundColor: '#C2410C' }]} disabled={towCompleted || !!actioningWorkEntry}>
+                          <MaterialIcons name="local-shipping" size={16} color="#FFFFFF" />
+                          <Text style={styles.actionBtnText}>{towCompleted ? 'Tow Completed' : 'Complete Tow'}</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
 
                   <View style={[styles.infoCard, { borderColor: colors.border || '#E5E7EB' }]}>
                     <Text style={[styles.infoCardTitle, { color: colors.dark }]}>Fault Details</Text>
@@ -1594,6 +1769,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                         <Text style={[styles.metaText, { color: colors.dark }]}>Part: {part?.ItemName || part?.PartName || part?.ItemCode || '-'}</Text>
                         <Text style={[styles.metaText, { color: colors.gray }]}>Requested Qty: {part?.ReqQty ?? part?.Qty ?? part?.Quantity ?? '-'}</Text>
                         <Text style={[styles.metaText, { color: colors.gray }]}>Issued Qty: {part?.IssuedQty ?? part?.IssueQty ?? part?.IssQty ?? 0}</Text>
+                        <Text style={[styles.metaText, { color: colors.gray }]}>Received Qty: {part?.ReceivedQty ?? part?.RecQty ?? 0}</Text>
                         <Text style={[styles.metaText, { color: colors.gray }]}>Returned Qty: {part?.RetQty ?? part?.ReturnedQty ?? 0}</Text>
                       </View>
                     ))

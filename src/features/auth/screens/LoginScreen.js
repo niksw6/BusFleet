@@ -90,7 +90,7 @@ const LoginScreen = ({ navigation }) => {
           mapUsertypeToRole(response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype)
           || userFromApi?.role
           || userFromApi?.Role;
-        const mechanicCode = userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || userFromApi?.UserCode || userFromApi?.User || values.username;
+        const mechanicCode = userFromApi?.UserCode || userFromApi?.EmpCode || userFromApi?.Code || userFromApi?.code || userFromApi?.User || values.username;
         const numericEmpId = Number(userFromApi?.EmpID || userFromApi?.EmployeeID || userFromApi?.ID || userFromApi?.id || 0);
         const user = {
           ...userFromApi,
@@ -98,8 +98,8 @@ const LoginScreen = ({ navigation }) => {
           username: values.username,
           Code: mechanicCode,
           code: mechanicCode,
-          UserCode: userFromApi?.UserCode || userFromApi?.Code || userFromApi?.code || userFromApi?.EmpCode || mechanicCode,
-          EmpCode: userFromApi?.EmpCode || userFromApi?.Code || userFromApi?.code || userFromApi?.UserCode || mechanicCode,
+          UserCode: userFromApi?.UserCode || userFromApi?.EmpCode || userFromApi?.Code || userFromApi?.code || mechanicCode,
+          EmpCode: userFromApi?.EmpCode || userFromApi?.UserCode || userFromApi?.Code || userFromApi?.code || mechanicCode,
           id: numericEmpId || null,
           EmpID: numericEmpId || null,
           Usertype: response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype || null,
@@ -166,14 +166,18 @@ const LoginScreen = ({ navigation }) => {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
-          <View style={[styles.logoContainer, { backgroundColor: colors.primary, borderColor: colors.primaryDark || colors.primary }]}>
-            <MaterialIcons name="directions-bus" size={42} color="#fff" />
+          <View style={[styles.brandWrap, { backgroundColor: colors.white, borderColor: colors.border }]}>
+            <View style={styles.brandBadge}>
+              <MaterialIcons name="directions-bus" size={34} color="#ffffff" />
+            </View>
+            <View style={styles.brandWordmark}>
+              <Text style={[styles.brandWord, { color: '#D73D3D' }]}>M</Text>
+              <Text style={[styles.brandWord, { color: '#0F5A88' }]}>U</Text>
+              <Text style={[styles.brandWord, { color: '#0F5A88' }]}>T</Text>
+            </View>
           </View>
-          <Text style={[styles.productLabel, { color: colors.primary }]}>FLEET OPERATIONS</Text>
-          <Text style={[styles.title, { color: colors.dark }]}>Fleet Data Management</Text>
-          <Text style={[styles.subtitle, { color: colors.gray }]}>
-            Sign in to manage maintenance work safely and efficiently
-          </Text>
+          <Text style={[styles.companyName, { color: colors.primary }]}>Mateshwari Urban Transport</Text>
+          <Text style={[styles.subtitle, { color: colors.gray }]}>Sign in to manage maintenance work safely and efficiently</Text>
         </View>
 
         <View style={[styles.formContainer, { backgroundColor: colors.white, borderColor: colors.border }]}>
@@ -288,37 +292,51 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: SPACING.xl,
   },
-  logoContainer: {
-    width: 82,
-    height: 82,
-    borderRadius: BORDER_RADIUS.lg,
-    borderWidth: 1,
-    justifyContent: 'center',
+  brandWrap: {
     alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: BORDER_RADIUS.xl,
+    borderWidth: 1,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.lg,
     marginBottom: SPACING.sm,
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
   },
-  title: {
-    fontSize: 26,
+  brandBadge: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    backgroundColor: '#D73D3D',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: SPACING.xs,
+  },
+  brandWordmark: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  brandWord: {
+    fontSize: 32,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    lineHeight: 36,
+  },
+  companyName: {
+    fontSize: 18,
     fontWeight: '700',
-    marginBottom: SPACING.sm,
     textAlign: 'center',
+    marginBottom: SPACING.xs,
   },
   subtitle: {
     fontSize: 14,
     textAlign: 'center',
     lineHeight: 20,
     paddingHorizontal: SPACING.md,
-  },
-  productLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.1,
-    marginBottom: 4,
   },
   formContainer: {
     padding: SPACING.lg,

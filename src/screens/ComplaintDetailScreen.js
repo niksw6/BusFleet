@@ -80,14 +80,34 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const normalizeStatus = (statusValue) => String(statusValue || '').trim().toUpperCase();
 
-  const resolveJobCardNo = (entity) => String(
-    entity?.JobCardNo
-    || entity?.JobcardNo
-    || entity?.JobCard
-    || entity?.JCDocNum
-    || entity?.JCNo
-    || ''
-  ).trim();
+  const resolveJobCardNo = (entity) => {
+    const rawValue = String(
+      entity?.JobCardNo
+      || entity?.JobcardNo
+      || entity?.JobCard
+      || entity?.JCDocNum
+      || entity?.JCNo
+      || ''
+    ).trim();
+
+    if (!rawValue) return '';
+
+    const incidentNo = String(
+      entity?.ComplaintNo
+      || entity?.DocEntry
+      || complaintNo
+      || ''
+    ).trim();
+
+    const complaintType = String(entity?.ComplaintType || complaintType || '').trim();
+    const isDriverComplaint = complaintType.toLowerCase().includes('driver') || complaintType.toLowerCase().includes('complaint');
+
+    if (isDriverComplaint && rawValue === incidentNo && !entity?.JobCardDocEntry && !entity?.JobCardEntry && !entity?.JCDocEnt && !entity?.JCDocEntry) {
+      return '';
+    }
+
+    return rawValue;
+  };
 
   const resolveJobCardDocEntry = (entity) => {
     const candidates = [
@@ -101,6 +121,24 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       if (Number.isFinite(numeric) && numeric > 0) return numeric;
     }
     return 0;
+  };
+
+  const hasValidLinkedJobCard = (entity = {}) => {
+    const jobCardNo = resolveJobCardNo(entity);
+    const jobCardDocEntry = resolveJobCardDocEntry(entity);
+    const complaintNo = String(
+      entity?.ComplaintNo
+      || entity?.DocEntry
+      || complaintNo
+      || ''
+    ).trim();
+    const complaintType = String(entity?.ComplaintType || complaintType || '').trim();
+    const isDriverComplaint = complaintType.toLowerCase().includes('driver') || complaintType.toLowerCase().includes('complaint');
+
+    if (!jobCardNo && jobCardDocEntry <= 0) return false;
+    if (isDriverComplaint && jobCardDocEntry <= 0 && jobCardNo && jobCardNo === complaintNo) return false;
+    if (isDriverComplaint && jobCardDocEntry <= 0 && !jobCardNo) return false;
+    return true;
   };
 
   const isClosedStatus = (statusValue) => {
@@ -247,7 +285,8 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     const jobCardStatus = normalizeStatus(incidentData?.JobCardStatus);
     const linkedJobCardNo = resolveJobCardNo(incidentData) || String(routeJobCardNo || '').trim();
     const linkedJobCardDocEntry = resolveJobCardDocEntry(incidentData) || Number(routeJobCardDocEntry || 0);
-    const jobCardCreated = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
+    const hasRealJobCard = hasValidLinkedJobCard(incidentData) || (String(routeJobCardNo || '').trim() && String(routeJobCardNo || '').trim() !== String(complaintNo || '').trim());
+    const jobCardCreated = hasRealJobCard;
     const {
       count: workOrderCount,
       latestDocEntry: workOrderDocEntry,
@@ -696,6 +735,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const linkedJobCardNo = resolveJobCardNo(complaint) || String(routeJobCardNo || '').trim();
   const linkedJobCardDocEntry = resolveJobCardDocEntry(complaint) || Number(routeJobCardDocEntry || 0);
+  const incidentDisplayNo = String(complaint?.ComplaintNo || complaint?.DocEntry || complaintNo || '').trim();
   const resolvedFaultsForJobCard = (() => {
     const rawFaults = Array.isArray(complaint?.Faults) ? complaint.Faults : [];
     const meaningfulFaults = rawFaults.filter((faultRow) => {
@@ -706,7 +746,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
     return meaningfulFaults;
   })();
-  const hasLinkedJobCard = linkedJobCardNo.length > 0 || linkedJobCardDocEntry > 0;
+  const hasLinkedJobCard = hasValidLinkedJobCard(complaint);
   const linkedJobCardDisplay = linkedJobCardNo || (linkedJobCardDocEntry > 0 ? String(linkedJobCardDocEntry) : '');
   const jobTypeCode = String(complaint?.ComplaintType || '').toLowerCase().includes('breakdown') ? 'B' : 'D';
   const openJobCardDetail = () => {
@@ -779,6 +819,20 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
             {complaint.ComplaintDate} {complaint.ComplaintTime}
           </Text>
         </View>
+
+        <View style={styles.infoRow}>
+          <MaterialIcons name="confirmation-number" size={20} color={colors.gray} />
+          <Text style={[styles.infoLabel, { color: colors.gray }]}>Incident No:</Text>
+          <Text style={[styles.infoValue, { color: colors.dark, fontWeight: 'bold' }]}>{incidentDisplayNo || '-'}</Text>
+        </View>
+
+        {hasLinkedJobCard ? (
+          <View style={styles.infoRow}>
+            <MaterialIcons name="assignment" size={20} color={colors.gray} />
+            <Text style={[styles.infoLabel, { color: colors.gray }]}>Job Card No:</Text>
+            <Text style={[styles.infoValue, { color: colors.dark, fontWeight: 'bold' }]}>{linkedJobCardDisplay || '-'}</Text>
+          </View>
+        ) : null}
       </View>
 
       {!isPreventive && hasLinkedJobCard ? (

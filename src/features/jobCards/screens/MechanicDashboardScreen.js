@@ -9,7 +9,8 @@ import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { dashboardService, mechanicService, repairService } from '../../../api/services';
+import { dashboardService, mechanicService, masterService, repairService } from '../../../api/services';
+import { formatDateTime } from '../../../utils/helpers';
 import { getUserRole } from '../../../utils/roleAccess';
 
 /**
@@ -119,20 +120,31 @@ const extractItems = (data) => {
 };
 
 const getDocEntry = (item) => item?.JobCardEntry
+  ?? item?.jobCardEntry
   ?? item?.JobCardDocEntry
+  ?? item?.jobCardDocEntry
   ?? item?.JobCardNo
+  ?? item?.jobCardNo
+  ?? item?.JobCard
+  ?? item?.jobCard
+  ?? item?.DocNum
   ?? item?.DocEntry
   ?? item?.ReferenceDocEntry
   ?? '';
 const getJobCardReferences = (item) => new Set([
   item?.JobCardEntry,
   item?.jobCardEntry,
+  item?.jobCardEntry,
   item?.JobCardDocEntry,
   item?.jobCardDocEntry,
   item?.JobCardNo,
+  item?.JobCard,
+  item?.jobCard,
+  item?.DocNum,
   item?.jobCardNo,
   item?.DocEntry,
   item?.docEntry,
+  item?.RefDocEntry,
   item?.ReferenceDocEntry,
 ].map(value => String(value ?? '').trim()).filter(Boolean));
 const hasSameJobCard = (left, right) => {
@@ -148,6 +160,23 @@ const getNotificationType = (item) => String(
   ?? '',
 ).trim().toUpperCase();
 const getFaultLine = (item) => item?.FaultLine ?? item?.Line ?? item?.LineNum ?? 0;
+const getJobCardGroupKey = (item) => {
+  const reference = [
+    item?.JobCardEntry,
+    item?.jobCardEntry,
+    item?.JobCardDocEntry,
+    item?.jobCardDocEntry,
+    item?.JobCardNo,
+    item?.jobCardNo,
+    item?.JobCard,
+    item?.jobCard,
+    item?.DocNum,
+    item?.DocEntry,
+    item?.ReferenceDocEntry,
+  ].map(value => String(value ?? '').trim()).find(Boolean);
+
+  return reference || itemKey(item);
+};
 const getBreakdownComplaintNo = (item) => String(
   item?.ComplaintNo
   ?? item?.CmplaintNo
@@ -164,7 +193,7 @@ const getBreakdownJobCardDocEntry = (item) => Number(
   ?? item?.JobCardNo
   ?? 0
 ) || 0;
-const itemKey = (item) => `${getNotificationType(item) || normalizeJobType(item)}-${getDocEntry(item)}-${getFaultLine(item)}`;
+const itemKey = (item) => `${getNotificationType(item) || normalizeJobType(item)}-${getDocEntry(item)}-${getFaultLine(item) || item?.FaultCode || item?.faultCode || item?.FaultName || item?.Fault || item?.Description || 'fault'}`;
 const isBreakdownAssignment = (item) => {
   if (getNotificationType(item) === 'JB') return true;
   if (getNotificationType(item) === 'JCA') return false;
@@ -240,8 +269,7 @@ const getCardDateTime = (item) => {
     || item?.CreatedAt
     || item?.NotificationOn
     || '';
-  if (date && time) return `${date} ${time}`;
-  return String(date || timestamp || notificationDateTime || time || '').trim();
+  return formatDateTime(date || timestamp || notificationDateTime, time);
 };
 const getRepairAssemblyCode = (item) => String(
   item?.AssemblyCode
@@ -381,9 +409,10 @@ const mergeQueueItems = (apiItems, notificationItems) => {
         : isRepairAccepted(existingItem)
         ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.MechanicStatus)
         : 'P';
+      const notificationIsJobCardMetadata = ['JB', 'JCA'].includes(getNotificationType(item));
       merged[matchingIndex] = {
-        ...existingItem,
-        ...item,
+        ...(notificationIsJobCardMetadata ? item : existingItem),
+        ...(notificationIsJobCardMetadata ? existingItem : item),
         Type: getNotificationType(item),
         JobType: getNotificationType(item) === 'JB' ? 'Breakdown' : getNotificationType(item) === 'JCA' ? 'Driver Complaint' : 'Repair',
         ComplaintType: getNotificationType(item) === 'JB' ? 'Breakdown' : getNotificationType(item) === 'JCA' ? 'Driver Complaint' : 'Repair Incident',
@@ -392,6 +421,10 @@ const mergeQueueItems = (apiItems, notificationItems) => {
       };
       return;
     }
+    // JCA is job-card-level metadata, not an individual fault. Do not add it
+    // as a standalone actionable row when the mechanic API has not returned
+    // the corresponding fault yet.
+    if (getNotificationType(item) === 'JCA') return;
     if (!existingKeys.has(key)) {
       merged.push(item);
       existingKeys.add(key);
@@ -406,7 +439,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
   const storedNotifications = useSelector(state => state.notification?.notifications || []);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const userCode = user?.Code || user?.code || user?.UserCode || user?.EmpCode || user?.User || user?.user || user?.name || '';
+  const userCode = user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || user?.name || '';
   const assigneeName = user?.FirstName || user?.Name || user?.name || userCode || 'You';
   const roleLabel = getUserRole(user) === 'Electrician' ? 'Electrician' : 'Mechanic';
 
@@ -417,8 +450,9 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
   const [submittingKey, setSubmittingKey] = useState(null);
 
   useEffect(() => {
-    if (route?.params?.initialTab === BUCKET.TO_ACCEPT) {
-      setActiveTab(BUCKET.TO_ACCEPT);
+    const requestedTab = route?.params?.initialTab;
+    if (Object.values(BUCKET).includes(requestedTab)) {
+      setActiveTab(requestedTab);
     }
   }, [route?.params?.initialTab]);
 
@@ -437,7 +471,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       let notificationItems = getNotificationQueueItems(storedNotifications);
       try {
         const notificationUser = String(
-          user?.User || user?.username || user?.user || userCode || '',
+          user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.username || user?.user || userCode || '',
         ).trim();
         const notificationResponse = await dashboardService.getNotifications(companyDb, notificationUser);
         const notificationData = notificationResponse?.Data ?? notificationResponse?.data ?? notificationResponse;
@@ -484,14 +518,24 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
     try {
       setSubmittingKey(key);
       const companyDb = dbName || 'MUTSPL_TEST';
-      const response = await mechanicService.acceptFault(
-        companyDb,
-        getDocEntry(item),
-        getFaultLine(item),
-        userCode,
-      );
+      const breakdownAssignment = isBreakdownAssignment(item);
+      const response = breakdownAssignment
+        ? await masterService.respondBreakdownTeamAssignment(companyDb, {
+            AssignmentDocEntry: item?.AssignmentDocEntry
+              || item?.assignmentDocEntry
+              || item?.DocEntry
+              || item?.docEntry
+              || getDocEntry(item),
+            Action: 'ACCEPT',
+            Remarks: 'Team accepted the breakdown.',
+          })
+        : await mechanicService.acceptFault(
+            companyDb,
+            getDocEntry(item),
+            getFaultLine(item),
+            userCode,
+          );
       if (response?.Success !== false) {
-        const breakdownAssignment = isBreakdownAssignment(item);
         const responseData = response?.Data ?? response?.data ?? response;
         const acceptedEntry = Array.isArray(responseData)
           ? responseData[0] || {}
@@ -506,9 +550,8 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
           || response?.WorkEntryNo
           || null;
 
-        // Move the accepted card straight to In Progress locally. WEV rows can
-        // retain a pending status in the dashboard response briefly after
-        // AcceptFault succeeds, so use IP at both parent and nested-row level.
+        // Move the accepted card straight to In Progress locally. The queue can
+        // retain a pending status briefly after either acceptance endpoint.
         setItems(prev => prev.map(i => (itemKey(i) === key ? {
           ...i,
           Status: 'IP',
@@ -551,12 +594,30 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       existingWorkEntry: activeWorkEntry,
       isWorkStarted: hasStartedWork(item),
       isAwaitingVerification: isAwaitingVerification(item),
+      complaintType: normalizeJobType(item),
       dbName: dbName || 'MUTSPL_TEST',
     });
   };
 
   const openBreakdownWorkEntry = (item, acceptedWorkEntryDocEntry = null, acceptedWorkEntry = null) => {
     const jobCardDocEntry = getBreakdownJobCardDocEntry(item);
+    const activeWorkEntry = acceptedWorkEntry || getActiveWorkEntry(item) || {};
+    const breakdownRepair = activeWorkEntry?.BreakDownRepair?.[0]
+      || item?.BreakDownRepair?.[0]
+      || activeWorkEntry?.BreakDownRepair
+      || item?.BreakDownRepair
+      || null;
+    const activeDetails = Array.isArray(activeWorkEntry?.Details) ? activeWorkEntry.Details : [];
+    const towRequested = Boolean(
+      item?.TowRequested
+      || item?.TowRequestEntryId
+      || item?.TowRequestDocEntry
+      || activeWorkEntry?.TowRequested
+      || activeWorkEntry?.TowRequestEntryId
+      || activeWorkEntry?.TowRequestDocEntry
+      || ['REQUESTED', 'IN PROGRESS', 'PENDING PICKUP', 'PICKUP REQUESTED'].includes(String(item?.TowStatus || activeWorkEntry?.TowStatus || '').trim().toUpperCase())
+      || activeDetails.some((detail) => String(detail?.WorkCode || '').trim().toUpperCase() === 'TOW_REQUEST'),
+    );
     navigation.navigate('WorkEntry', {
       workOrderDocEntry: jobCardDocEntry,
       jobCardDocEntry,
@@ -567,7 +628,10 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       fault: item,
       faultLine: getFaultLine(item) || 1,
       workEntryDocEntry: acceptedWorkEntryDocEntry || getActiveWorkEntry(item)?.WorkEntryDocEntry || getActiveWorkEntry(item)?.DocEntry || null,
-      existingWorkEntry: acceptedWorkEntry || getActiveWorkEntry(item) || null,
+      existingWorkEntry: activeWorkEntry || null,
+      breakdownRepair,
+      towRequested,
+      canRepairOnSite: item?.CanRepairOnSite ?? activeWorkEntry?.CanRepairOnSite,
       busNo: getBusLabel(item),
       depot: item?.Depot || item?.BranchNm || item?.Branch || item?.Location || '',
     });
@@ -659,7 +723,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
             <Text style={[styles.faultName, { color: colors.dark }]}>{faultName}</Text>
             <Text style={[styles.assigneeText, { color: colors.primary }]}>Assigned to: {assignedName}</Text>
             <Text style={[styles.cardSub, { color: colors.gray }]}>
-              {repairAssignment ? `Assembly • Repair Job Card #${displayNo} • ${item?.Priority || 'Medium'}` : `${itemJobType} • Job Card #${displayNo} • ${busNo} • ${item?.Priority || 'Medium'}`}
+              {repairAssignment ? `Assembly • Repair Job Card #${displayNo} • ${item?.Priority || 'Medium'}` : `${itemJobType} • Job Card #${displayNo} • Fault ${getFaultLine(item)} • ${busNo} • ${item?.Priority || 'Medium'}`}
             </Text>
           </View>
         </View>
@@ -716,6 +780,16 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
   };
 
   const currentList = grouped[activeTab] || [];
+  const currentGroups = currentList.reduce((groups, item) => {
+    const key = getJobCardGroupKey(item);
+    const existingGroup = groups.find(group => group.key === key);
+    if (existingGroup) {
+      existingGroup.items.push(item);
+    } else {
+      groups.push({ key, items: [item] });
+    }
+    return groups;
+  }, []);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
@@ -760,7 +834,21 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
               <Text style={{ color: colors.gray, marginTop: 8 }}>Nothing here yet.</Text>
             </View>
           ) : (
-            currentList.map(renderItem)
+            currentGroups.map((group) => {
+              const firstItem = group.items[0];
+              const displayNo = firstItem?.JobCardNo || firstItem?.DocNum || getDocEntry(firstItem);
+              return (
+                <View key={`${activeTab}-${group.key}`} style={styles.jobCardGroup}>
+                  <View style={styles.jobCardGroupHeader}>
+                    <Text style={[styles.jobCardGroupTitle, { color: colors.dark }]}>Job Card #{displayNo}</Text>
+                    <Text style={[styles.jobCardGroupCount, { color: colors.gray }]}>
+                      {group.items.length} {group.items.length === 1 ? 'fault' : 'faults'}
+                    </Text>
+                  </View>
+                  {group.items.map(renderItem)}
+                </View>
+              );
+            })
           )}
         </ScrollView>
       )}
@@ -786,6 +874,16 @@ const styles = StyleSheet.create({
   },
   tabText: { fontSize: 11, fontWeight: '600' },
   scrollContent: { padding: SPACING.md },
+  jobCardGroup: { marginBottom: SPACING.sm },
+  jobCardGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    paddingBottom: 6,
+  },
+  jobCardGroupTitle: { fontSize: 13, fontWeight: '700' },
+  jobCardGroupCount: { fontSize: 12, fontWeight: '600' },
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   card: {
     position: 'relative',
