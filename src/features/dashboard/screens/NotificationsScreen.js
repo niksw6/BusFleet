@@ -180,7 +180,14 @@ const NotificationsScreen = ({ navigation }) => {
     }
 
     const dateOnlyMdy = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-    const hhmmss24 = rawTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    const normalizedTime = (() => {
+      if (/^\d{3,4}$/.test(rawTime)) {
+        const padded = rawTime.padStart(4, '0');
+        return `${padded.slice(0, 2)}:${padded.slice(2)}`;
+      }
+      return rawTime;
+    })();
+    const hhmmss24 = normalizedTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
     if (dateOnlyMdy && hhmmss24) {
       const month = Number(dateOnlyMdy[1]);
       const day = Number(dateOnlyMdy[2]);
@@ -193,7 +200,7 @@ const NotificationsScreen = ({ navigation }) => {
       return Number.isNaN(ms) ? 0 : ms;
     }
 
-    const combined = [rawDate, rawTime].filter(Boolean).join(' ');
+    const combined = [rawDate, normalizedTime].filter(Boolean).join(' ');
     const parsed = new Date(combined || rawDate || rawTime);
     const ms = parsed.getTime();
     return Number.isNaN(ms) ? 0 : ms;

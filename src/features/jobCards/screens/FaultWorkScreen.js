@@ -1198,6 +1198,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
       const response = await storeService.receiveJobCardParts({
         CompanyDB: companyDb,
         JobCardDocEntry: Number(jobCardDocEntry) || jobCardDocEntry,
+        WorkEntry: Number(workEntryDocEntry) || workEntryDocEntry,
         UserCode: userCode,
         Parts: [{
           PartLine: lineId,
@@ -1599,34 +1600,90 @@ const FaultWorkScreen = ({ route, navigation }) => {
               {approvedForCollection.length > 0 && (
                 <View style={{ marginTop: SPACING.md }}>
                   <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13, marginBottom: 6 }}>Approved — Ready to collect</Text>
-                  {approvedForCollection.map((p, idx) => (
-                    <View key={idx} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{p.ItemName}</Text>
-                        <Text style={{ color: colors.gray, fontSize: 12 }}>
-                          Requested: {Number(p?.ReqQty ?? p?.RequestedQty ?? p?.Qty ?? 0) || 0}
-                          {` • Approved: ${getApprovedQty(p)}`}
-                          {` • Issued: ${getIssuedQty(p)}`}
-                          {` • Received: ${getReceivedQty(p)}`}
-                          {` • Return: ${getReturnedQty(p)}`}
-                        </Text>
+                  {approvedForCollection.map((p, idx) => {
+                    const requestedQty = Number(p?.ReqQty ?? p?.RequestedQty ?? p?.Qty ?? 0) || 0;
+                    const approvedQty = getApprovedQty(p);
+                    const issuedQty = getIssuedQty(p);
+                    const receivedQty = getReceivedQty(p);
+                    const returnedQty = getReturnedQty(p);
+                    const usedQty = Math.max(receivedQty - returnedQty, 0);
+
+                    return (
+                      <View key={idx} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: colors.dark, fontWeight: '600', fontSize: 13 }}>{p.ItemName}</Text>
+                          <View style={{ marginTop: 8, borderWidth: 1, borderColor: colors.border || '#E0E0E0', borderRadius: 8, overflow: 'hidden' }}>
+                            <View style={{ flexDirection: 'row', backgroundColor: '#F3F4F6' }}>
+                              {['Requested', 'Approved', 'Issued', 'Received', 'Returned', 'Used'].map((label, labelIndex) => (
+                                <View
+                                  key={label}
+                                  style={{
+                                    flex: 1,
+                                    paddingVertical: 6,
+                                    alignItems: 'center',
+                                    borderRightWidth: label === 'Used' ? 0 : 1,
+                                    borderRightColor: colors.border || '#E0E0E0',
+                                    backgroundColor: label === 'Used' ? '#FDE68A' : 'transparent',
+                                  }}
+                                >
+                                  <Text style={{ color: label === 'Used' ? '#8A4B00' : colors.gray, fontSize: 10, textAlign: 'center', fontWeight: label === 'Used' ? '700' : '400' }}>{label}</Text>
+                                </View>
+                              ))}
+                            </View>
+                            <View style={{ flexDirection: 'row' }}>
+                              {[requestedQty, approvedQty, issuedQty, receivedQty, returnedQty, usedQty].map((value, valueIndex) => {
+                                const isReceivedCell = valueIndex === 3;
+                                const canReceiveMore = issuedQty > receivedQty;
+                                const displayValue = isReceivedCell ? `${value}` : `${value}`;
+
+                                return (
+                                  <View
+                                    key={`${idx}-${valueIndex}`}
+                                    style={{
+                                      flex: 1,
+                                      paddingVertical: 8,
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      borderRightWidth: valueIndex === 5 ? 0 : 1,
+                                      borderRightColor: colors.border || '#E0E0E0',
+                                      backgroundColor: valueIndex === 5 ? '#FEF3C7' : 'transparent',
+                                      minHeight: 56,
+                                    }}
+                                  >
+                                    {isReceivedCell ? (
+                                      <>
+                                        <Text style={{ color: valueIndex === 5 ? '#8A4B00' : colors.dark, fontSize: 13, fontWeight: '700', textAlign: 'center' }}>{displayValue}</Text>
+                                        {!isPartFullyReceived(p) && canReceiveMore && (
+                                          <TouchableOpacity
+                                            style={{
+                                              marginTop: 6,
+                                              backgroundColor: '#2B7D2B',
+                                              borderRadius: 6,
+                                              paddingHorizontal: 8,
+                                              paddingVertical: 5,
+                                              minWidth: 60,
+                                            }}
+                                            onPress={() => openReceivePart(p)}
+                                            activeOpacity={0.8}
+                                          >
+                                            <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '700', textAlign: 'center' }}>
+                                              {receivedQty > 0 ? 'Receive More' : 'Receive'}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <Text style={{ color: valueIndex === 5 ? '#8A4B00' : colors.dark, fontSize: 13, fontWeight: '700', textAlign: 'center' }}>{displayValue}</Text>
+                                    )}
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        </View>
                       </View>
-                      {isPartFullyReceived(p) ? (
-                        <Chip mode="flat" style={{ backgroundColor: '#2B7D2B20' }} textStyle={{ color: '#2B7D2B', fontSize: 11 }}>
-                          Received
-                        </Chip>
-                      ) : (
-                        <TouchableOpacity
-                          style={[styles.smallBtn, { backgroundColor: getIssuedQty(p) > getReceivedQty(p) ? '#2B7D2B' : '#94A3B8' }]}
-                          onPress={() => openReceivePart(p)}
-                          activeOpacity={0.8}
-                          disabled={getIssuedQty(p) <= getReceivedQty(p)}
-                        >
-                          <Text style={styles.smallBtnText}>{getReceivedQty(p) > 0 ? 'Receive More' : 'Mark Received'}</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  ))}
+                    );
+                  })}
                 </View>
               )}
 

@@ -46,63 +46,63 @@ const CustomDrawerContent = (props) => {
       name: 'TeamApprovals',
       label: 'Team Dashboard',
       icon: 'fact-check',
-      color: '#0EA5E9',
-      gradient: ['#0EA5E9', '#0284C7'],
+      color: colors.primary,
+      gradient: [colors.primary, colors.primaryDark || colors.primary],
       teamLeaderOnly: true,
     },
     {
       name: 'MechanicDashboard',
       label: 'My Work',
       icon: 'engineering',
-      color: '#0EA5E9',
-      gradient: ['#0EA5E9', '#0284C7'],
+      color: colors.info,
+      gradient: [colors.info, colors.primaryDark || colors.primary],
       fieldStaffOnly: true,
     },
     {
       name: 'PartsApproval',
       label: 'Parts & Tools Requests',
       icon: 'inventory',
-      color: '#EA580C',
-      gradient: ['#EA580C', '#C2410C'],
+      color: colors.warning,
+      gradient: [colors.warning, colors.secondary],
       supervisorOnly: true,
     },
     { 
       name: 'Complaints', 
       label: driverUser ? 'My Incidents' : 'Incidents', 
       icon: 'assignment', 
-      color: '#F59E0B',
-      gradient: ['#F59E0B', '#D97706']
+      color: colors.warning,
+      gradient: [colors.warning, colors.secondary]
     },
     { 
       name: 'JobCards', 
       label: 'Job Cards', 
       icon: 'build-circle', 
-      color: '#8B5CF6',
-      gradient: ['#8B5CF6', '#7C3AED'],
+      color: colors.primary,
+      gradient: [colors.primary, colors.primaryDark || colors.primary],
       hideForDriver: true,
     },
     {
       name: 'ReviewWorkEntries',
       label: 'Review Work Entries',
       icon: 'assignment-turned-in',
-      color: '#6D28D9',
-      gradient: ['#6D28D9', '#5B21B6'],
+      color: colors.primary,
+      gradient: [colors.primary, colors.primaryDark || colors.primary],
       supervisorOnly: true,
     },
     { 
       name: 'Notifications', 
       label: 'Notifications', 
       icon: 'notifications', 
-      color: '#10B981',
-      gradient: ['#10B981', '#059669'],
+      color: colors.success,
+      gradient: [colors.success, colors.primaryDark || colors.primary],
       badge: unreadCount
     },
     { 
       name: 'Profile', 
       label: 'Profile', 
       icon: 'person', 
-      color: '#6366F1',
-      gradient: ['#6366F1', '#4F46E5']
+      color: colors.primary,
+      gradient: [colors.primary, colors.primaryDark || colors.primary]
     },
   ];
   const menuItems = baseMenuItems.filter(item => {
@@ -132,7 +132,7 @@ const CustomDrawerContent = (props) => {
     >
       {/* Modern Header with Gradient */}
       <LinearGradient
-        colors={['#1E293B', '#334155']}
+        colors={[colors.primary, colors.primaryDark || colors.primary]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.header}
@@ -228,10 +228,10 @@ const CustomDrawerContent = (props) => {
           onPress={handleLogout}
           activeOpacity={0.7}
         >
-          <View style={[styles.iconContainer, { backgroundColor: '#EF444415' }]}>
-            <MaterialIcons name="logout" size={24} color="#EF4444" />
+          <View style={[styles.iconContainer, { backgroundColor: `${colors.danger}15` }]}>
+            <MaterialIcons name="logout" size={24} color={colors.danger} />
           </View>
-          <Text style={[styles.menuLabel, { color: '#EF4444' }]}>
+          <Text style={[styles.menuLabel, { color: colors.danger }]}>
             Logout
           </Text>
         </TouchableOpacity>

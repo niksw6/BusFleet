@@ -167,13 +167,13 @@ const LoginScreen = ({ navigation }) => {
       >
         <View style={styles.header}>
           <View style={[styles.brandWrap, { backgroundColor: colors.white, borderColor: colors.border }]}>
-            <View style={styles.brandBadge}>
-              <MaterialIcons name="directions-bus" size={34} color="#ffffff" />
+            <View style={[styles.brandBadge, { backgroundColor: colors.secondary }]}>
+              <MaterialIcons name="directions-bus" size={34} color={colors.white} />
             </View>
             <View style={styles.brandWordmark}>
-              <Text style={[styles.brandWord, { color: '#D73D3D' }]}>M</Text>
-              <Text style={[styles.brandWord, { color: '#0F5A88' }]}>U</Text>
-              <Text style={[styles.brandWord, { color: '#0F5A88' }]}>T</Text>
+              <Text style={[styles.brandWord, { color: colors.secondary }]}>M</Text>
+              <Text style={[styles.brandWord, { color: colors.primary }]}>U</Text>
+              <Text style={[styles.brandWord, { color: colors.primary }]}>T</Text>
             </View>
           </View>
           <Text style={[styles.companyName, { color: colors.primary }]}>Mateshwari Urban Transport</Text>

@@ -130,20 +130,68 @@ export const formatDateTime = (date, timeValue = '') => {
   return `${formatDate(parsed)} ${formatDisplayTime(parsed)}`;
 };
 
-export const parseDateTime = (dateValue, timeValue = '') => {
-  if (!dateValue && !timeValue) return null;
-  if (dateValue && timeValue) {
-    const dateText = String(dateValue).trim();
-    const rawTimeText = String(timeValue).trim();
-    const compactTime = rawTimeText.match(/^\d{3,4}$/);
-    const timeText = compactTime
-      ? `${rawTimeText.padStart(4, '0').slice(0, 2)}:${rawTimeText.padStart(4, '0').slice(2)}`
-      : rawTimeText;
-    if (!/[T ]\d{1,2}:\d{2}/.test(dateText)) {
-      return parseDate(`${dateText} ${timeText}`);
+const normalizeTimeValue = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+
+  const compactDigits = raw.replace(/[^\d]/g, '');
+  if (/^\d{3,4}$/.test(compactDigits)) {
+    const padded = compactDigits.padStart(4, '0');
+    const hours = Number(padded.slice(0, 2));
+    const minutes = Number(padded.slice(2, 4));
+    if (!Number.isNaN(hours) && !Number.isNaN(minutes)) {
+      return {
+        hours: Math.max(0, Math.min(23, hours)),
+        minutes: Math.max(0, Math.min(59, minutes)),
+      };
     }
   }
-  return parseDate(dateValue || timeValue);
+
+  const simpleMatch = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (simpleMatch) {
+    const hours = Number(simpleMatch[1]);
+    const minutes = Number(simpleMatch[2]);
+    if (!Number.isNaN(hours) && !Number.isNaN(minutes)) {
+      return {
+        hours: Math.max(0, Math.min(23, hours)),
+        minutes: Math.max(0, Math.min(59, minutes)),
+      };
+    }
+  }
+
+  return null;
+};
+
+export const parseDateTime = (dateValue, timeValue = '') => {
+  const rawDate = String(dateValue ?? '').trim();
+  const rawTime = String(timeValue ?? '').trim();
+  const overrideTime = normalizeTimeValue(rawTime);
+
+  if (!rawDate && !overrideTime) return null;
+
+  if (rawDate && overrideTime) {
+    const baseDate = parseDate(rawDate);
+    if (!baseDate) return null;
+
+    const next = new Date(baseDate);
+    next.setHours(overrideTime.hours, overrideTime.minutes, 0, 0);
+    return next;
+  }
+
+  if (rawDate) {
+    return parseDate(rawDate);
+  }
+
+  const now = new Date();
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    overrideTime.hours,
+    overrideTime.minutes,
+    0,
+    0
+  );
 };
 
 export const getDateTimeTimestamp = (dateValue, timeValue = '') => {
@@ -166,6 +214,22 @@ export const formatDuration = (minutes) => {
   const mins = minutes % 60;
   if (hours === 0) return `${mins} min`;
   return `${hours}h ${mins}m`;
+};
+
+export const formatDurationHMS = (value, fallback = '00h:00m') => {
+  if (value === null || value === undefined || value === '') return fallback;
+
+  let totalSeconds = Number(value);
+  if (!Number.isFinite(totalSeconds)) return fallback;
+
+  if (totalSeconds > 1000000) totalSeconds /= 1000;
+  if (totalSeconds > 0 && totalSeconds <= 24 && !Number.isInteger(totalSeconds)) totalSeconds *= 3600;
+
+  const safeSeconds = Math.max(0, totalSeconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+
+  return `${String(hours).padStart(2, '0')}h:${String(minutes).padStart(2, '0')}m`;
 };
 
 export const truncateText = (text, maxLength = 50) => {

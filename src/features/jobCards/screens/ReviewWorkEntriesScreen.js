@@ -19,7 +19,7 @@ import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { dashboardService, jobCardService, masterService, mechanicService, repairService, storeService, teamService, workEntryService } from '../../../api/services';
-import { formatDateTime, getDateTimeTimestamp } from '../../../utils/helpers';
+import { formatDateTime, getDateTimeTimestamp, formatDurationHMS } from '../../../utils/helpers';
 
 const isAwaitingVerificationStatus = (value) => {
   const status = String(value || '').trim().toUpperCase();
@@ -265,7 +265,11 @@ const parseDateTimeToken = (dateValue, timeValue) => {
 
   let hours = 0;
   let minutes = 0;
-  if (/^\d{1,2}$/.test(timeRaw)) {
+  if (/^\d{3,4}$/.test(timeRaw)) {
+    const normalized = timeRaw.padStart(4, '0');
+    hours = Math.max(0, Math.min(23, Number(normalized.slice(0, 2))));
+    minutes = Math.max(0, Math.min(59, Number(normalized.slice(2, 4))));
+  } else if (/^\d{1,2}$/.test(timeRaw)) {
     hours = Math.max(0, Math.min(23, Number(timeRaw)));
   } else if (/^\d{1,2}:\d{2}$/.test(timeRaw)) {
     const [h, m] = timeRaw.split(':').map((v) => Number(v));
@@ -296,8 +300,7 @@ const resolveLabourHours = (entry) => {
 
   const diffMs = end.getTime() - start.getTime();
   if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
-  const hours = diffMs / (1000 * 60 * 60);
-  return Number(hours.toFixed(2));
+  return diffMs / 1000;
 };
 
 const resolveNotificationCandidates = (user) => {
@@ -479,7 +482,7 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '') => {
     vehicle: entry?.Vehicle || fallbackItem?.Vehicle || fallbackItem?.BusNo || '',
     mechanicCode: entry?.MechanicCode || entry?.UserCode || fallbackItem?.MechanicCode || '',
     labourHours: labourHoursValue,
-    labourHoursDisplay: labourHoursValue === null ? '-' : `${labourHoursValue} h`,
+    labourHoursDisplay: labourHoursValue === null ? '-' : formatDurationHMS(labourHoursValue),
     startDate: entry?.StartDate || '',
     startTime: entry?.StartTime || '',
     acceptDate: entry?.AcceptDate || '',
@@ -1764,15 +1767,56 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                   {(Array.isArray(entry?.parts) ? entry.parts : []).length === 0 ? (
                     <Text style={[styles.metaText, { color: colors.gray }]}>No parts linked.</Text>
                   ) : (
-                    (Array.isArray(entry?.parts) ? entry.parts : []).map((part, idx) => (
-                      <View key={`part-${idx}`} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
-                        <Text style={[styles.metaText, { color: colors.dark }]}>Part: {part?.ItemName || part?.PartName || part?.ItemCode || '-'}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Requested Qty: {part?.ReqQty ?? part?.Qty ?? part?.Quantity ?? '-'}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Issued Qty: {part?.IssuedQty ?? part?.IssueQty ?? part?.IssQty ?? 0}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Received Qty: {part?.ReceivedQty ?? part?.RecQty ?? 0}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Returned Qty: {part?.RetQty ?? part?.ReturnedQty ?? 0}</Text>
-                      </View>
-                    ))
+                    (Array.isArray(entry?.parts) ? entry.parts : []).map((part, idx) => {
+                      const requestedQty = Number(part?.ReqQty ?? part?.Qty ?? part?.Quantity ?? 0) || 0;
+                      const approvedQty = Number(part?.AprQty ?? part?.ApprovedQty ?? part?.Approved ?? 0) || 0;
+                      const issuedQty = Number(part?.IssuedQty ?? part?.IssueQty ?? part?.IssQty ?? 0) || 0;
+                      const receivedQty = Number(part?.ReceivedQty ?? part?.RecQty ?? 0) || 0;
+                      const returnedQty = Number(part?.RetQty ?? part?.ReturnedQty ?? 0) || 0;
+                      const usedQty = Math.max(receivedQty - returnedQty, 0);
+
+                      return (
+                        <View key={`part-${idx}`} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
+                          <Text style={[styles.metaText, { color: colors.dark }]}>Part: {part?.ItemName || part?.PartName || part?.ItemCode || '-'}</Text>
+                          <View style={{ marginTop: 8, borderWidth: 1, borderColor: colors.border || '#E0E0E0', borderRadius: 8, overflow: 'hidden' }}>
+                            <View style={{ flexDirection: 'row', backgroundColor: colors.light || '#F3F4F6' }}>
+                              {['Requested', 'Approved', 'Issued', 'Received', 'Returned', 'Used'].map((label) => (
+                                <View
+                                  key={label}
+                                  style={{
+                                    flex: 1,
+                                    paddingVertical: 6,
+                                    alignItems: 'center',
+                                    borderRightWidth: label === 'Used' ? 0 : 1,
+                                    borderRightColor: colors.border || '#E0E0E0',
+                                    backgroundColor: label === 'Used' ? '#FDE68A' : 'transparent',
+                                  }}
+                                >
+                                  <Text style={[styles.metaText, { color: label === 'Used' ? '#8A4B00' : colors.gray, fontSize: 10, textAlign: 'center', fontWeight: label === 'Used' ? '700' : '400' }]}>{label}</Text>
+                                </View>
+                              ))}
+                            </View>
+                            <View style={{ flexDirection: 'row' }}>
+                              {[requestedQty, approvedQty, issuedQty, receivedQty, returnedQty, usedQty].map((value, valueIndex) => (
+                                <View
+                                  key={`${idx}-${valueIndex}`}
+                                  style={{
+                                    flex: 1,
+                                    paddingVertical: 8,
+                                    alignItems: 'center',
+                                    borderRightWidth: valueIndex === 5 ? 0 : 1,
+                                    borderRightColor: colors.border || '#E0E0E0',
+                                    backgroundColor: valueIndex === 5 ? '#FEF3C7' : 'transparent',
+                                  }}
+                                >
+                                  <Text style={[styles.metaText, { color: valueIndex === 5 ? '#8A4B00' : colors.dark, fontSize: 13, fontWeight: '700', textAlign: 'center' }]}>{value}</Text>
+                                </View>
+                              ))}
+                            </View>
+                          </View>
+                        </View>
+                      );
+                    })
                   )}
                 </View>
 
