@@ -310,9 +310,7 @@ export const renderMechanicsTab = ({ mechanics, theme }) => {
 export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
   const woParts = Array.isArray(parts) ? parts : [];
   const reqParts = Array.isArray(mechanicPartRequests) ? mechanicPartRequests : [];
-  // The Job Card detail and mechanic-request feeds can contain the same part
-  // line. Merge those copies so the Parts tab represents quantities, not API
-  // response duplication.
+
   const mergedByLine = new Map();
   [...woParts, ...reqParts].forEach((part, index) => {
     const itemCode = safeStr(part?.ItemCode || part?.itemCode || part?.Code);
@@ -324,8 +322,7 @@ export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
       mergedByLine.set(key, { ...part, __sourceIndex: index });
       return;
     }
-    // Keep the largest known value per lifecycle quantity. Both endpoints
-    // describe the same backend line, so summing would inflate counts.
+
     const quantityFields = [
       ['ReqQty', 'RequestedQty', 'Qty'],
       ['ApprovedQty', 'AprQty'],
@@ -341,102 +338,72 @@ export const renderPartsTab = ({ parts, theme, mechanicPartRequests }) => {
     });
     mergedByLine.set(key, combined);
   });
+
   const merged = Array.from(mergedByLine.values());
   if (merged.length === 0) {
     return <EmptyState icon="build" message="No parts requested for this job card." theme={theme} />;
   }
-  const totalReq = merged.reduce((s, p) => s + Number(p.ReqQty ?? p.RequestedQty ?? p.Qty ?? 0), 0);
-  const totalApproved = merged.reduce((s, p) => s + Number(p.ApprovedQty ?? p.AprQty ?? 0), 0);
-  const totalIss = merged.reduce((s, p) => s + Number(p.IssQty ?? p.IssuedQty ?? 0), 0);
-  const totalRec = merged.reduce((s, p) => s + Number(p.RecQty ?? p.ReceivedQty ?? 0), 0);
-  const totalRet = merged.reduce((s, p) => s + Number(p.RetQty ?? p.ReturnedQty ?? 0), 0);
-  const groupedParts = merged.reduce((groups, part, index) => {
-    const mechanicName = safeStr(part.MechanicName || part.MechName || part.mechanicName || part.UserName);
-    const mechanicCode = safeStr(part.MechanicCode || part.MechCode || part.mechanicCode || part.UserCode);
-    const faultName = safeStr(part.Fault || part.FaultCode || part.FaultName);
-    const faultLine = safeStr(part.FaultLine || part.FaultLn);
-    const groupLabel = mechanicName || (mechanicCode ? `Mechanic ${mechanicCode}` : (faultName ? `Fault: ${faultName}` : 'Job Card Parts'));
-    const key = mechanicCode
-      ? `code:${mechanicCode}`
-      : (mechanicName ? `name:${mechanicName.toLowerCase()}` : `fault:${faultLine || faultName || index}`);
-    if (!groups.has(key)) groups.set(key, { mechanicName: groupLabel, mechanicCode, hasMechanic: Boolean(mechanicName || mechanicCode), parts: [] });
-    groups.get(key).parts.push({ ...part, __key: `${key}-${part.ItemCode || part.itemCode || index}-${index}` });
-    return groups;
-  }, new Map());
+
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: SPACING.lg }}>
       <SectionHeader title="Part Details" count={merged.length} theme={theme} icon="inventory-2" />
-      <View style={[psStyles.summaryRow, { backgroundColor: theme.colors.white, borderColor: theme.colors.border || '#E0E0E0' }]}>
-        <View style={psStyles.summaryCell}>
-          <Text style={[psStyles.summaryNum, { color: theme.colors.primary }]}>{fmtQty(totalReq)}</Text>
-          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Requested</Text>
-        </View>
-        <View style={[psStyles.divider, { backgroundColor: theme.colors.border || '#E0E0E0' }]} />
-        <View style={psStyles.summaryCell}>
-          <Text style={[psStyles.summaryNum, { color: '#2F7A34' }]}>{fmtQty(totalRec)}</Text>
-          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Received</Text>
-        </View>
-        <View style={[psStyles.divider, { backgroundColor: theme.colors.border || '#E0E0E0' }]} />
-        <View style={psStyles.summaryCell}>
-          <Text style={[psStyles.summaryNum, { color: theme.colors.info || '#0C5460' }]}>{fmtQty(totalApproved)}</Text>
-          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Approved</Text>
-        </View>
-        <View style={[psStyles.divider, { backgroundColor: theme.colors.border || '#E0E0E0' }]} />
-        <View style={psStyles.summaryCell}>
-          <Text style={[psStyles.summaryNum, { color: theme.colors.info || '#0C5460' }]}>{fmtQty(totalIss)}</Text>
-          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Used</Text>
-        </View>
-        <View style={[psStyles.divider, { backgroundColor: theme.colors.border || '#E0E0E0' }]} />
-        <View style={psStyles.summaryCell}>
-          <Text style={[psStyles.summaryNum, { color: '#B45309' }]}>{fmtQty(totalRet)}</Text>
-          <Text style={[psStyles.summaryLbl, { color: theme.colors.gray }]}>Returned</Text>
-        </View>
-      </View>
+      {merged.map((part, idx) => {
+        const itemName = safeStr(part.ItemName || part.itemName || part.Dscription || part.Name) || safeStr(part.ItemCode || part.itemCode || part.Code) || 'Part';
+        const requestedQty = Number(part?.ReqQty ?? part?.RequestedQty ?? part?.Qty ?? 0) || 0;
+        const approvedQty = Number(part?.ApprovedQty ?? part?.AprQty ?? part?.Approved ?? 0) || 0;
+        const issuedQty = Number(part?.IssQty ?? part?.IssuedQty ?? part?.IssueQty ?? 0) || 0;
+        const receivedQty = Number(part?.RecQty ?? part?.ReceivedQty ?? 0) || 0;
+        const returnedQty = Number(part?.RetQty ?? part?.ReturnedQty ?? 0) || 0;
+        const usedQty = Math.max(receivedQty - returnedQty, 0);
 
-      {[...groupedParts.values()].map((group) => (
-        <View key={group.mechanicCode || group.mechanicName} style={[psStyles.mechanicGroup, { backgroundColor: theme.colors.white, borderColor: theme.colors.border || '#E0E0E0' }]}>
-          <View style={[psStyles.mechanicHeader, { backgroundColor: theme.colors.light, borderBottomColor: theme.colors.border || '#E0E0E0' }]}>
-            <View style={[psStyles.mechanicIcon, { backgroundColor: theme.colors.primary + '18' }]}>
-              <MaterialIcons name={group.hasMechanic ? 'engineering' : 'build'} size={18} color={theme.colors.primary} />
+        return (
+          <View key={`${itemName}-${idx}`} style={[psStyles.mechanicGroup, { backgroundColor: theme.colors.white, borderColor: theme.colors.border || '#E0E0E0' }]}> 
+            <View style={[psStyles.partRow, { borderBottomWidth: 0, paddingBottom: 8 }]}>
+              <Text style={[psStyles.partName, { color: theme.colors.dark }]}>{itemName}</Text>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[psStyles.mechanicName, { color: theme.colors.dark }]}>{group.mechanicName}</Text>
-              {group.mechanicCode ? <Text style={[psStyles.mechanicCode, { color: theme.colors.gray }]}>Code: {group.mechanicCode}</Text> : null}
-            </View>
-            <View style={[psStyles.partCount, { backgroundColor: theme.colors.primary }]}>
-              <Text style={psStyles.partCountText}>{group.parts.length}</Text>
-            </View>
-          </View>
-          <View style={[psStyles.tableHeader, { borderBottomColor: theme.colors.border || '#E0E0E0' }]}>
-            <Text style={[psStyles.partNameCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>PART</Text>
-            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>REQ</Text>
-            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>APR</Text>
-            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>ISS</Text>
-            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>REC</Text>
-            <Text style={[psStyles.qtyCol, psStyles.tableHeaderText, { color: theme.colors.gray }]}>RET</Text>
-          </View>
-          {group.parts.map((part) => {
-            const code = safeStr(part.ItemCode || part.itemCode);
-            const name = safeStr(part.ItemName || part.itemName || part.Dscription || part.Name) || code || 'Part';
-            const warehouse = safeStr(part.Warehouse || part.warehouse || part.WhsCode || part.Whs || part.StoreWarehouse);
-            return (
-              <View key={part.__key} style={[psStyles.partRow, { borderBottomColor: theme.colors.border || '#E0E0E0' }]}>
-                <View style={psStyles.partNameCol}>
-                  <Text style={[psStyles.partName, { color: theme.colors.dark }]} numberOfLines={1}>{name}</Text>
-                  <Text style={[psStyles.partMeta, { color: theme.colors.gray }]} numberOfLines={1}>
-                    {[code, warehouse].filter(Boolean).join('  •  ') || 'No item code'}
-                  </Text>
-                </View>
-                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.ReqQty ?? part.RequestedQty ?? part.Qty ?? 0)}</Text>
-                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.info || '#0C5460' }]}>{fmtQty(part.ApprovedQty ?? part.AprQty ?? 0)}</Text>
-                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: theme.colors.dark }]}>{fmtQty(part.IssQty ?? part.IssuedQty ?? 0)}</Text>
-                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: '#2F7A34' }]}>{fmtQty(part.RecQty ?? part.ReceivedQty ?? 0)}</Text>
-                <Text style={[psStyles.qtyCol, psStyles.qtyText, { color: '#B45309' }]}>{fmtQty(part.RetQty ?? part.ReturnedQty ?? 0)}</Text>
+
+            <View style={{ marginTop: 4, borderWidth: 1, borderColor: theme.colors.border || '#E0E0E0', borderRadius: 8, overflow: 'hidden' }}>
+              <View style={{ flexDirection: 'row', backgroundColor: theme.colors.light || '#F3F4F6' }}>
+                {['Requested', 'Approved', 'Issued', 'Received', 'Returned', 'Used'].map((label) => (
+                  <View
+                    key={label}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 6,
+                      alignItems: 'center',
+                      borderRightWidth: label === 'Used' ? 0 : 1,
+                      borderRightColor: theme.colors.border || '#E0E0E0',
+                      backgroundColor: label === 'Used' ? '#FDE68A' : 'transparent',
+                    }}
+                  >
+                    <Text style={[psStyles.qtyHeaderText, { color: label === 'Used' ? '#8A4B00' : theme.colors.gray, fontWeight: label === 'Used' ? '700' : '400' }]}>{label}</Text>
+                  </View>
+                ))}
               </View>
-            );
-          })}
-        </View>
-      ))}
+
+              <View style={{ flexDirection: 'row' }}>
+                {[requestedQty, approvedQty, issuedQty, receivedQty, returnedQty, usedQty].map((value, valueIndex) => (
+                  <View
+                    key={`${idx}-${valueIndex}`}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 8,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRightWidth: valueIndex === 5 ? 0 : 1,
+                      borderRightColor: theme.colors.border || '#E0E0E0',
+                      backgroundColor: valueIndex === 5 ? '#FEF3C7' : 'transparent',
+                      minHeight: 56,
+                    }}
+                  >
+                    <Text style={[psStyles.qtyText, { color: valueIndex === 5 ? '#8A4B00' : theme.colors.dark }]}>{value}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          </View>
+        );
+      })}
     </ScrollView>
   );
 };
@@ -462,7 +429,8 @@ const psStyles = StyleSheet.create({
   qtyCol: { width: 36, textAlign: 'right' },
   partName: { fontSize: 13, fontWeight: '700' },
   partMeta: { fontSize: 11, marginTop: 2 },
-  qtyText: { fontSize: 13, fontWeight: '700' },
+  qtyHeaderText: { fontSize: 10, textAlign: 'center' },
+  qtyText: { fontSize: 13, fontWeight: '700', textAlign: 'center' },
 });
 
 export const renderWorkEntriesTab = ({ entries, theme }) => {

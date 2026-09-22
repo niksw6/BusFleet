@@ -1212,8 +1212,17 @@ const FaultWorkScreen = ({ route, navigation }) => {
           && String(p?.ItemCode || p?.Code || '') === String(part?.ItemCode || part?.Code || '')
             ? (() => {
                 const nextReceived = Math.max(0, getReceivedQty(p) + enteredQty);
+                const nextReturned = Math.max(0, getReturnedQty(p));
+                const nextUsed = Math.max(nextReceived - nextReturned, 0);
                 const nextStatus = nextReceived >= getApprovedQty(p) ? 'RC' : 'PR';
-                return { ...p, Received: nextReceived >= getApprovedQty(p), ReceivedQty: nextReceived, RecQty: nextReceived, Status: nextStatus };
+                return {
+                  ...p,
+                  Received: nextReceived >= getApprovedQty(p),
+                  ReceivedQty: nextReceived,
+                  RecQty: nextReceived,
+                  Used: nextUsed,
+                  Status: nextStatus,
+                };
               })()
             : p
         )));
@@ -1274,6 +1283,28 @@ const FaultWorkScreen = ({ route, navigation }) => {
       });
       if (isApiSuccess(response)) {
         Toast.show({ type: 'success', text1: 'Return request submitted', text2: 'Awaiting Supervisor approval.' });
+        setApprovedParts((prev) => prev.map((part) => {
+          const lineId = getReceiveLineId(part);
+          const match = returnDraft.find((draft) => (
+            draft?.LineId === lineId
+            && String(draft?.part?.ItemCode || draft?.part?.Code || '') === String(part?.ItemCode || part?.Code || '')
+          ));
+          if (!match || Number(match.ReturnQty) <= 0) return part;
+
+          const currentReceived = getReceivedQty(part);
+          const currentReturned = getReturnedQty(part);
+          const nextReturned = Math.min(currentReceived, currentReturned + Number(match.ReturnQty));
+          const nextUsed = Math.max(currentReceived - nextReturned, 0);
+
+          return {
+            ...part,
+            RetQty: nextReturned,
+            ReturnedQty: nextReturned,
+            Returned: nextReturned > 0,
+            Used: nextUsed,
+            Status: String(part?.Status || '').trim().toUpperCase() || 'AP',
+          };
+        }));
         setShowReturnModal(false);
         setReturnDraft([]);
       } else {

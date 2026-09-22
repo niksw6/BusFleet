@@ -131,20 +131,111 @@ const getWorkEntryNotificationId = (item) => String(
   || ''
 ).trim();
 
+const extractVerificationQueueRefs = (item) => {
+  const refs = new Set();
+  const cardRef = String(
+    item?.JobCardDocEntry
+    || item?.jobCardDocEntry
+    || item?.JobCardNo
+    || item?.jobCardNo
+    || item?.DocEntry
+    || item?.docEntry
+    || ''
+  ).trim();
+  const workEntryRef = getWorkEntryNotificationId(item);
+
+  if (cardRef) refs.add(`card:${cardRef}`);
+  if (workEntryRef) refs.add(`entry:${workEntryRef}`);
+
+  return Array.from(refs);
+};
+
+const countVerificationQueueFromCards = (cards = []) => {
+  const refs = new Set();
+  const rows = Array.isArray(cards) ? cards : [];
+
+  rows.forEach((card) => {
+    const cardRef = String(
+      card?.JobCardDocEntry
+      || card?.DocEntry
+      || card?.JobCardNo
+      || card?.JCDocEnt
+      || card?.JCDocNum
+      || ''
+    ).trim();
+
+    const cardStatus = String(card?.Status || card?.WorkStatus || card?.FaultStatus || '').trim().toUpperCase();
+    if (isAwaitingVerificationStatus(cardStatus)) {
+      if (cardRef) refs.add(`card:${cardRef}`);
+      else refs.add('card:unknown');
+    }
+
+    const nestedEntries = extractArrayItems(card?.WorkEntries || card?.WorkEntryList || card?.Entries || card?.Faults || card?.FaultList || []);
+    nestedEntries.forEach((entry) => {
+      const status = String(entry?.Status || entry?.WorkStatus || entry?.FaultStatus || '').trim().toUpperCase();
+      if (!isAwaitingVerificationStatus(status)) return;
+      const workEntryRef = String(
+        entry?.WorkEntryDocEntry
+        || entry?.WorkEntryNo
+        || entry?.WorkEntry
+        || entry?.DocEntry
+        || entry?.EntryNo
+        || entry?.Code
+        || ''
+      ).trim();
+      if (workEntryRef) refs.add(`entry:${workEntryRef}`);
+      else if (cardRef) refs.add(`card:${cardRef}`);
+      else refs.add('card:unknown');
+    });
+  });
+
+  return refs.size;
+};
+
 const extractArrayItems = (data) => {
   if (Array.isArray(data)) return data;
   if (!data || typeof data !== 'object') return [];
 
-  const candidateKeys = ['Jobs', 'JobCards', 'Items', 'List', 'Rows', 'Data', 'Result'];
-  for (const key of candidateKeys) {
-    if (Array.isArray(data[key])) return data[key];
+  const list = [];
+  const queue = [data];
+  const seen = new Set();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object') continue;
+    const currentId = typeof current === 'object' ? Object.is(current, data) ? 'root' : JSON.stringify(current) : String(current);
+    if (seen.has(currentId)) continue;
+    seen.add(currentId);
+
+    if (Array.isArray(current)) {
+      current.forEach((item) => {
+        if (item && typeof item === 'object') {
+          queue.push(item);
+        }
+      });
+      continue;
+    }
+
+    const candidateKeys = ['Jobs', 'JobCards', 'Items', 'List', 'Rows', 'Data', 'Result', 'WorkEntries', 'WorkEntryList', 'Faults', 'FaultList', 'Entries'];
+    for (const key of candidateKeys) {
+      const value = current[key];
+      if (Array.isArray(value)) {
+        list.push(...value);
+        value.forEach((item) => queue.push(item));
+      }
+    }
+
+    for (const value of Object.values(current)) {
+      if (Array.isArray(value)) {
+        list.push(...value);
+        value.forEach((item) => queue.push(item));
+      } else if (value && typeof value === 'object') {
+        queue.push(value);
+      }
+    }
   }
 
-  for (const value of Object.values(data)) {
-    if (Array.isArray(value)) return value;
-  }
-
-  return [];
+  return list.length > 0 ? list : [];
 };
 
 const getMechanicItemStatus = (item) => {
@@ -469,30 +560,42 @@ const DashboardScreen = ({ navigation }) => {
               }
             }),
           ]);
-          const verificationCards = Array.isArray(verificationResponse?.Data) ? verificationResponse.Data : [];
-          const apiNotificationRows = notificationResults.flatMap((response) => (
-            Array.isArray(response?.Data)
-              ? response.Data
-              : (Array.isArray(response?.data) ? response.data : [])
-          ));
+          const verificationCards = extractArrayItems(verificationResponse?.Data ?? verificationResponse ?? []);
+          const apiNotificationRows = notificationResults.flatMap((response) => extractArrayItems(response?.Data ?? response?.data ?? []));
           const notificationRows = [...apiNotificationRows, ...storedNotifications];
           const pendingNotifications = notificationRows.filter(isSupervisorVerificationNotification);
-          const cardCount = verificationCards.filter((card) => (
-            isAwaitingVerificationStatus(card?.Status || card?.WorkStatus || card?.FaultStatus)
-          )).length;
-          const pendingVerificationKeys = new Set(
-            verificationCards
-              .filter((card) => isAwaitingVerificationStatus(card?.Status || card?.WorkStatus || card?.FaultStatus))
-              .map((card) => String(card?.JobCardDocEntry || card?.DocEntry || card?.JobCardNo || '').trim())
-              .filter(Boolean)
-              .map((key) => `card:${key}`),
-          );
+          const verificationQueueRefs = new Set();
+
+          for (const card of verificationCards) {
+            const cardStatus = String(card?.Status || card?.WorkStatus || card?.FaultStatus || '').trim().toUpperCase();
+            if (isAwaitingVerificationStatus(cardStatus)) {
+              const cardRef = String(card?.JobCardDocEntry || card?.DocEntry || card?.JobCardNo || '').trim();
+              if (cardRef) verificationQueueRefs.add(`card:${cardRef}`);
+            }
+
+            const nestedEntries = extractArrayItems(card?.WorkEntries || card?.WorkEntryList || card?.Entries || card?.Faults || card?.FaultList || []);
+            nestedEntries.forEach((entry) => {
+              const status = String(entry?.Status || entry?.WorkStatus || entry?.FaultStatus || '').trim().toUpperCase();
+              if (!isAwaitingVerificationStatus(status)) return;
+              const entryRef = String(
+                entry?.WorkEntryDocEntry
+                || entry?.WorkEntryNo
+                || entry?.WorkEntry
+                || entry?.DocEntry
+                || entry?.EntryNo
+                || entry?.Code
+                || ''
+              ).trim();
+              if (entryRef) verificationQueueRefs.add(`entry:${entryRef}`);
+            });
+          }
+
           pendingNotifications.forEach((item) => {
-            const jobCardRef = String(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || item?.jobCardNo || '').trim();
-            const workEntryRef = getWorkEntryNotificationId(item);
-            pendingVerificationKeys.add(jobCardRef ? `card:${jobCardRef}` : `entry:${workEntryRef}`);
+            extractVerificationQueueRefs(item).forEach((ref) => verificationQueueRefs.add(ref));
           });
-          setPendingVerificationCount(Math.max(cardCount, pendingVerificationKeys.size));
+
+          const cardCount = countVerificationQueueFromCards(verificationCards);
+          setPendingVerificationCount(Math.max(cardCount, verificationQueueRefs.size, pendingNotifications.length || 0));
         } catch (verificationError) {
           console.warn('Supervisor verification count fetch failed:', verificationError?.message || verificationError);
           setPendingVerificationCount(0);
@@ -939,9 +1042,7 @@ const DashboardScreen = ({ navigation }) => {
                     <View>
                       <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Work Entries</Text>
                       <Text style={[styles.overdueSub, { color: colors.gray }]}>
-                        {pendingVerificationCount > 0
-                          ? `${pendingVerificationCount} pending verification`
-                          : 'No work entries awaiting verification'}
+                        Review and Approve work entries awaiting verification
                       </Text>
                     </View>
                   </View>

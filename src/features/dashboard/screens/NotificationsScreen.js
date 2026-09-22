@@ -358,6 +358,11 @@ const NotificationsScreen = ({ navigation }) => {
   };
 
   const handleNotificationPress = async (item) => {
+    const notificationType = String(item?.Type || item?.type || '').trim().toUpperCase();
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && notificationType === 'WETC') {
+      return;
+    }
+
     const notificationCode = item.code || item.id || item.Code;
     if (!item.read && notificationCode) {
       await handleMarkAsRead(notificationCode, item);
@@ -770,6 +775,8 @@ const NotificationsScreen = ({ navigation }) => {
         return '#6D28D9'; // Verification purple
       case 'WERQ':
         return '#EA580C'; // Work-entry request approval
+      case 'WETC':
+        return '#0F766E'; // Read-only tow completion update
       default:
         return '#0070F2'; // SAP Blue
     }
@@ -921,6 +928,7 @@ const NotificationsScreen = ({ navigation }) => {
       WE: 'Work Entry',
       WER: 'Work Entry Review',
       WERQ: 'Work Entry Request',
+      WETC: 'Tow Completed',
       LBWE: 'Line Breakdown Work Entry',
       R: 'Repair',
       RI: 'Repair Incident',
@@ -999,7 +1007,9 @@ const NotificationsScreen = ({ navigation }) => {
   };
 
   const renderNotificationItem = ({ item }) => {
-    const rawText = item?.Message || item?.message || item?.Title || item?.title || 'Notification';
+    const rawText = String(item?.Message || item?.message || item?.Title || item?.title || 'Notification')
+      .replace(/\\n/g, '\n')
+      .trim();
     const detailValues = [
       item?.Incident,
       item?.JobCard,
@@ -1016,6 +1026,8 @@ const NotificationsScreen = ({ navigation }) => {
     ].filter(Boolean);
 
     const typeValue = item?.Type || item?.type || '';
+    const isReadOnlyWorkEntryTowCompleted = (isMechanicUser(user) || isFieldStaffUser(user))
+      && String(typeValue).trim().toUpperCase() === 'WETC';
     const dateText = formatNotificationDate(item?.Date, item?.Time);
     const priorityBadge = getPriorityBadge(item?.Priority || item?.priority || item?.Severity || item?.severity || '');
     const typeBadge = getNotificationTypeBadge(typeValue);
@@ -1030,6 +1042,7 @@ const NotificationsScreen = ({ navigation }) => {
           },
         ]}
         onPress={() => handleNotificationPress(item)}
+        disabled={isReadOnlyWorkEntryTowCompleted}
         activeOpacity={0.7}
       >
         <View style={styles.notificationContent}>
@@ -1038,7 +1051,7 @@ const NotificationsScreen = ({ navigation }) => {
               <View style={[styles.inlineIcon, { backgroundColor: getNotificationColor(item.type || item.Type) + '20' }]}>
                 <MaterialIcons name={getNotificationIcon(item.type || item.Type, item)} size={14} color={getNotificationColor(item.type || item.Type)} />
               </View>
-              <Text style={[styles.title, { color: colors.dark, fontWeight: item.read ? 'normal' : 'bold' }]} numberOfLines={2}>
+              <Text style={[styles.title, { color: colors.dark, fontWeight: item.read ? 'normal' : 'bold' }]}>
                 {rawText}
               </Text>
             </View>

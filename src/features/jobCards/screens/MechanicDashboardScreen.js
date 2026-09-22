@@ -10,7 +10,7 @@ import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { dashboardService, mechanicService, masterService, repairService } from '../../../api/services';
-import { formatDateTime } from '../../../utils/helpers';
+import { formatDateTime, getDateTimeTimestamp } from '../../../utils/helpers';
 import { getUserRole } from '../../../utils/roleAccess';
 
 /**
@@ -248,28 +248,117 @@ const getBusLabel = (item) => (
   ).trim() || 'Bus -'
 );
 const getCardDateTime = (item) => {
-  const date = item?.NotificationDate
-    || item?.notificationDate
-    || item?.Date
-    || item?.date
-    || item?.CreatedDate
-    || item?.RegDate
-    || '';
-  const time = item?.NotificationTime
-    || item?.notificationTime
-    || item?.Time
-    || item?.time
-    || item?.CreatedTime
-    || item?.RegTime
-    || '';
-  const timestamp = item?.timestamp || item?.Timestamp || item?.DateTime || item?.CreatedAt || '';
-  const notificationDateTime = item?.NotificationDateTime
-    || item?.notificationDateTime
-    || item?.CreatedOn
-    || item?.CreatedAt
-    || item?.NotificationOn
-    || '';
-  return formatDateTime(date || timestamp || notificationDateTime, time);
+  const dateCandidates = [
+    item?.NotificationDate,
+    item?.notificationDate,
+    item?.Date,
+    item?.date,
+    item?.CreatedDate,
+    item?.createDate,
+    item?.RegDate,
+    item?.ComplaintDate,
+    item?.IncidentDate,
+    item?.AssignDate,
+    item?.AssignedDate,
+    item?.JobCardDate,
+    item?.WorkDate,
+    item?.StartDate,
+    item?.CompleteDate,
+    item?.DateTime,
+    item?.CreatedOn,
+    item?.CreatedAt,
+    item?.NotificationDateTime,
+    item?.notificationDateTime,
+  ];
+
+  const timeCandidates = [
+    item?.NotificationTime,
+    item?.notificationTime,
+    item?.Time,
+    item?.time,
+    item?.CreatedTime,
+    item?.createTime,
+    item?.RegTime,
+    item?.ComplaintTime,
+    item?.IncidentTime,
+    item?.AssignTime,
+    item?.AssignedTime,
+    item?.JobCardTime,
+    item?.WorkTime,
+    item?.StartTime,
+    item?.CompleteTime,
+  ];
+
+  const nestedWorkEntries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
+  const nestedDate = nestedWorkEntries
+    .map((entry) => entry?.CreateDate || entry?.Date || entry?.CompleteDate || entry?.StartDate || '')
+    .find(Boolean) || '';
+  const nestedTime = nestedWorkEntries
+    .map((entry) => entry?.CreateTime || entry?.Time || entry?.CompleteTime || entry?.StartTime || '')
+    .find(Boolean) || '';
+
+  const date = dateCandidates.find(Boolean) || nestedDate || item?.timestamp || item?.Timestamp || item?.CreatedAt || '';
+  const time = timeCandidates.find(Boolean) || nestedTime || '';
+
+  if (!date && !time) return '';
+  return formatDateTime(date, time);
+};
+
+const getCardTimestamp = (item) => {
+  const candidateDate = [
+    item?.NotificationDate,
+    item?.notificationDate,
+    item?.Date,
+    item?.date,
+    item?.CreatedDate,
+    item?.createDate,
+    item?.RegDate,
+    item?.ComplaintDate,
+    item?.IncidentDate,
+    item?.AssignDate,
+    item?.AssignedDate,
+    item?.JobCardDate,
+    item?.WorkDate,
+    item?.StartDate,
+    item?.CompleteDate,
+    item?.DateTime,
+    item?.CreatedOn,
+    item?.CreatedAt,
+    item?.NotificationDateTime,
+    item?.notificationDateTime,
+  ].find(Boolean) || '';
+
+  const candidateTime = [
+    item?.NotificationTime,
+    item?.notificationTime,
+    item?.Time,
+    item?.time,
+    item?.CreatedTime,
+    item?.createTime,
+    item?.RegTime,
+    item?.ComplaintTime,
+    item?.IncidentTime,
+    item?.AssignTime,
+    item?.AssignedTime,
+    item?.JobCardTime,
+    item?.WorkTime,
+    item?.StartTime,
+    item?.CompleteTime,
+  ].find(Boolean) || '';
+
+  const nestedEntries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
+  const latestEntry = nestedEntries
+    .map((entry) => ({
+      date: entry?.CreateDate || entry?.Date || entry?.CompleteDate || entry?.StartDate || '',
+      time: entry?.CreateTime || entry?.Time || entry?.CompleteTime || entry?.StartTime || '',
+    }))
+    .filter((entry) => entry.date || entry.time)
+    .sort((a, b) => getDateTimeTimestamp(b.date, b.time) - getDateTimeTimestamp(a.date, a.time))[0];
+
+  const date = candidateDate || latestEntry?.date || '';
+  const time = candidateTime || latestEntry?.time || '';
+
+  return getDateTimeTimestamp(date, time);
 };
 const getRepairAssemblyCode = (item) => String(
   item?.AssemblyCode
@@ -509,7 +598,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
   const grouped = {
     [BUCKET.TO_ACCEPT]: items.filter(i => !isRepairAssignment(i) && deriveBucket(i) === BUCKET.TO_ACCEPT),
     [BUCKET.REPAIR]: items.filter(i => isRepairAssignment(i)),
-    [BUCKET.IN_PROGRESS]: items.filter(i => !isRepairAssignment(i) && deriveBucket(i) === BUCKET.IN_PROGRESS),
+    [BUCKET.IN_PROGRESS]: items.filter(i => !isRepairAssignment(i) && deriveBucket(i) === BUCKET.IN_PROGRESS).sort((a, b) => getCardTimestamp(b) - getCardTimestamp(a)),
     [BUCKET.COMPLETED]: items.filter(i => !isRepairAssignment(i) && deriveBucket(i) === BUCKET.COMPLETED),
   };
 
@@ -712,10 +801,8 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
           openFault(item);
         }}
       >
-        {cardDateTime ? (
-          <Text style={[styles.cardDateTime, { color: colors.gray }]}>Date & time: {cardDateTime}</Text>
-        ) : null}
-        <View style={styles.cardTop}>
+        <View style={styles.cardContent}>
+          <View style={styles.cardTop}>
           <View style={[styles.faultIcon, { backgroundColor: `${statusColor}20` }]}>
             <MaterialIcons name={breakdownAssignment ? 'warning' : repairAssignment ? 'settings' : 'report-problem'} size={18} color={statusColor} />
           </View>
@@ -728,53 +815,60 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
           </View>
         </View>
 
-        {repairAssignment ? (
-          <View style={styles.rowBetween}>
-            <View />
-            <View style={[styles.repairButton, { backgroundColor: colors.primary }]}> 
-              <MaterialIcons name="build" size={15} color="#FFF" />
-              <Text style={styles.repairButtonText}>Repair</Text>
+        <View style={styles.cardFooter}>
+          {repairAssignment ? (
+            <View style={styles.statusBadgeTopRight}>
+              <View style={[styles.repairButton, { backgroundColor: colors.primary }]}> 
+                <MaterialIcons name="build" size={15} color="#FFF" />
+                <Text style={styles.repairButtonText}>Repair</Text>
+              </View>
             </View>
-          </View>
-        ) : breakdownAssignment && bucket === BUCKET.TO_ACCEPT ? (
-          <TouchableOpacity
-            style={[styles.acceptBtn, { backgroundColor: colors.primary }]}
-            onPress={() => handleAccept(item)}
-            activeOpacity={0.8}
-            disabled={submittingKey === key}
-          >
-            <MaterialIcons name="check" size={16} color="#FFF" />
-            <Text style={styles.acceptBtnText}>{submittingKey === key ? 'Accepting...' : 'Accept Breakdown'}</Text>
-          </TouchableOpacity>
-        ) : breakdownAssignment ? (
-          <View style={styles.rowBetween}>
-            <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}> 
-              <Text style={[styles.statusPillText, { color: statusColor }]}>
-                {statusLabel}
-              </Text>
+          ) : breakdownAssignment && bucket === BUCKET.TO_ACCEPT ? (
+            <TouchableOpacity
+              style={[styles.acceptBtn, styles.statusBadgeTopRight, { backgroundColor: colors.primary }]}
+              onPress={() => handleAccept(item)}
+              activeOpacity={0.8}
+              disabled={submittingKey === key}
+            >
+              <MaterialIcons name="check" size={16} color="#FFF" />
+              <Text style={styles.acceptBtnText}>{submittingKey === key ? 'Accepting...' : 'Accept Breakdown'}</Text>
+            </TouchableOpacity>
+          ) : breakdownAssignment ? (
+            <View style={styles.statusBadgeTopRight}>
+              <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}> 
+                <Text style={[styles.statusPillText, { color: statusColor }]}>
+                  {statusLabel}
+                </Text>
+              </View>
             </View>
-            <Text style={[styles.openLabel, { color: colors.primary }]}>Open breakdown work</Text>
-          </View>
-        ) : bucket === BUCKET.TO_ACCEPT ? (
-          <TouchableOpacity
-            style={[styles.acceptBtn, { backgroundColor: colors.primary }]}
-            onPress={() => handleAccept(item)}
-            activeOpacity={0.8}
-            disabled={submittingKey === key}
-          >
-            <MaterialIcons name="check" size={16} color="#FFF" />
-            <Text style={styles.acceptBtnText}>{submittingKey === key ? 'Accepting…' : 'Accept Fault'}</Text>
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.rowBetween}>
-            <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}>
-              <Text style={[styles.statusPillText, { color: statusColor }]}>
-                {statusLabel}
-              </Text>
+          ) : bucket === BUCKET.TO_ACCEPT ? (
+            <TouchableOpacity
+              style={[styles.acceptBtn, styles.statusBadgeTopRight, { backgroundColor: colors.primary }]}
+              onPress={() => handleAccept(item)}
+              activeOpacity={0.8}
+              disabled={submittingKey === key}
+            >
+              <MaterialIcons name="check" size={16} color="#FFF" />
+              <Text style={styles.acceptBtnText}>{submittingKey === key ? 'Accepting…' : 'Accept Fault'}</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.statusBadgeTopRight}>
+              <View style={[styles.statusPill, { backgroundColor: `${statusColor}20` }]}>
+                <Text style={[styles.statusPillText, { color: statusColor }]}>
+                  {statusLabel}
+                </Text>
+              </View>
             </View>
-            <MaterialIcons name="chevron-right" size={22} color={colors.gray} />
-          </View>
-        )}
+          )}
+
+          {cardDateTime ? (
+            <View style={[styles.dateBadge, { backgroundColor: `${statusColor}12`, borderColor: `${statusColor}30` }]}> 
+              <MaterialIcons name="access-time" size={12} color={statusColor} />
+              <Text style={[styles.cardDateTime, { color: statusColor }]}>{cardDateTime}</Text>
+            </View>
+          ) : null}
+        </View>
+        </View>
       </TouchableOpacity>
     );
   };
@@ -835,17 +929,18 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
             </View>
           ) : (
             currentGroups.map((group) => {
-              const firstItem = group.items[0];
+              const sortedGroupItems = [...group.items].sort((a, b) => getCardTimestamp(b) - getCardTimestamp(a));
+              const firstItem = sortedGroupItems[0];
               const displayNo = firstItem?.JobCardNo || firstItem?.DocNum || getDocEntry(firstItem);
               return (
                 <View key={`${activeTab}-${group.key}`} style={styles.jobCardGroup}>
                   <View style={styles.jobCardGroupHeader}>
                     <Text style={[styles.jobCardGroupTitle, { color: colors.dark }]}>Job Card #{displayNo}</Text>
                     <Text style={[styles.jobCardGroupCount, { color: colors.gray }]}>
-                      {group.items.length} {group.items.length === 1 ? 'fault' : 'faults'}
+                      {sortedGroupItems.length} {sortedGroupItems.length === 1 ? 'fault' : 'faults'}
                     </Text>
                   </View>
-                  {group.items.map(renderItem)}
+                  {sortedGroupItems.map(renderItem)}
                 </View>
               );
             })
@@ -892,8 +987,32 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
     padding: SPACING.md,
   },
+  cardContent: { flex: 1, paddingBottom: 30 },
   cardTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  cardDateTime: { position: 'absolute', top: 8, right: 12, fontSize: 10 },
+  cardFooter: {
+    position: 'relative',
+    width: '100%',
+    minHeight: 28,
+    marginTop: 4,
+  },
+  statusBadgeTopRight: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+  },
+  dateBadge: {
+    position: 'absolute',
+    left: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: BORDER_RADIUS.sm,
+    borderWidth: 1,
+    gap: 4,
+  },
+  cardDateTime: { fontSize: 10, fontWeight: '700' },
   faultIcon: {
     width: 34,
     height: 34,
@@ -908,6 +1027,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: BORDER_RADIUS.md,
     gap: 6,

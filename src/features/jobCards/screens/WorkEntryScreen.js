@@ -17,6 +17,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Modal,
+  Image,
   RefreshControl,
   TextInput as RNTextInput,
   Alert,
@@ -209,7 +210,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [beforeImageDrafts, setBeforeImageDrafts] = useState([]);
   const [towBeforeImageDrafts, setTowBeforeImageDrafts] = useState([]);
   const [afterImageDrafts, setAfterImageDrafts] = useState([]);
+  const [savedAfterImages, setSavedAfterImages] = useState([]);
   const [savedImages, setSavedImages] = useState([]);
+  const [imagePreview, setImagePreview] = useState({ visible: false, title: '', uri: '', loading: false });
 
   // Line Breakdown specific states
   const [towDepotMode, setTowDepotMode] = useState(routeRepairMode === 'T' ? 'default' : 'default'); // 'default' or 'other'
@@ -228,6 +231,8 @@ const WorkEntryScreen = ({ route, navigation }) => {
   // Complete Work confirmation
   const [showCompleteConfirm, setShowCompleteConfirm] = useState(false);
   const [completeRemarks, setCompleteRemarks] = useState('');
+  const [completionParts, setCompletionParts] = useState([]);
+  const [showCompletionPartsSelector, setShowCompletionPartsSelector] = useState(false);
   const [awaitingVerification, setAwaitingVerification] = useState(false);
 
   const workEntryLocked = awaitingVerification || (Array.isArray(storeEntries) ? storeEntries.some(entry => isAwaitingVerificationStatus(entry?.Status || entry?.WorkStatus || entry?.FaultStatus)) : false);
@@ -248,6 +253,32 @@ const WorkEntryScreen = ({ route, navigation }) => {
     if (Array.isArray(data)) return data[0] || null;
     if (!data || typeof data !== 'object') return null;
     return data?.WorkEntry || data?.WorkEntryDetails || data?.Record || data;
+  };
+
+  const getWorkEntryDetails = (...sources) => {
+    const rows = sources.flatMap((source) => {
+      if (Array.isArray(source)) return source.flatMap((item) => getWorkEntryDetails(item));
+      if (!source || typeof source !== 'object') return [];
+      if (Array.isArray(source.Details)) return source.Details;
+      if (Array.isArray(source.WorkDone)) return source.WorkDone;
+      if (Array.isArray(source.WorkEntries)) return source.WorkEntries.flatMap((item) => getWorkEntryDetails(item));
+      return [];
+    });
+    const seen = new Set();
+    return rows.filter((detail, index) => {
+      const key = [
+        detail?.LineId,
+        detail?.WorkCode,
+        detail?.WorkDone,
+        detail?.OtherDescription,
+        detail?.Remarks,
+        detail?.EntryDate,
+        detail?.EntryTime,
+      ].map((value) => String(value ?? '').trim()).join('|') || `detail-${index}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   };
 
   const getSavedBeforeImages = (entry) => {
@@ -308,6 +339,22 @@ const WorkEntryScreen = ({ route, navigation }) => {
     });
   };
 
+  const getSavedAfterImages = (entry) => {
+    const imageSources = [entry?.AfterImages, entry?.AFImages, entry?.WorkEntryImages, entry?.Images, entry?.Attachments];
+    const images = imageSources.find(Array.isArray) || [];
+    return images
+      .filter((image) => ['AF', 'AFTER', 'AFTERIMAGE'].includes(String(image?.Phase || image?.ImageType || image?.ImagePhase || image?.ImgType || image?.Type || '').trim().toUpperCase()))
+      .map((image, index) => {
+        const fileName = image?.FileName || image?.fileName || image?.ImgPath || image?.ImagePath || image?.File || image?.Path || '';
+        return {
+          id: image?.id || image?.Id || fileName || `saved-after-${index}`,
+          name: fileName || image?.ImageName || image?.Name || 'After image',
+          fileName: String(fileName || '').trim(),
+          uri: image?.uri || image?.Uri || image?.ImageUrl || image?.Url || image?.Base64 || image?.ImageBase64 || '',
+        };
+      });
+  };
+
   const normalizeFaultWorkItems = (response) => {
     const data = response?.Data ?? response?.data ?? response;
     // GetFaultByCode returns one fault with its selectable work items in
@@ -356,7 +403,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
         faultLine: routeFaultLine,
         routeFaultCode: routeFault?.FaultCode || '',
       }));
-      const [faultDetailsResult, sparePartsResult, approvedResult, requestsResult, depotsResult, workEntryResult, jobCardResult] = await Promise.allSettled([
+      const [faultDetailsResult, sparePartsResult, approvedResult, requestsResult, depotsResult, workEntryResult, jobCardResult, mechanicDashboardResult] = await Promise.allSettled([
         masterService.getFaultDetails(companyDb),
         masterService.getSpareParts(companyDb),
         storeService.getApprovedJobCardParts(companyDb, mechanicCode),
@@ -367,6 +414,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
           : Promise.resolve(null),
         resolvedJobCardDocEntry
           ? jobCardService.getJobCardDetail(companyDb, resolvedJobCardDocEntry)
+          : Promise.resolve(null),
+        mechanicCode
+          ? mechanicService.getMechanicDashboard(companyDb, mechanicCode)
           : Promise.resolve(null),
       ]);
 
@@ -415,6 +465,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
           if (towRequested) setTowRequestEntryId(loadedWorkEntryDocEntry);
           const savedBeforeImages = getSavedBeforeImages(persistedEntry);
           if (savedBeforeImages.length > 0) setBeforeImageDrafts(savedBeforeImages);
+          const savedAfterImages = getSavedAfterImages(persistedEntry);
+          if (savedAfterImages.length > 0) setSavedAfterImages(savedAfterImages);
+          if (persistedEntry?.FinalRemarks) setCompleteRemarks(String(persistedEntry.FinalRemarks));
           const savedTowImages = getSavedTowImages(persistedEntry);
           if (savedTowImages.length > 0) setTowBeforeImageDrafts(savedTowImages);
           dispatch(setWorkEntries({
@@ -434,14 +487,90 @@ const WorkEntryScreen = ({ route, navigation }) => {
       const jobCard = jobCardResult.status === 'fulfilled'
         ? (jobCardResult.value?.Data ?? jobCardResult.value)
         : null;
+      const mechanicDashboardRows = mechanicDashboardResult.status === 'fulfilled'
+        ? extractApiRows(mechanicDashboardResult.value)
+        : [];
+      const targetJobCardEntry = String(resolvedJobCardDocEntry || '').trim();
+      const targetFaultLine = String(routeFaultLine ?? '').trim();
+      const dashboardJobRows = mechanicDashboardRows.filter((row) => {
+        const jobEntries = [row?.DocEntry, row?.JobCardDocEntry, row?.JCDocEnt, row?.JobCardEntry, row?.JobCardId]
+          .map((value) => String(value ?? '').trim());
+        const jobNumbers = [row?.JobCardNo, row?.JCDocNum, row?.DocNum, row?.JobCardNum]
+          .map((value) => String(value ?? '').trim());
+        return jobEntries.includes(targetJobCardEntry) || jobNumbers.includes(String(jobCardNo || '').trim());
+      });
+      const dashboardFaultRow = dashboardJobRows.find((row) => {
+        const line = String(row?.FaultLine ?? row?.FaultLineNo ?? row?.Line ?? row?.LineNum ?? '').trim();
+        return line === targetFaultLine || Number(line) === Number(routeFaultLine) + 1;
+      }) || dashboardJobRows[0] || null;
+      const dashboardBreakdownRepair = getBreakdownRepairInfo(dashboardFaultRow);
+      const dashboardPartSources = dashboardFaultRow ? [dashboardFaultRow] : dashboardJobRows;
+      const dashboardCompletionParts = dashboardPartSources
+        .flatMap((row) => [
+          ...(Array.isArray(row?.Parts) ? row.Parts : []),
+          ...(Array.isArray(row?.WorkEntries) ? row.WorkEntries.flatMap((entry) => (
+            Array.isArray(entry?.Parts) ? entry.Parts : []
+          )) : []),
+          ...(Array.isArray(row?.WorkEntry?.Parts) ? row.WorkEntry.Parts : []),
+        ])
+        .map((part) => ({
+          ...part,
+          ItemCode: part?.ItemCode || part?.Code || '',
+          ItemName: part?.ItemName || part?.Name || part?.Dscription || part?.ItemCode || part?.Code || '',
+          Qty: String(part?.ReqQty ?? part?.RequiredQty ?? part?.Qty ?? 1),
+        }))
+        .filter((part, index, parts) => part.ItemCode && parts.findIndex((candidate) => (
+          String(candidate.ItemCode) === String(part.ItemCode)
+        )) === index);
+      if (dashboardCompletionParts.length > 0) {
+        setCompletionParts((current) => current.length > 0 ? current : dashboardCompletionParts);
+      }
       const jobCardFaults = Array.isArray(jobCard?.Faults) ? jobCard.Faults : [];
+      const jobCardWorkEntries = Array.isArray(jobCard?.WorkEntries) ? jobCard.WorkEntries : [];
+      const jobCardWorkEntry = jobCardWorkEntries.find((entry) => String(entry?.WorkEntryDocEntry || entry?.DocEntry || '') === String(routeWorkEntryDocEntry || lineBreakdownWorkEntryId || '')) || jobCardWorkEntries[0];
+      const jobCardAfterImages = getSavedAfterImages(jobCardWorkEntry);
+      if (jobCardAfterImages.length > 0) setSavedAfterImages(jobCardAfterImages);
+      if (jobCardWorkEntry?.FinalRemarks && !completeRemarks) setCompleteRemarks(String(jobCardWorkEntry.FinalRemarks));
+      const existingEntry = storeEntries.find((entry) => String(
+        entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code || '',
+      ) === String(routeWorkEntryDocEntry || lineBreakdownWorkEntryId || ''))
+        || storeEntries[0]
+        || existingWorkEntry
+        || jobCardWorkEntries[0]
+        || null;
+      const workEntryDetails = getWorkEntryDetails(
+        jobCardWorkEntries,
+        routeFault,
+        existingWorkEntry,
+        storeEntries,
+      );
+      if (workEntryDetails.length > 0) {
+        const workEntryId = routeWorkEntryDocEntry
+          || lineBreakdownWorkEntryId
+          || existingEntry?.WorkEntryDocEntry
+          || existingEntry?.DocEntry
+          || jobCardWorkEntries[0]?.WorkEntryDocEntry
+          || jobCardWorkEntries[0]?.DocEntry
+          || null;
+        const mergedEntry = {
+          ...(existingEntry || {}),
+          ...(jobCardWorkEntries.find((entry) => String(entry?.WorkEntryDocEntry || entry?.DocEntry || '') === String(workEntryId || '')) || {}),
+          WorkEntryDocEntry: workEntryId || existingEntry?.WorkEntryDocEntry || existingEntry?.DocEntry,
+          Details: workEntryDetails,
+          WorkDone: workEntryDetails,
+        };
+        const otherEntries = storeEntries.filter((entry) => String(
+          entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code || '',
+        ) !== String(workEntryId || ''));
+        dispatch(setWorkEntries({ docEntry: workOrderDocEntry, entries: [mergedEntry, ...otherEntries] }));
+      }
       const jobCardFault = jobCardFaults.find((fault) => String(
         fault?.FaultLine ?? fault?.FaultLineNo ?? fault?.Line ?? fault?.LineNum ?? ''
       ) === String(routeFaultLine)) || jobCardFaults.find((fault) => (
         Number(fault?.FaultLine ?? fault?.FaultLineNo ?? fault?.Line ?? fault?.LineNum) === Number(routeFaultLine) + 1
       )) || (jobCardFaults.length === 1 ? jobCardFaults[0] : null);
 
-      const liveBreakdownRepair = getBreakdownRepairInfo(
+      const liveBreakdownRepair = dashboardBreakdownRepair || getBreakdownRepairInfo(
         routeBreakdownRepair,
         existingWorkEntry,
         storeEntries,
@@ -619,6 +748,52 @@ const WorkEntryScreen = ({ route, navigation }) => {
     updater((previous) => previous.filter((image) => image.id !== id));
   };
 
+  const extractImageBase64 = (response) => {
+    const queue = [response?.Data ?? response];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) continue;
+      if (typeof current === 'string') {
+        const value = current.trim();
+        const xmlMatch = value.match(/<(?:Base64|ImageBase64|FileBase64|Content|Data|Result)>([\s\S]*?)<\/(?:Base64|ImageBase64|FileBase64|Content|Data|Result)>/i);
+        if (xmlMatch?.[1]?.trim()) return xmlMatch[1].trim();
+        if (value.startsWith('data:image/')) return value;
+        if (value.length > 100) return value;
+        continue;
+      }
+      if (Array.isArray(current)) {
+        current.forEach((item) => queue.push(item));
+        continue;
+      }
+      if (typeof current === 'object') Object.values(current).forEach((value) => queue.push(value));
+    }
+    return '';
+  };
+
+  const openWorkEntryImage = async (image, title = 'Work Entry Image') => {
+    const localUri = String(image?.uri || image?.Uri || image?.ImageUrl || image?.Url || image?.Base64 || image?.ImageBase64 || '').trim();
+    const fileName = String(image?.fileName || image?.FileName || image?.ImgPath || image?.ImagePath || image?.name || '').trim();
+    if (!localUri && !fileName) return;
+    if (localUri.startsWith('data:image/') || localUri.startsWith('file:') || localUri.startsWith('content:') || localUri.startsWith('http')) {
+      setImagePreview({ visible: true, title, uri: localUri, loading: false });
+      return;
+    }
+    setImagePreview({ visible: true, title, uri: '', loading: true });
+    try {
+      const response = await workEntryService.getWorkEntryImageBase64(fileName);
+      const rawBase64 = extractImageBase64(response);
+      if (!rawBase64) throw new Error('Image data was not returned by the server.');
+      const contentType = /^data:(image\/[a-z0-9.+-]+);base64,/i.exec(rawBase64)?.[1] || 'image/jpeg';
+      const cleanBase64 = rawBase64.replace(/^data:[^;]+;base64,/i, '');
+      setImagePreview({ visible: true, title, uri: `data:${contentType};base64,${cleanBase64}`, loading: false });
+    } catch (error) {
+      setImagePreview({ visible: false, title: '', uri: '', loading: false });
+      Toast.show({ type: 'error', text1: 'Image preview failed', text2: error?.message || 'Unable to load image.' });
+    }
+  };
+
+  const closeImagePreview = () => setImagePreview({ visible: false, title: '', uri: '', loading: false });
+
   const persistWorkEntryImages = async (phase, drafts, workEntryDocEntry, recordPhase = phase) => {
     if (!workEntryDocEntry || drafts.length === 0) return;
     const uploadResponse = await workEntryService.uploadImages(drafts);
@@ -654,6 +829,42 @@ const WorkEntryScreen = ({ route, navigation }) => {
     setSavedImages((previous) => [...previous, ...records]);
   };
 
+  const updateExistingWorkEntry = async (payload, detail) => {
+    try {
+      const response = await mechanicService.updateWorkEntry(payload);
+      if (response && typeof response === 'object') return response;
+    } catch (error) {
+      const confirmedResponse = await workEntryService.getWorkEntry(
+        dbName || 'MUTSPL_TEST',
+        payload.WorkEntryDocEntry,
+      );
+      const confirmedEntry = getWorkEntryRecord(confirmedResponse);
+      const confirmedDetails = getWorkEntryDetails(confirmedEntry);
+      const wasPersisted = confirmedDetails.some((savedDetail) => (
+        String(savedDetail?.WorkCode || '').trim() === String(detail?.WorkCode || '').trim()
+        && String(savedDetail?.WorkDone || '').trim() === String(detail?.WorkDone || '').trim()
+        && String(savedDetail?.Remarks || '').trim() === String(detail?.Remarks || '').trim()
+      ));
+      if (wasPersisted) {
+        return { Success: true, Data: confirmedEntry };
+      }
+      throw error;
+    }
+
+    const confirmedResponse = await workEntryService.getWorkEntry(
+      dbName || 'MUTSPL_TEST',
+      payload.WorkEntryDocEntry,
+    );
+    const confirmedEntry = getWorkEntryRecord(confirmedResponse);
+    const confirmedDetails = getWorkEntryDetails(confirmedEntry);
+    const wasPersisted = confirmedDetails.some((savedDetail) => (
+      String(savedDetail?.WorkCode || '').trim() === String(detail?.WorkCode || '').trim()
+      && String(savedDetail?.WorkDone || '').trim() === String(detail?.WorkDone || '').trim()
+      && String(savedDetail?.Remarks || '').trim() === String(detail?.Remarks || '').trim()
+    ));
+    return wasPersisted ? { Success: true, Data: confirmedEntry } : { Success: false, Message: 'UpdateWorkEntry returned no response.' };
+  };
+
   // ─── Submit work entry ────────────────────────────────────────────────────────
   const handleAddWorkEntry = async () => {
     if (workEntryLocked) {
@@ -673,31 +884,76 @@ const WorkEntryScreen = ({ route, navigation }) => {
       return;
     }
 
+    let updateSucceeded = false;
     try {
       setSubmitting(true);
+      const existingWorkEntryId = lineBreakdownWorkEntryId
+        || routeWorkEntryDocEntry
+        || storeEntries.find((entry) => entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code)?.WorkEntryDocEntry
+        || storeEntries.find((entry) => entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code)?.DocEntry
+        || storeEntries.find((entry) => entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code)?.Code
+        || null;
+      const detail = {
+        WorkCode: selectedWork?.Code || 'OTHER',
+        WorkDone: selectedWork?.Code === 'OTHER' ? description : (selectedWork?.Name || description),
+        OtherDescription: selectedWork?.Code === 'OTHER' ? description : '',
+        Remarks: entryRemarks || '',
+      };
+      const updateLocalWorkEntry = (responseData, fallbackEntry) => {
+        const responseEntry = responseData?.WorkEntry || responseData?.WorkEntryDetails || responseData;
+        const responseDetails = Array.isArray(responseEntry?.Details)
+          ? responseEntry.Details
+          : (Array.isArray(responseEntry?.WorkEntries)
+            ? responseEntry.WorkEntries.flatMap((workEntry) => Array.isArray(workEntry?.Details) ? workEntry.Details : [])
+            : []);
+        const currentEntry = storeEntries.find((entry) => String(
+          entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code || '',
+        ) === String(existingWorkEntryId || '')) || {};
+        dispatch(setWorkEntries({
+          docEntry: workOrderDocEntry,
+          entries: [
+            ...storeEntries.filter((entry) => String(
+              entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code || '',
+            ) !== String(existingWorkEntryId || '')),
+            {
+              ...currentEntry,
+              ...(responseEntry && typeof responseEntry === 'object' ? responseEntry : {}),
+              ...(fallbackEntry || {}),
+              WorkEntryDocEntry: existingWorkEntryId,
+              Details: responseDetails.length > 0
+                ? responseDetails
+                : [
+                    ...(Array.isArray(currentEntry.Details) ? currentEntry.Details : []),
+                    detail,
+                  ],
+            },
+          ],
+        }));
+      };
       if (isBreakdownJob) {
         const breakdownPayload = {
           CompanyDB: dbName || 'MUTSPL_TEST',
           JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
           FaultLine: Number(routeFaultLine) || 1,
           UserCode: mechanicCode,
-          RepairType: repairType,
-          CanRepairOnSite: true,
+          CanRepairOnSite: canRepairOnSite,
           FinalRemarks: entryRemarks || '',
-          Details: [
-            {
-              WorkCode: selectedWork?.Code || 'OTHER',
-              WorkDone: selectedWork?.Code === 'OTHER' ? description : (selectedWork?.Name || description),
-              OtherDescription: selectedWork?.Code === 'OTHER' ? description : '',
-              Remarks: entryRemarks || '',
-            },
-          ],
+          Details: [detail],
         };
 
-        const breakdownRes = await lineBreakdownService.createLineBreakdownWorkEntry(breakdownPayload);
+        const breakdownRes = existingWorkEntryId
+          ? await updateExistingWorkEntry({
+              CompanyDB: dbName || 'MUTSPL_TEST',
+              WorkEntryDocEntry: Number(existingWorkEntryId) || existingWorkEntryId,
+              UserCode: mechanicCode,
+              FinalRemarks: entryRemarks || '',
+              Details: [detail],
+            }, detail)
+          : await lineBreakdownService.createLineBreakdownWorkEntry(breakdownPayload);
         if (!breakdownRes?.Success && !breakdownRes?.Status) {
-          throw new Error(breakdownRes?.Message || 'Failed to create breakdown work entry');
+          throw new Error(breakdownRes?.Message || `Failed to ${existingWorkEntryId ? 'update' : 'create'} breakdown work entry`);
         }
+        updateSucceeded = Boolean(existingWorkEntryId);
 
         const responseData = breakdownRes?.Data ?? breakdownRes;
         const createdEntry = responseData?.WorkEntry
@@ -708,6 +964,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
           || createdEntry?.WorkEntryEntry
           || createdEntry?.DocEntry
           || createdEntry?.Code
+          || existingWorkEntryId
           || (typeof responseData === 'number' || typeof responseData === 'string' ? responseData : null);
 
         // GetWorkEntry is the authoritative record used by the Driver
@@ -756,7 +1013,9 @@ const WorkEntryScreen = ({ route, navigation }) => {
           WorkEntryDocEntry: savedEntry?.WorkEntryDocEntry || savedEntry?.DocEntry || createdEntryId || null,
           Description: savedEntry?.Description || savedEntry?.WorkListName || selectedWork?.Name || description,
           Remarks: savedEntry?.Remarks ?? entryRemarks ?? '',
-          Details: savedEntry?.Details || breakdownPayload.Details,
+          Details: savedEntry?.Details
+            || savedEntry?.WorkEntries?.[0]?.Details
+            || breakdownPayload.Details,
           EntryDate: savedEntry?.EntryDate || savedEntry?.CreatedDate || new Date().toISOString(),
           BeforeImages: beforeImageDrafts.map((image) => ({
             FileName: image.name,
@@ -765,7 +1024,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
             Phase: 'BF',
           })),
         };
-        dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: visibleEntry }));
+        if (existingWorkEntryId) {
+          updateLocalWorkEntry(savedEntry, visibleEntry);
+        } else {
+          dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: visibleEntry }));
+        }
         setBeforeImageDrafts([]);
         if (createdEntryId) setLineBreakdownWorkEntryId(createdEntryId);
         if (!createdEntryId) {
@@ -774,10 +1037,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
         Toast.show({
           type: 'success',
-          text1: 'Breakdown work entry created',
-          text2: `Repair selected: ${repairType === 'P' ? 'Permanent' : 'Temporary'}`,
+          text1: existingWorkEntryId ? 'Breakdown work entry updated' : 'Breakdown work entry created',
         });
         resetEntryForm();
+        if (existingWorkEntryId) loadData();
         return;
       }
 
@@ -787,14 +1050,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
         FaultLine: Number(routeFaultLine) || 0,
         UserCode: mechanicCode,
         FinalRemarks: entryRemarks,
-        Details: [
-          {
-            WorkCode: selectedWork?.Code || 'OTHER',
-            WorkDone: selectedWork?.Code === 'OTHER' ? description : (selectedWork?.Name || description),
-            OtherDescription: selectedWork?.Code === 'OTHER' ? description : '',
-            Remarks: entryRemarks || '',
-          },
-        ],
+        Details: [detail],
         Parts: entryParts.map((p) => ({
           ItemCode: p.ItemCode || p.Code || '',
           ItemName: p.ItemName || p.Name || '',
@@ -805,15 +1061,41 @@ const WorkEntryScreen = ({ route, navigation }) => {
         ComplaintType: (String(routeComplaintType || '')).includes('Breakdown') || (String(routeComplaintType || '').toLowerCase().includes('breakdown')) ? 'Breakdown' : undefined,
       };
 
-      const res = await mechanicService.createWorkEntry(payload);
-      if (res?.Success) {
-        dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: res.Data || payload }));
-        Toast.show({ type: 'success', text1: 'Work entry added' });
+      const res = existingWorkEntryId
+        ? await updateExistingWorkEntry({
+            CompanyDB: dbName || 'MUTSPL_TEST',
+            WorkEntryDocEntry: Number(existingWorkEntryId) || existingWorkEntryId,
+            UserCode: mechanicCode,
+            FinalRemarks: entryRemarks || '',
+            Details: [detail],
+          }, detail)
+        : await mechanicService.createWorkEntry(payload);
+      if (isApiSuccess(res)) {
+        updateSucceeded = Boolean(existingWorkEntryId);
+        if (existingWorkEntryId) {
+          updateLocalWorkEntry(res?.Data, payload);
+        } else {
+          dispatch(addWorkEntryAction({
+            docEntry: workOrderDocEntry,
+            entry: {
+              ...(res.Data || payload),
+              WorkEntryDocEntry: res?.Data?.WorkEntryDocEntry || res?.Data?.DocEntry,
+              Details: [detail],
+            },
+          }));
+        }
+        Toast.show({ type: 'success', text1: existingWorkEntryId ? 'Work entry updated' : 'Work entry added' });
         resetEntryForm();
+        if (existingWorkEntryId) loadData();
       } else {
         Toast.show({ type: 'error', text1: res?.Message || 'Failed to add work entry' });
       }
     } catch (err) {
+      if (updateSucceeded) {
+        resetEntryForm();
+        loadData();
+        return;
+      }
       Toast.show({ type: 'error', text1: err.message || 'Error' });
     } finally {
       setSubmitting(false);
@@ -1007,14 +1289,25 @@ const WorkEntryScreen = ({ route, navigation }) => {
       }
 
       if (isBreakdownJob) {
-        if (afterImageDrafts.length === 0) {
+        if (afterImageDrafts.length + savedAfterImages.length === 0) {
           throw new Error('Upload an after image before completing the breakdown work.');
         }
         await persistWorkEntryImages('AF', afterImageDrafts, workEntryDocEntry);
         const res = await lineBreakdownService.completeLineBreakdownWorkEntry({
           CompanyDB: dbName || 'MUTSPL_TEST',
           WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+          UserCode: mechanicCode,
+          // P/T is the selected permanent/temporary repair type; RepairMode
+          // represents the repair location (on site or tow).
+          RepairType: repairType,
+          RepairMode: canRepairOnSite ? 'R' : 'T',
           FinalRemarks: completeRemarks || '',
+          Parts: completionParts.map((part) => ({
+            ItemCode: part.ItemCode || part.Code || '',
+            ItemName: part.ItemName || part.Name || '',
+            ReqQty: parseFloat(part.Qty) || 1,
+            Remarks: part.Remarks || '',
+          })),
         });
 
         if (!res?.Success && !res?.Status) {
@@ -1037,6 +1330,12 @@ const WorkEntryScreen = ({ route, navigation }) => {
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
         UserCode: mechanicCode,
         FinalRemarks: completeRemarks || '',
+        Parts: completionParts.map((part) => ({
+          ItemCode: part.ItemCode || part.Code || '',
+          ItemName: part.ItemName || part.Name || '',
+          ReqQty: parseFloat(part.Qty) || 1,
+          Remarks: part.Remarks || '',
+        })),
       });
       if (res?.Success) {
         Toast.show({
@@ -1106,6 +1405,18 @@ const WorkEntryScreen = ({ route, navigation }) => {
       .map((image) => ({ id: image.fileName, name: image.fileName, uri: image.uri || '' })),
     ...beforeImageDrafts,
   ].filter((image, index, images) => image?.name && images.findIndex((candidate) => candidate.name === image.name) === index);
+  const workEntriesWithDate = storeEntries.filter((entry) => {
+    const entryDetails = getWorkEntryDetails(entry);
+    return Boolean(
+      entry?.EntryDate
+      || entry?.CreatedDate
+      || entry?.CreateDate
+      || entry?.RegDate
+      || entry?.DateTime
+      || entry?.CreatedAt
+      || entryDetails.some((detail) => detail?.EntryDate || detail?.CreatedDate || detail?.Date),
+    );
+  });
 
   const renderWorkEntryBeforeImageSection = () => isBreakdownJob ? (
     <View style={[styles.card, { backgroundColor: colors.white }]}>
@@ -1125,19 +1436,22 @@ const WorkEntryScreen = ({ route, navigation }) => {
         </TouchableOpacity>
       </View>
       {beforeImageDrafts.map((image) => (
-        <View key={image.id} style={styles.imageRow}>
+        <TouchableOpacity key={image.id} style={styles.imageRow} onPress={() => openWorkEntryImage(image, 'Before Image')} activeOpacity={0.75}>
+          <MaterialIcons name="image" size={16} color="#00689E" />
           <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
           <TouchableOpacity onPress={() => removeImageDraft('BF', image.id)}>
             <MaterialIcons name="close" size={18} color="#BB0000" />
           </TouchableOpacity>
-        </View>
+        </TouchableOpacity>
       ))}
       {workEntryBeforeImages
         .filter((image) => !beforeImageDrafts.some((draft) => draft.name === image.name))
         .map((image) => (
-          <View key={image.id} style={styles.imageRow}>
+          <TouchableOpacity key={image.id} style={styles.imageRow} onPress={() => openWorkEntryImage(image, 'Before Image')} activeOpacity={0.75}>
+            <MaterialIcons name="image" size={16} color="#00689E" />
             <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
-          </View>
+            <MaterialIcons name="open-in-new" size={16} color="#00689E" />
+          </TouchableOpacity>
         ))}
     </View>
   ) : null;
@@ -1195,7 +1509,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
             </TouchableOpacity>
           </View>
 
-          {[...storeEntries].sort((a, b) => getDateTimeTimestamp(
+          {[...workEntriesWithDate].sort((a, b) => getDateTimeTimestamp(
             b?.EntryDate || b?.CreatedDate || b?.CreateDate || b?.RegDate || b?.DateTime || b?.CreatedAt,
             b?.EntryTime || b?.CreatedTime || b?.RegTime || b?.Time,
           ) - getDateTimeTimestamp(
@@ -1204,16 +1518,18 @@ const WorkEntryScreen = ({ route, navigation }) => {
           )).length === 0 ? (
             <Text style={[styles.emptyText, { color: colors.gray }]}>No work entries yet. Tap Add to begin.</Text>
           ) : (
-            [...storeEntries].sort((a, b) => getDateTimeTimestamp(
+            [...workEntriesWithDate].sort((a, b) => getDateTimeTimestamp(
               b?.EntryDate || b?.CreatedDate || b?.CreateDate || b?.RegDate || b?.DateTime || b?.CreatedAt,
               b?.EntryTime || b?.CreatedTime || b?.RegTime || b?.Time,
             ) - getDateTimeTimestamp(
               a?.EntryDate || a?.CreatedDate || a?.CreateDate || a?.RegDate || a?.DateTime || a?.CreatedAt,
               a?.EntryTime || a?.CreatedTime || a?.RegTime || a?.Time,
             )).map((entry, i) => {
+              const entryDetails = getWorkEntryDetails(entry);
               const entryDescription = entry.Description
                 || entry.WorkListName
                 || entry.WorkDone
+                || entryDetails[0]?.WorkDone
                 || entry.OtherDescription
                 || entry?.Details?.[0]?.WorkDone
                 || entry?.Details?.[0]?.OtherDescription
@@ -1235,15 +1551,33 @@ const WorkEntryScreen = ({ route, navigation }) => {
                   <View style={styles.entryLeft}>
                     <MaterialIcons name="build" size={16} color="#0070F2" />
                     <View style={styles.entryText}>
-                      <Text style={[styles.entryDesc, { color: colors.dark }]}>{entryDescription}</Text>
-                      {entry.Remarks ? (
-                        <Text style={[styles.entryRemarks, { color: colors.gray }]}>{entry.Remarks}</Text>
-                      ) : null}
-                      {entryDateTime ? (
-                        <Text style={[styles.entryDate, { color: colors.gray }]}>
-                          Added: {formatDateTime(entryDate, entryTime) || entryDateTime}
-                        </Text>
-                      ) : null}
+                      {entryDetails.length > 0 ? entryDetails.map((detail, detailIndex) => (
+                        <View key={`entry-${entry?.WorkEntryDocEntry || entry?.DocEntry || i}-detail-${detailIndex}`} style={detailIndex > 0 ? styles.entryDetailDivider : undefined}>
+                          <View style={styles.entryDetailHeader}>
+                            <Text style={[styles.entryDesc, { color: colors.dark, flex: 1 }]}>{detail?.WorkDone || detail?.OtherDescription || entryDescription}</Text>
+                            {detail?.WorkCode ? (
+                              <View style={[styles.workCodeBadge, { backgroundColor: '#0070F215' }]}>
+                                <Text style={[styles.workCodeBadgeText, { color: '#0070F2' }]}>{detail.WorkCode}</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          {detail?.OtherDescription && detail.OtherDescription !== detail?.WorkDone ? (
+                            <Text style={[styles.entryRemarks, { color: colors.gray }]}>{detail.OtherDescription}</Text>
+                          ) : null}
+                          {detail?.Remarks ? (
+                            <Text style={[styles.entryRemarks, { color: colors.gray }]}>Remarks: {detail.Remarks}</Text>
+                          ) : null}
+                          {(detail?.EntryDate || detail?.EntryTime) ? (
+                            <Text style={[styles.entryDate, { color: colors.gray }]}>Added: {formatDateTime(detail.EntryDate, detail.EntryTime) || `${detail.EntryDate || ''} ${detail.EntryTime || ''}`}</Text>
+                          ) : null}
+                        </View>
+                      )) : (
+                        <>
+                          <Text style={[styles.entryDesc, { color: colors.dark }]}>{entryDescription}</Text>
+                          {entry.Remarks ? <Text style={[styles.entryRemarks, { color: colors.gray }]}>{entry.Remarks}</Text> : null}
+                          {entryDateTime ? <Text style={[styles.entryDate, { color: colors.gray }]}>Added: {formatDateTime(entryDate, entryTime) || entryDateTime}</Text> : null}
+                        </>
+                      )}
                     </View>
                   </View>
                   {!isBreakdownJob && (
@@ -1335,12 +1669,13 @@ const WorkEntryScreen = ({ route, navigation }) => {
                           </TouchableOpacity>
                         </View>
                         {towBeforeImageDrafts.map((image) => (
-                          <View key={image.id} style={styles.imageRow}>
+                          <TouchableOpacity key={image.id} style={styles.imageRow} onPress={() => openWorkEntryImage(image, 'Tow Image')} activeOpacity={0.75}>
+                            <MaterialIcons name="image" size={16} color="#C2410C" />
                             <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
                             <TouchableOpacity onPress={() => removeImageDraft('TOW_BF', image.id)}>
                               <MaterialIcons name="close" size={18} color="#BB0000" />
                             </TouchableOpacity>
-                          </View>
+                          </TouchableOpacity>
                         ))}
                       </View>
                       <Button mode="contained" icon="local-shipping" buttonColor="#C2410C" onPress={handleRequestTow} loading={submitting} disabled={submitting} style={styles.towActionButton} contentStyle={styles.towActionContent} labelStyle={styles.towActionLabel}>Request Tow & Notify Supervisor</Button>
@@ -1350,9 +1685,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
                       {towBeforeImageDrafts.length > 0 && (
                         <View style={{ marginTop: 8 }}>
                           {towBeforeImageDrafts.map((image) => (
-                            <View key={image.id} style={styles.imageRow}>
+                            <TouchableOpacity key={image.id} style={styles.imageRow} onPress={() => openWorkEntryImage(image, 'Tow Image')} activeOpacity={0.75}>
+                              <MaterialIcons name="image" size={16} color="#C2410C" />
                               <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
-                            </View>
+                              <MaterialIcons name="open-in-new" size={16} color="#C2410C" />
+                            </TouchableOpacity>
                           ))}
                         </View>
                       )}
@@ -1488,6 +1825,39 @@ const WorkEntryScreen = ({ route, navigation }) => {
           </View>
         )}
 
+        <View style={[styles.card, { backgroundColor: colors.white }]}>
+          <View style={styles.sectionHeader}>
+            <MaterialIcons name="inventory" size={18} color="#2B7D2B" />
+            <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts Used on Completion</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.selectorBtn, { borderColor: colors.border || '#CCC' }]}
+            onPress={() => setShowCompletionPartsSelector(true)}
+            disabled={workEntryLocked}
+          >
+            <Text style={[styles.selectorBtnText, { color: colors.gray }]}>Select part</Text>
+            <MaterialIcons name="expand-more" size={20} color={colors.gray} />
+          </TouchableOpacity>
+          {completionParts.map((part, index) => (
+            <View key={`${part.ItemCode || part.Code}-${index}`} style={[styles.partDraftRow, { borderColor: colors.border || '#E0E0E0' }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.partName, { color: colors.dark }]}>{part.ItemName || part.Name || part.ItemCode || part.Code}</Text>
+                <Text style={{ color: colors.gray, fontSize: 11 }}>{part.ItemCode || part.Code}</Text>
+              </View>
+              <RNTextInput
+                value={String(part.Qty || '1')}
+                onChangeText={(value) => setCompletionParts((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, Qty: value } : item))}
+                keyboardType="numeric"
+                style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
+              />
+              <Text style={{ color: colors.gray, fontSize: 11, marginHorizontal: 4 }}>Qty</Text>
+              <TouchableOpacity onPress={() => setCompletionParts((current) => current.filter((_, itemIndex) => itemIndex !== index))}>
+                <MaterialIcons name="close" size={18} color="#BB0000" />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+
         {/* ── Complete Work ── */}
         {canRepairOnSite && (
         <View style={[styles.card, { backgroundColor: colors.white }]}>
@@ -1508,7 +1878,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
             <View style={[styles.imageBox, { borderColor: colors.border || '#E0E0E0' }]}>
               <View style={styles.imageHeaderRow}>
                 <Text style={{ color: colors.dark, fontWeight: '700', fontSize: 13 }}>After Image</Text>
-                <Text style={{ color: colors.gray, fontSize: 12 }}>{afterImageDrafts.length}/{MAX_IMAGES_PER_PHASE}</Text>
+                <Text style={{ color: colors.gray, fontSize: 12 }}>{afterImageDrafts.length + savedAfterImages.length}/{MAX_IMAGES_PER_PHASE}</Text>
               </View>
               <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 8 }}>Required before completing breakdown work.</Text>
               <View style={styles.imageActions}>
@@ -1522,13 +1892,23 @@ const WorkEntryScreen = ({ route, navigation }) => {
                 </TouchableOpacity>
               </View>
               {afterImageDrafts.map((image) => (
-                <View key={image.id} style={styles.imageRow}>
+                <TouchableOpacity key={image.id} style={styles.imageRow} onPress={() => openWorkEntryImage(image, 'After Image')} activeOpacity={0.75}>
+                  <MaterialIcons name="image" size={16} color="#007A5A" />
                   <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
                   <TouchableOpacity onPress={() => removeImageDraft('AF', image.id)}>
                     <MaterialIcons name="close" size={18} color="#BB0000" />
                   </TouchableOpacity>
-                </View>
+                </TouchableOpacity>
               ))}
+              {savedAfterImages
+                .filter((image) => !afterImageDrafts.some((draft) => draft.name === image.name))
+                .map((image) => (
+                  <TouchableOpacity key={image.id} style={styles.imageRow} onPress={() => openWorkEntryImage(image, 'After Image')} activeOpacity={0.75}>
+                    <MaterialIcons name="image" size={16} color="#007A5A" />
+                    <Text numberOfLines={1} style={{ color: colors.dark, flex: 1, fontSize: 12 }}>{image.name}</Text>
+                    <MaterialIcons name="open-in-new" size={16} color="#007A5A" />
+                  </TouchableOpacity>
+                ))}
             </View>
           )}
           <Button
@@ -1669,8 +2049,34 @@ const WorkEntryScreen = ({ route, navigation }) => {
         searchKeys={['ItemName', 'ItemCode']}
         renderItem={(item) => (
           <View>
-            <Text style={{ fontSize: 15, fontWeight: '600', color: '#000' }}>{item.ItemName || item.Name}</Text>
-            <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>{item.ItemCode}</Text>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: '#000' }}>
+              {item.ItemName || item.Name || item.Dscription || 'Part'}{(item.ItemCode || item.Code) ? ` (${item.ItemCode || item.Code})` : ''}
+            </Text>
+          </View>
+        )}
+      />
+
+      <ModalSelector
+        visible={showCompletionPartsSelector}
+        onClose={() => setShowCompletionPartsSelector(false)}
+        onSelect={(value, item) => {
+          const key = item.ItemCode || item.Code;
+          if (!completionParts.some((part) => (part.ItemCode || part.Code) === key)) {
+            setCompletionParts((current) => [...current, { ...item, Qty: '1' }]);
+          }
+          setShowCompletionPartsSelector(false);
+        }}
+        title="Select Part for Completion"
+        data={spareParts}
+        searchPlaceholder="Search parts..."
+        displayKey="ItemName"
+        valueKey="ItemCode"
+        searchKeys={['ItemName', 'ItemCode', 'Code', 'Name', 'Dscription']}
+        renderItem={(item) => (
+          <View>
+            <Text style={{ fontSize: 15, fontWeight: '600', color: '#000' }}>
+              {item.ItemName || item.Name || item.Dscription || 'Part'}{(item.ItemCode || item.Code) ? ` (${item.ItemCode || item.Code})` : ''}
+            </Text>
           </View>
         )}
       />
@@ -1787,10 +2193,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
         renderItem={(item) => (
           <View>
             <Text style={{ fontSize: 15, fontWeight: '600', color: '#000' }}>
-              {item.ItemName || item.Name || item.Dscription}
-            </Text>
-            <Text style={{ fontSize: 12, color: '#666' }}>
-              {item.ItemCode || item.Code}
+              {item.ItemName || item.Name || item.Dscription || 'Part'}{(item.ItemCode || item.Code) ? ` (${item.ItemCode || item.Code})` : ''}
               {item.UoM || item.InvntryUom ? ` · ${item.UoM || item.InvntryUom}` : ''}
             </Text>
           </View>
@@ -1815,6 +2218,33 @@ const WorkEntryScreen = ({ route, navigation }) => {
           </Text>
         )}
       />
+
+      <Modal
+        visible={imagePreview.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeImagePreview}
+      >
+        <View style={styles.imagePreviewOverlay}>
+          <View style={[styles.imagePreviewCard, { backgroundColor: colors.white }]}>
+            <View style={styles.imagePreviewHeader}>
+              <Text style={[styles.modalTitle, { color: colors.dark, flex: 1 }]} numberOfLines={1}>{imagePreview.title}</Text>
+              <TouchableOpacity onPress={closeImagePreview} accessibilityRole="button" accessibilityLabel="Close image preview">
+                <MaterialIcons name="close" size={22} color={colors.dark} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.imagePreviewContent}>
+              {imagePreview.loading ? (
+                <ActivityIndicator size="large" color={colors.primary} />
+              ) : imagePreview.uri ? (
+                <Image source={{ uri: imagePreview.uri }} style={styles.imagePreviewImage} resizeMode="contain" />
+              ) : (
+                <Text style={{ color: colors.gray }}>Unable to load image.</Text>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Complete Work confirmation */}
       <ConfirmationModal
@@ -1868,6 +2298,26 @@ const styles = StyleSheet.create({
   entryDesc: { fontSize: 13, fontWeight: '600' },
   entryRemarks: { fontSize: 11, marginTop: 2 },
   entryDate: { fontSize: 10, marginTop: 2 },
+  entryDetailDivider: {
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    marginTop: SPACING.sm,
+    paddingTop: SPACING.sm,
+  },
+  entryDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  workCodeBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: SPACING.xs,
+  },
+  workCodeBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
   partsBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1954,6 +2404,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
     marginTop: 6,
+  },
+  imagePreviewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    padding: SPACING.md,
+  },
+  imagePreviewCard: {
+    borderRadius: BORDER_RADIUS.lg,
+    overflow: 'hidden',
+    maxHeight: '90%',
+  },
+  imagePreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+  },
+  imagePreviewContent: {
+    height: 420,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#111827',
+  },
+  imagePreviewImage: {
+    width: '100%',
+    height: 420,
   },
   awaitingPill: {
     marginTop: 10,

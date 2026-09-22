@@ -69,6 +69,18 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     return rawType.includes('breakdown') || rawType.includes('brk');
   };
 
+  const isDriverComplaintJobCard = () => {
+    const rawType = String(
+      routeComplaintType
+      || workOrder?.ComplaintType
+      || workOrder?.FormType
+      || workOrder?.JobType
+      || workOrder?.Type
+      || ''
+    ).trim().toLowerCase();
+    return rawType.includes('driver') || rawType.includes('complaint') || rawType === 'd' || rawType === 'jca';
+  };
+
   const canManageMechanicsOnJobCard = supervisorUser && (isBreakdownJobCard() || String(
     workOrder?.AssignmentType
     || workOrder?.AssignType
@@ -139,6 +151,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
   const [previewImageUri, setPreviewImageUri] = useState(null);
   const [previewImageTitle, setPreviewImageTitle] = useState('');
+  const [previewImageLoading, setPreviewImageLoading] = useState(false);
+  const [responseItemModal, setResponseItemModal] = useState(null);
   const [teamMemberCodes, setTeamMemberCodes] = useState([]);
   const [selectedViewMechanicCode, setSelectedViewMechanicCode] = useState('');
 
@@ -335,6 +349,246 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     return '';
   };
 
+  const getWorkEntryResponseForDisplay = (entry) => {
+    const source = entry?.__rawWorkEntry || entry || {};
+    const excludedKeys = new Set([
+      'AssignedMechanics',
+      'MechanicStartDt',
+      'MechanicStartTm',
+      'MechanicsTotalHrs',
+      'WorkDoneDetails',
+      'DetailedFaults',
+      'DetailedParts',
+      'DetailedSpecialTools',
+      '__fallbackKey',
+      '__rawWorkEntry',
+    ]);
+
+    return Object.fromEntries(Object.entries(source).filter(([key]) => (
+      !excludedKeys.has(key)
+      && (!isDriverComplaintJobCard() || !/tow|repair/i.test(key))
+    )));
+  };
+
+  const getWorkEntryDetails = (entry) => {
+    if (Array.isArray(entry?.Details)) return entry.Details;
+    if (Array.isArray(entry?.WorkEntries?.[0]?.Details)) return entry.WorkEntries[0].Details;
+    if (Array.isArray(entry?.WorkDone)) return entry.WorkDone;
+    return [];
+  };
+
+  const formatWorkEntryResponseLabel = (key) => String(key || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+  const renderWorkEntryResponseValue = (value, key = '', depth = 0) => {
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        return <Text style={[styles.workEntryResponseValue, { color: colors.gray }]}>None</Text>;
+      }
+      return (
+        <View style={styles.workEntryResponseGrid}>
+          {value.map((item, index) => (
+            <View key={`${key || 'item'}-${index}`} style={styles.workEntryResponseItemCard}>
+              <Text style={[styles.workEntryResponseItemTitle, { color: colors.gray }]}>Item {index + 1}</Text>
+              {renderWorkEntryResponseValue(item, `${key || 'item'}-${index}`, depth + 1)}
+            </View>
+          ))}
+        </View>
+      );
+    }
+
+    if (value && typeof value === 'object') {
+      return (
+        <View style={styles.workEntryResponseGrid}>
+          {Object.entries(value).map(([childKey, childValue]) => (
+            <View key={`${key || 'object'}-${childKey}`} style={styles.workEntryResponseCell}>
+              <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>
+                {formatWorkEntryResponseLabel(childKey)}
+              </Text>
+              {renderWorkEntryResponseValue(childValue, childKey, depth + 1)}
+            </View>
+          ))}
+        </View>
+      );
+    }
+
+    const displayValue = value === null || value === undefined || value === '' ? '-' : String(value);
+    const isBadge = /status|type/i.test(key);
+    return isBadge ? (
+      <View style={[styles.workEntryResponseBadge, { backgroundColor: colors.primary + '18', borderColor: colors.primary + '45' }]}>
+        <Text style={[styles.workEntryResponseBadgeText, { color: colors.primary }]}>{displayValue}</Text>
+      </View>
+    ) : (
+      <Text style={[styles.workEntryResponseValue, { color: colors.dark }]}>{displayValue}</Text>
+    );
+  };
+
+  const renderWorkEntryResponseCards = (entry) => {
+    const response = getWorkEntryResponseForDisplay(entry);
+    const responseValue = (value) => value === null || value === undefined || value === '' ? '-' : String(value);
+    const renderCard = (title, content, badge) => (
+      <View style={[styles.workEntryResponseCard, { backgroundColor: colors.white, borderColor: colors.border || '#E5E7EB' }]}>
+        <View style={styles.workEntryResponseCardHeader}>
+          <Text style={[styles.workEntryResponseCardTitle, { color: colors.dark }]}>{title}</Text>
+          {badge !== undefined && (
+            <View style={[styles.workEntryResponseCountBadge, { backgroundColor: colors.primary + '18', borderColor: colors.primary + '45' }]}>
+              <Text style={[styles.workEntryResponseCountText, { color: colors.primary }]}>{badge}</Text>
+            </View>
+          )}
+        </View>
+        {content}
+      </View>
+    );
+    const renderRows = (rows, prefix) => (
+      <View style={styles.workEntryResponseGrid}>
+        {rows.map((row) => (
+          <View key={`${prefix}-${row.label}`} style={styles.workEntryResponseCell}>
+            <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>{row.label}</Text>
+            {renderWorkEntryResponseValue(row.value, row.label, 1)}
+          </View>
+        ))}
+      </View>
+    );
+    const knownKeys = new Set([
+      'AcceptDate', 'AcceptTime', 'CompleteDate', 'CompleteTime', 'Depot', 'DocEntry', 'DocNum',
+      'FaultCode', 'FaultLine', 'FaultName', 'FinalRemarks', 'Images', 'JobCardDocEntry',
+      'LabourHours', 'MechanicCode', 'MechanicName', 'Parts', 'SpecialTools', 'StartDate',
+      'StartTime', 'Status', 'Vehicle', 'VerifyBy', 'VerifyDate', 'VerifyRemarks', 'VerifyTime',
+      'WorkDone',
+    ]);
+    const additionalFields = Object.entries(response).filter(([key]) => !knownKeys.has(key));
+    const workDetails = getWorkEntryDetails(response);
+    const images = Array.isArray(response.Images) ? response.Images : [];
+    const parts = Array.isArray(response.Parts) ? response.Parts : [];
+    const specialTools = Array.isArray(response.SpecialTools) ? response.SpecialTools : [];
+    const overviewRows = [
+      { label: 'Mechanic', value: response.MechanicName },
+      { label: 'Mechanic Code', value: response.MechanicCode },
+      { label: 'Vehicle', value: response.Vehicle },
+      { label: 'Depot', value: response.Depot },
+      { label: 'Job Card', value: response.JobCardDocEntry },
+      { label: 'Work Entry No', value: response.DocNum || response.DocEntry },
+    ];
+    const renderOpenButton = (title, item, type) => (
+      <TouchableOpacity
+        style={styles.workEntryResponseOpenButton}
+        onPress={() => setResponseItemModal({ title, item, type })}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${title}`}
+      >
+        <MaterialIcons name="open-in-new" size={18} color={colors.primary} />
+      </TouchableOpacity>
+    );
+    const renderWorkDetailsList = workDetails.length > 0 ? (
+      <View style={styles.workEntryList}>
+        <View style={styles.workEntryListHeader}>
+          <Text style={[styles.workEntryListHeaderText, { color: colors.gray, flex: 1.1 }]}>Code</Text>
+          <Text style={[styles.workEntryListHeaderText, { color: colors.gray, flex: 3 }]}>Work Done</Text>
+          <View style={{ width: 36 }} />
+        </View>
+        {workDetails.map((detail, index) => (
+          <View key={`work-detail-${index}`} style={[styles.workEntryListRow, { borderColor: colors.border || '#E5E7EB' }]}>
+            <Text style={[styles.workEntryListValue, styles.workEntryListEmphasis, { color: colors.dark, flex: 1.1 }]} numberOfLines={2}>{responseValue(detail?.WorkCode)}</Text>
+            <Text style={[styles.workEntryListValue, { color: colors.dark, flex: 3 }]} numberOfLines={2}>{responseValue(detail?.WorkDone)}</Text>
+            {renderOpenButton('work details', detail, 'work')}
+          </View>
+        ))}
+      </View>
+    ) : <Text style={[styles.workEntryResponseValue, { color: colors.gray }]}>No work details available.</Text>;
+    const renderPartsList = parts.length > 0 ? (
+      <View style={styles.workEntryList}>
+        <View style={styles.workEntryListHeader}>
+          <Text style={[styles.workEntryListHeaderText, { color: colors.gray, flex: 2.4 }]}>Part</Text>
+          <Text style={[styles.workEntryListHeaderText, { color: colors.gray, flex: 1.8 }]}>Quantity</Text>
+          <View style={{ width: 36 }} />
+        </View>
+        {parts.map((part, index) => (
+          <View key={`part-${index}`} style={[styles.workEntryListRow, { borderColor: colors.border || '#E5E7EB' }]}>
+            <Text style={[styles.workEntryListValue, styles.workEntryListEmphasis, { color: colors.dark, flex: 2.4 }]} numberOfLines={2}>{responseValue(part?.ItemName || part?.ItemCode)}</Text>
+            <Text style={[styles.workEntryListValue, { color: colors.dark, flex: 1.8 }]} numberOfLines={2}>{`Req ${responseValue(part?.ReqQty)} | Iss ${responseValue(part?.IssQty ?? part?.IssuedQty)} | Rec ${responseValue(part?.RecQty ?? part?.ReceivedQty)}`}</Text>
+            {renderOpenButton('part details', part, 'part')}
+          </View>
+        ))}
+      </View>
+    ) : <Text style={[styles.workEntryResponseValue, { color: colors.gray }]}>No parts linked.</Text>;
+
+    return (
+      <View style={styles.workEntryResponseCards}>
+        {renderCard('Overview', (
+          <View style={styles.workEntryResponseGrid}>
+            {overviewRows.map((row) => (
+              <View key={`overview-${row.label}`} style={styles.workEntryResponseCell}>
+                <Text style={[styles.workEntryResponseGridLabel, { color: colors.gray }]}>{row.label}</Text>
+                <Text style={[styles.workEntryResponseGridValue, { color: colors.dark }]}>{responseValue(row.value)}</Text>
+              </View>
+            ))}
+          </View>
+        ))}
+
+        {renderCard('Fault Details', renderRows([
+          { label: 'Fault', value: response.FaultName },
+          { label: 'Fault Code', value: response.FaultCode },
+          { label: 'Fault Line', value: response.FaultLine },
+          { label: 'Labour Hours', value: response.LabourHours },
+        ], 'fault'))}
+
+        {renderCard('Timeline', renderRows([
+          { label: 'Accepted', value: `${responseValue(response.AcceptDate)} ${responseValue(response.AcceptTime)}` },
+          { label: 'Started', value: `${responseValue(response.StartDate)} ${responseValue(response.StartTime)}` },
+          { label: 'Completed', value: `${responseValue(response.CompleteDate)} ${responseValue(response.CompleteTime)}` },
+          { label: 'Verified', value: `${responseValue(response.VerifyDate)} ${responseValue(response.VerifyTime)}` },
+        ], 'timeline'))}
+
+        {renderCard('Verification', renderRows([
+          { label: 'Status', value: response.Status },
+          { label: 'Verified By', value: response.VerifyBy },
+          { label: 'Verify Remarks', value: response.VerifyRemarks },
+          { label: 'Final Remarks', value: response.FinalRemarks },
+        ], 'verification'))}
+
+        {renderCard('Work Details', renderWorkDetailsList, workDetails.length)}
+
+        {renderCard('Images', images.length > 0
+          ? images.map((image, index) => (
+            <TouchableOpacity
+              key={`image-${index}`}
+              style={[styles.workEntryResponseItemCard, { borderColor: colors.border || '#E5E7EB' }]}
+              onPress={() => openImagePreview(
+                image?.FileName || image?.ImgPath || image?.ImagePath || image?.ImageName || image?.Path || image?.Url,
+                image?.ImgType === 'BF' ? 'Before Image' : image?.ImgType === 'AF' ? 'After Image' : 'Work Image',
+              )}
+              activeOpacity={0.75}
+            >
+              <View style={styles.workEntryResponseImageHeader}>
+                <MaterialIcons name="image" size={18} color={colors.primary} />
+                <Text style={[styles.workEntryResponseImageTitle, { color: colors.dark }]}>Open Image</Text>
+                <MaterialIcons name="open-in-new" size={18} color={colors.primary} />
+              </View>
+              {renderWorkEntryResponseValue(image, `image-${index}`)}
+            </TouchableOpacity>
+          ))
+          : <Text style={[styles.workEntryResponseValue, { color: colors.gray }]}>No images available.</Text>, images.length)}
+
+        {renderCard('Parts', renderPartsList, parts.length)}
+
+        {specialTools.length > 0 && renderCard('Special Tools', specialTools.map((tool, index) => (
+          <View key={`tool-${index}`} style={[styles.workEntryResponseItemCard, { borderColor: colors.border || '#E5E7EB' }]}>
+            {renderWorkEntryResponseValue(tool, `tool-${index}`)}
+          </View>
+        )), specialTools.length)}
+
+        {additionalFields.length > 0 && renderCard('Additional Details', additionalFields.map(([key, value]) => (
+          <View key={key} style={[styles.workEntryResponseItemCard, { borderColor: colors.border || '#E5E7EB' }]}>
+            <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>{formatWorkEntryResponseLabel(key)}</Text>
+            {renderWorkEntryResponseValue(value, key)}
+          </View>
+        )))}
+      </View>
+    );
+  };
+
   const mapWorkEntryForView = (entry, index = 0) => {
     const breakdownRepair = getBreakdownRepairInfo(entry) || getBreakdownRepairInfo(entry?.WorkEntries) || getBreakdownRepairInfo(entry?.BreakDownRepair);
     const rawRepairMode = String(
@@ -385,6 +639,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
     return {
       ...entry,
+      __rawWorkEntry: entry,
       AssignedMechanics: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-',
       MechanicStartDt: entry?.StartDate || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
       MechanicStartTm: entry?.StartTime || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
@@ -1212,10 +1467,47 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     catch (e) { console.log('refresh failed:', e?.message || e); }
     finally { setRefreshing(false); }
   };
-  const openImagePreview = (uri, title) => {
-    setPreviewImageUri(uri);
+  const extractBase64Image = (response) => {
+    const queue = [response?.Data ?? response];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) continue;
+      if (typeof current === 'string') {
+        const value = current.trim();
+        if (value.startsWith('data:image/')) return value;
+        if (value.length > 100) return value;
+        continue;
+      }
+      if (Array.isArray(current)) {
+        current.forEach((item) => queue.push(item));
+        continue;
+      }
+      if (typeof current === 'object') {
+        Object.values(current).forEach((value) => queue.push(value));
+      }
+    }
+    return '';
+  };
+
+  const openImagePreview = async (fileName, title) => {
+    const imageFileName = String(fileName || '').trim();
+    if (!imageFileName) return;
+    setPreviewImageUri(null);
     setPreviewImageTitle(title || 'Image');
     setImagePreviewVisible(true);
+    setPreviewImageLoading(true);
+    try {
+      const response = await workEntryService.getWorkEntryImageBase64(imageFileName);
+      const rawBase64 = extractBase64Image(response);
+      if (!rawBase64) throw new Error('Image data was not returned by the server.');
+      const contentType = /^data:(image\/[a-z0-9.+-]+);base64,/i.exec(rawBase64)?.[1] || 'image/jpeg';
+      const cleanBase64 = rawBase64.replace(/^data:[^;]+;base64,/i, '');
+      setPreviewImageUri(`data:${contentType};base64,${cleanBase64}`);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Preview failed', text2: error?.message || 'Unable to load image.' });
+    } finally {
+      setPreviewImageLoading(false);
+    }
   };
 
   const fetchWorkOrderDetails = async () => {
@@ -2517,7 +2809,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                       </Text>
                     </View>
 
-                    {(entry?.TowRequested || entry?.TowStatus || entry?.TowDepot || entry?.TowDestinationType || entry?.RepairMode || entry?.TowImage1 || entry?.TowImage2 || entry?.BreakDownRepair) && (
+                    {isBreakdownJobCard() && !isDriverComplaintJobCard() && (entry?.TowRequested || entry?.TowStatus || entry?.TowDepot || entry?.TowDestinationType || entry?.RepairMode || entry?.TowImage1 || entry?.TowImage2 || entry?.BreakDownRepair) && (
                       <>
                         <View style={styles.workOrderEntryRow}>
                           <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow:</Text>
@@ -2588,6 +2880,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                         ))}
                       </View>
                     )}
+
+                    {renderWorkEntryResponseCards(entry)}
 
                     {supervisorUser && isAwaitingSupervisorVerification(entry) && (
                       <View style={{ flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.md }}>
@@ -2735,25 +3029,6 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         </View>
       </View>
 
-      <View style={[styles.summaryStrip, { backgroundColor: colors.white, borderColor: inputBorderColor }]}> 
-        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
-          <Text style={[styles.summaryValue, { color: colors.dark }]}>{mechanicCount}</Text>
-          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Mechanics</Text>
-        </View>
-        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
-          <Text style={[styles.summaryValue, { color: colors.dark }]}>{partCount}</Text>
-          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Parts</Text>
-        </View>
-        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
-          <Text style={[styles.summaryValue, { color: colors.dark }]}>{workOrderEntries.length}</Text>
-          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Work Entries</Text>
-        </View>
-        <View style={[styles.summaryCard, { backgroundColor: colors.light }]}>
-          <Text style={[styles.summaryValue, { color: colors.dark }]}>{mechanicPartRequests.length}</Text>
-          <Text style={[styles.summaryLabel, { color: colors.gray }]}>Part Requests</Text>
-        </View>
-      </View>
-
       {hasPendingTransfer && (
         <View style={[styles.transferPendingCard, { backgroundColor: colors.white, borderColor: inputBorderColor }]}>
           <Text style={[styles.transferPendingTitle, { color: colors.dark }]}>Job Card Transfer Request</Text>
@@ -2866,6 +3141,68 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       <ScrollView style={styles.contentContainer}>
         {renderTabContent()}
       </ScrollView>
+
+      <Modal
+        visible={imagePreviewVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setImagePreviewVisible(false);
+          setPreviewImageUri(null);
+        }}
+      >
+        <View style={styles.imagePreviewBackdrop}>
+          <View style={[styles.imagePreviewModal, { backgroundColor: colors.white }]}>
+            <View style={styles.imagePreviewHeader}>
+              <Text style={[styles.workEntryModalTitle, { color: colors.dark }]} numberOfLines={1}>
+                {previewImageTitle}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setImagePreviewVisible(false);
+                  setPreviewImageUri(null);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Close image preview"
+              >
+                <MaterialIcons name="close" size={22} color={colors.dark} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.imagePreviewContent}>
+              {previewImageLoading ? (
+                <ActivityIndicator size="large" color={colors.primary} />
+              ) : previewImageUri ? (
+                <Image source={{ uri: previewImageUri }} style={styles.imagePreview} resizeMode="contain" />
+              ) : (
+                <Text style={[styles.workEntryModalSecondary, { color: colors.gray }]}>Unable to load image.</Text>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={Boolean(responseItemModal)}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setResponseItemModal(null)}
+      >
+        <View style={styles.imagePreviewBackdrop}>
+          <View style={[styles.responseItemModal, { backgroundColor: colors.white }]}>
+            <View style={styles.imagePreviewHeader}>
+              <Text style={[styles.workEntryModalTitle, { color: colors.dark }]} numberOfLines={1}>
+                {responseItemModal?.title || 'Details'}
+              </Text>
+              <TouchableOpacity onPress={() => setResponseItemModal(null)} accessibilityRole="button" accessibilityLabel="Close details">
+                <MaterialIcons name="close" size={22} color={colors.dark} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView contentContainerStyle={styles.responseItemModalContent}>
+              {responseItemModal?.item && renderWorkEntryResponseValue(responseItemModal.item)}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={Boolean(selectedWorkEntry)}
@@ -3749,6 +4086,55 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
     width: '100%',
   },
+  workEntryResponseImageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: SPACING.xs,
+  },
+  workEntryResponseImageTitle: {
+    flex: 1,
+    marginLeft: SPACING.xs,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  imagePreviewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    padding: SPACING.md,
+  },
+  imagePreviewModal: {
+    borderRadius: BORDER_RADIUS.lg,
+    overflow: 'hidden',
+    maxHeight: '90%',
+  },
+  imagePreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+  },
+  imagePreviewContent: {
+    minHeight: 320,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#111827',
+  },
+  imagePreview: {
+    width: '100%',
+    height: 420,
+  },
+  responseItemModal: {
+    borderRadius: BORDER_RADIUS.lg,
+    maxHeight: '82%',
+    overflow: 'hidden',
+  },
+  responseItemModalContent: {
+    padding: SPACING.md,
+    paddingBottom: SPACING.xl,
+  },
   workEntryModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.45)',
@@ -3910,6 +4296,143 @@ const styles = StyleSheet.create({
   entryDetailsSecondary: {
     fontSize: 11,
     marginTop: 3,
+  },
+  workEntryResponseNested: {
+    marginLeft: SPACING.sm,
+  },
+  workEntryResponseCards: {
+    marginTop: SPACING.sm,
+  },
+  workEntryResponseCard: {
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    padding: 10,
+    marginBottom: 10,
+    backgroundColor: '#FAFAFA',
+  },
+  workEntryResponseCardTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  workEntryResponseCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  workEntryResponseCountBadge: {
+    minWidth: 24,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  workEntryResponseCountText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  workEntryResponseGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginHorizontal: -4,
+  },
+  workEntryResponseCell: {
+    width: '50%',
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.sm,
+    marginBottom: 2,
+  },
+  workEntryResponseGridLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  workEntryResponseGridValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  workEntryResponseBadge: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    marginTop: 2,
+  },
+  workEntryResponseBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  workEntryList: {
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: BORDER_RADIUS.sm,
+    overflow: 'hidden',
+  },
+  workEntryListHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 34,
+    paddingHorizontal: SPACING.xs,
+    backgroundColor: '#F3F4F6',
+  },
+  workEntryListHeaderText: {
+    paddingHorizontal: 5,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  workEntryListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 52,
+    paddingHorizontal: SPACING.xs,
+    borderTopWidth: 1,
+  },
+  workEntryListValue: {
+    paddingHorizontal: 5,
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  workEntryListEmphasis: {
+    fontWeight: '700',
+  },
+  workEntryResponseOpenButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: '#EFF6FF',
+  },
+  workEntryResponseItemCard: {
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.sm,
+    padding: SPACING.xs,
+    marginTop: SPACING.xs,
+  },
+  workEntryResponseItem: {
+    marginTop: SPACING.xs,
+    paddingLeft: SPACING.xs,
+    borderLeftWidth: 2,
+    borderLeftColor: '#D9E2EC',
+  },
+  workEntryResponseItemTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  workEntryResponseRow: {
+    marginTop: SPACING.xs,
+  },
+  workEntryResponseLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  workEntryResponseValue: {
+    fontSize: 12,
+    marginTop: 2,
   },
   entryDetailsMeta: {
     fontSize: 10,

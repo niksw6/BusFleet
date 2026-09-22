@@ -56,6 +56,9 @@ export const lineBreakdownService = {
    * @param {Object} payload
    * @param {string} payload.CompanyDB
    * @param {number} payload.WorkEntryDocEntry
+  * @param {string} payload.RepairType - P (permanent) or T (temporary)
+  * @param {string} payload.RepairMode - P (permanent) or T (temporary)
+  * @param {string} payload.RepairOnSite - P (permanent) or T (temporary)
    * @param {string} payload.FinalRemarks
    */
   completeLineBreakdownWorkEntry: async (payload) => {

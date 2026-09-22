@@ -45,6 +45,12 @@ const formatApiLog = ({ method, result, user, action, status, url, payload, resp
 
 // Fetch-based API client (native to React Native)
 const request = async (url, options = {}) => {
+  const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
+  const method = options.method || 'GET';
+  const action = getActionName(fullUrl);
+  let requestUser = 'Unknown';
+  let timeoutId = null;
+
   try {
     const dbName = await getDBName();
     
@@ -66,13 +72,10 @@ const request = async (url, options = {}) => {
       headers['Cookie'] = sessionCookie;
     }
     
-    const fullUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
-    const method = options.method || 'GET';
-    const action = getActionName(fullUrl);
-    const user = await getLoggedInUser();
+    requestUser = await getLoggedInUser();
     
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), options.timeout || 60000);
+    timeoutId = setTimeout(() => controller.abort(), options.timeout || 60000);
     
     const response = await fetch(fullUrl, {
       ...options,
@@ -106,7 +109,7 @@ const request = async (url, options = {}) => {
       logApi('ERROR', formatApiLog({
         method,
         result: 'Error',
-        user,
+        user: requestUser,
         action,
         status: response.status,
         url: fullUrl,
@@ -124,7 +127,7 @@ const request = async (url, options = {}) => {
     logApi(result, formatApiLog({
       method,
       result: result === 'SUCCESS' ? 'Success' : 'Error',
-      user,
+      user: requestUser,
       action,
       status: response.status,
       url: fullUrl,
@@ -135,14 +138,31 @@ const request = async (url, options = {}) => {
     
     return { data, status: response.status, ok: response.ok };
   } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (error && typeof error === 'object') {
+      error.apiUrl = error.apiUrl || fullUrl;
+      error.apiAction = error.apiAction || action;
+      error.apiMethod = error.apiMethod || method;
+    }
     if (error.name === 'AbortError') {
-      logApi('ERROR', 'Error | Action: Request | Message: Request timeout');
+      logApi('ERROR', `Error | ${method} ${action} | URL: ${fullUrl} | Message: Request timeout`);
       const timeoutError = new Error('Request timeout');
       timeoutError.apiLogged = true;
+      timeoutError.apiUrl = fullUrl;
+      timeoutError.apiAction = action;
+      timeoutError.apiMethod = method;
       throw timeoutError;
     }
     if (!error?.apiLogged) {
-      logApi('ERROR', `Error | Action: Request | Message: ${error?.message || 'Unexpected request error'}`);
+      logApi('ERROR', formatApiLog({
+        method,
+        result: 'Error',
+        user: requestUser,
+        action,
+        url: fullUrl,
+        payload: method === 'GET' ? '' : options.body || '',
+        message: error?.message || 'Unexpected request error',
+      }), method);
     }
     throw error;
   }
@@ -179,7 +199,8 @@ export const handleApiError = (error) => {
     return 'Request timeout. Please check your connection and try again.';
   }
   if (error.message?.includes('Network request failed')) {
-    return 'No response from server. Please check your internet connection.';
+    const action = error.apiAction || 'request';
+    return `Network request failed for ${action}. Please check the connection or endpoint.`;
   }
   return error.message || 'An unexpected error occurred';
 };
