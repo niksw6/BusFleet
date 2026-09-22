@@ -141,12 +141,14 @@ const getTowWorkflowState = (entry) => {
   }));
   const repairMode = String(repair?.RepairMode || '').trim().toUpperCase();
   const isTow = repairMode === 'T' || String(entry?.TowStatus || '').trim().toUpperCase() === 'TOW';
+  const repairOnSite = String(repair?.RepairOnSite || '').trim().toUpperCase();
   return {
     repair,
     repairMode,
+    repairOnSite,
     isTow,
     towImages,
-    depot: String(repair?.Depot || repair?.DepotName || entry?.Depot || '').trim(),
+    depot: String(repair?.Depot || repair?.DepotName || '').trim(),
   };
 };
 
@@ -478,6 +480,7 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '') => {
     jobCardDocEntry: entry?.JobCardDocEntry || fallbackItem?.JobCardDocEntry || fallbackItem?.DocEntry || '',
     faultLine: entry?.FaultLine || fallbackItem?.FaultLine || '',
     faultCode: entry?.FaultCode || fallbackItem?.FaultCode || '',
+    BreakDownRepair: entry?.BreakDownRepair || fallbackItem?.BreakDownRepair || [],
     depot: entry?.Depot || fallbackItem?.Depot || '',
     vehicle: entry?.Vehicle || fallbackItem?.Vehicle || fallbackItem?.BusNo || '',
     mechanicCode: entry?.MechanicCode || entry?.UserCode || fallbackItem?.MechanicCode || '',
@@ -1638,48 +1641,60 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                     </View>
                   </View>
 
-                  {towState.isTow && (
+                  {(towState.isTow || towState.repairMode === 'R') && (
                     <View style={[styles.infoCard, { borderColor: '#FDBA74', backgroundColor: '#FFF7ED' }]}>
-                      <Text style={[styles.infoCardTitle, { color: '#9A4A00' }]}>Tow Workflow</Text>
+                      <Text style={[styles.infoCardTitle, { color: '#9A4A00' }]}>{towState.isTow ? 'Tow Workflow' : 'Repair Workflow'}</Text>
                       <View style={styles.infoRow}>
                         <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Repair Mode</Text>
-                        <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.repairMode === 'T' ? 'Tow to Depot' : towState.repairMode || 'Tow'}</Text>
+                        <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.repairMode === 'R' ? 'Repair on site' : towState.repairMode === 'T' ? 'Tow to Depot' : towState.repairMode || 'Tow'}</Text>
                       </View>
-                      <View style={styles.infoRow}>
-                        <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Depot</Text>
-                        <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.depot || '-'}</Text>
-                      </View>
-                      <View style={styles.infoRow}>
-                        <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Tow Images</Text>
-                        <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.towImages.length > 0 ? towState.towImages.map((img) => img.fileName).join(', ') : 'No tow image yet'}</Text>
-                      </View>
-                      <View style={styles.actionsRow}>
-                        <TouchableOpacity onPress={pickTowImageForSupervisor} style={[styles.actionBtn, { backgroundColor: '#00689E' }]}>
-                          <MaterialIcons name="photo-library" size={16} color="#FFFFFF" />
-                          <Text style={styles.actionBtnText}>Upload / Capture Tow Image</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={saveSupervisorTowImage} style={[styles.actionBtn, { backgroundColor: '#007A5A' }]} disabled={towImageDrafts.length === 0 || !!actioningWorkEntry}>
-                          <Text style={styles.actionBtnText}>{towImageDrafts.length > 0 ? 'Save Tow Image' : 'Select Tow Image'}</Text>
-                        </TouchableOpacity>
-                      </View>
-                      {towImageDrafts.length > 0 && (
-                        <View style={{ marginTop: 8 }}>
-                          {towImageDrafts.map((image) => (
-                            <View key={image.id} style={[styles.imageRow, { borderColor: '#FDBA74' }]}>
-                              <Text numberOfLines={1} style={{ color: '#7C2D12', flex: 1, fontSize: 12 }}>{image.name}</Text>
-                              <TouchableOpacity onPress={() => setTowImageDrafts((prev) => prev.filter((item) => item.id !== image.id))}>
-                                <MaterialIcons name="close" size={18} color="#BB0000" />
-                              </TouchableOpacity>
-                            </View>
-                          ))}
+                      {towState.depot && (
+                        <View style={styles.infoRow}>
+                          <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Depot</Text>
+                          <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.depot}</Text>
                         </View>
                       )}
-                      <View style={styles.actionsRow}>
-                        <TouchableOpacity onPress={handleSupervisorCompleteTow} style={[styles.actionBtn, { backgroundColor: '#C2410C' }]} disabled={towCompleted || !!actioningWorkEntry}>
-                          <MaterialIcons name="local-shipping" size={16} color="#FFFFFF" />
-                          <Text style={styles.actionBtnText}>{towCompleted ? 'Tow Completed' : 'Complete Tow'}</Text>
-                        </TouchableOpacity>
-                      </View>
+                      {towState.repairMode === 'R' && towState.repairOnSite && (
+                        <View style={styles.infoRow}>
+                          <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Repair On Site</Text>
+                          <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.repairOnSite === 'P' ? 'Permanent repair' : towState.repairOnSite === 'T' ? 'Temporary repair' : towState.repairOnSite}</Text>
+                        </View>
+                      )}
+                      {towState.isTow && (
+                        <>
+                          <View style={styles.infoRow}>
+                            <Text style={[styles.infoRowLabel, { color: '#9A4A00' }]}>Tow Images</Text>
+                            <Text style={[styles.infoRowValue, { color: '#7C2D12' }]}>{towState.towImages.length > 0 ? towState.towImages.map((img) => img.fileName).join(', ') : 'No tow image yet'}</Text>
+                          </View>
+                          <View style={styles.actionsRow}>
+                            <TouchableOpacity onPress={pickTowImageForSupervisor} style={[styles.actionBtn, { backgroundColor: '#00689E' }]}>
+                              <MaterialIcons name="photo-library" size={16} color="#FFFFFF" />
+                              <Text style={styles.actionBtnText}>Upload / Capture Tow Image</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={saveSupervisorTowImage} style={[styles.actionBtn, { backgroundColor: '#007A5A' }]} disabled={towImageDrafts.length === 0 || !!actioningWorkEntry}>
+                              <Text style={styles.actionBtnText}>{towImageDrafts.length > 0 ? 'Save Tow Image' : 'Select Tow Image'}</Text>
+                            </TouchableOpacity>
+                          </View>
+                          {towImageDrafts.length > 0 && (
+                            <View style={{ marginTop: 8 }}>
+                              {towImageDrafts.map((image) => (
+                                <View key={image.id} style={[styles.imageRow, { borderColor: '#FDBA74' }]}>
+                                  <Text numberOfLines={1} style={{ color: '#7C2D12', flex: 1, fontSize: 12 }}>{image.name}</Text>
+                                  <TouchableOpacity onPress={() => setTowImageDrafts((prev) => prev.filter((item) => item.id !== image.id))}>
+                                    <MaterialIcons name="close" size={18} color="#BB0000" />
+                                  </TouchableOpacity>
+                                </View>
+                              ))}
+                            </View>
+                          )}
+                          <View style={styles.actionsRow}>
+                            <TouchableOpacity onPress={handleSupervisorCompleteTow} style={[styles.actionBtn, { backgroundColor: '#C2410C' }]} disabled={towCompleted || !!actioningWorkEntry}>
+                              <MaterialIcons name="local-shipping" size={16} color="#FFFFFF" />
+                              <Text style={styles.actionBtnText}>{towCompleted ? 'Tow Completed' : 'Complete Tow'}</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </>
+                      )}
                     </View>
                   )}
 

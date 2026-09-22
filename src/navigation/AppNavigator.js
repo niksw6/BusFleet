@@ -8,7 +8,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { LoginScreen } from '../features/auth';
 import { CreateFuelLogScreen, CreateScheduleScreen } from '../features/maintenance';
 import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, WorkEntryScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen, ReviewWorkEntriesScreen } from '../features/jobCards';
-import { CreateIncidentScreen, RepairIncidentReviewScreen, RepairJobCardAssignmentScreen, RepairWorkScreen, RepairAssemblyIssueScreen, RepairPartsRequestsScreen } from '../features/complaints';
+import { CreateIncidentScreen, RepairIncidentReviewScreen, RepairJobCardAssignmentScreen, RepairWorkScreen, RepairAssemblyIssueScreen, RepairAssemblyReceiveScreen, RepairPartReceiveScreen, RepairPartsRequestsScreen } from '../features/complaints';
 import BreakdownTeamsListScreen from '../features/breakdownTeams/screens/BreakdownTeamsListScreen';
 import BreakdownTeamPortalScreen from '../features/breakdownTeams/screens/BreakdownTeamPortalScreen';
 import DrawerNavigator from './DrawerNavigator';
@@ -200,6 +200,20 @@ const AppNavigator = () => {
                 name="RepairWork"
                 component={RepairWorkScreen}
                 options={{ title: 'Repair Work' }}
+              />
+            )}
+            {fieldStaffUser && (
+              <Stack.Screen
+                name="RepairAssemblyReceive"
+                component={RepairAssemblyReceiveScreen}
+                options={{ title: 'Receive Repair Assembly' }}
+              />
+            )}
+            {fieldStaffUser && (
+              <Stack.Screen
+                name="RepairPartReceive"
+                component={RepairPartReceiveScreen}
+                options={{ title: 'Receive Repair Parts' }}
               />
             )}
             {storeUser && (

@@ -17,7 +17,7 @@ import Toast from 'react-native-toast-message';
 import { getLogs, clearLogs } from '../../../utils/logger';
 
 import { setNotifications, setUnreadCount, markAsRead, markAllAsRead } from '../../../store/slices/notificationSlice';
-import { dashboardService, complaintService, workEntryService, jobCardService, mechanicService } from '../../../api/services';
+import { dashboardService, complaintService, workEntryService, jobCardService, mechanicService, repairService } from '../../../api/services';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDateTime } from '../../../utils/helpers';
 import { isTeamLeaderUser, isMechanicUser, isFieldStaffUser, isSupervisorUser, isStoreUser } from '../../../utils/roleAccess';
@@ -375,7 +375,15 @@ const NotificationsScreen = ({ navigation }) => {
     const notificationText = String(item?.Message || item?.message || item?.Title || item?.title || '').toLowerCase();
     const isRepairJobCardAssignment = ['JR', 'RJ', 'RJC', 'RJA', 'RJT'].includes(type)
       || (notificationText.includes('repair') && (notificationText.includes('job card') || notificationText.includes('assignment')));
-    const isRepairAssemblyIssue = type === 'IRA';
+    const issuedAssemblyText = notificationText.includes('issued assembly')
+      || notificationText.includes('assembly issued')
+      || notificationText.includes('receive assembly');
+    const notificationTypeFields = [item?.NotificationType, item?.notificationType, item?.NotificationCode, item?.notificationCode]
+      .map(value => String(value || '').trim().toUpperCase());
+    const isRepairAssemblyIssue = ['IR', 'IRA'].includes(rawNotificationType)
+      || ['IR', 'IRA'].includes(type)
+      || notificationTypeFields.some(value => ['IR', 'IRA'].includes(value))
+      || issuedAssemblyText;
     const isJobCardTransferNotification = notificationText.includes('transfer')
       || notificationText.includes('transferred')
       || ['TRANSFER', 'JOB_CARD_TRANSFER', 'JOBCARDTRANSFER', 'JT', 'JCT'].includes(type)
@@ -385,7 +393,20 @@ const NotificationsScreen = ({ navigation }) => {
       || notificationText.includes('inspection is required')
     ));
     const isWorkEntryRequest = rawNotificationType === 'WERQ' || type === 'WERQ';
+    const isRepairPartRequest = rawNotificationType === 'WERQ'
+      || type === 'WERQ'
+      || ((notificationText.includes('part') || notificationText.includes('spare'))
+        && (notificationText.includes('request') || notificationText.includes('required'))
+        && notificationText.includes('repair'));
     const isTowNotification = rawNotificationType === 'TOW' || type === 'TOW';
+
+    if (supervisorUser && isRepairPartRequest) {
+      navigation.navigate('RepairPartsRequests', {
+        focusJobCardDocEntry: jobCardReference,
+        focusWorkEntryDocEntry: item?.workEntryDocEntry || item?.WorkEntryDocEntry || item?.WorkEntryNo || item?.ReferenceDocEntry || '',
+      });
+      return;
+    }
 
     if (supervisorUser && isWorkEntryRequest) {
       const isToolRequest = notificationText.includes('special tool') || notificationText.includes('tool request');
@@ -453,6 +474,38 @@ const NotificationsScreen = ({ navigation }) => {
       return;
     }
 
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && isRepairAssemblyIssue) {
+      const repairJobCardEntry = item?.JobCardEntry || item?.JobCardDocEntry || item?.DocEntry || docEntry || '';
+      const notificationAssemblyStatus = String(item?.AssemblyStatus || '').trim().toUpperCase();
+      let assemblyStatus = notificationAssemblyStatus;
+      let mechanicAssemblyStatus = String(item?.MechanicStatus || item?.Mechanics?.[0]?.Status || '').trim().toUpperCase();
+      let repairJobCard = item;
+      if (!assemblyStatus && repairJobCardEntry) {
+        try {
+          const response = await repairService.getRepairJobCard(dbName || 'MUTSPL_TEST', repairJobCardEntry);
+          const data = response?.Data ?? response?.data ?? response;
+          repairJobCard = Array.isArray(data) ? data[0] || item : { ...item, ...(data || {}) };
+          assemblyStatus = String(repairJobCard?.AssemblyStatus || '').trim().toUpperCase();
+          mechanicAssemblyStatus = String(repairJobCard?.MechanicStatus || repairJobCard?.Mechanics?.[0]?.Status || '').trim().toUpperCase();
+        } catch (error) {
+          console.warn('Unable to check assembly status from IR notification:', error?.message || error);
+        }
+      }
+      const assemblyParams = {
+        jobCardEntry: repairJobCardEntry,
+        dbName: dbName || 'MUTSPL_TEST',
+        assemblyCode: repairJobCard?.AssemblyCode || repairJobCard?.assemblyCode || repairJobCard?.Assembly || repairJobCard?.AssemblyNo || repairJobCard?.RepairAssemblyCode || repairJobCard?.RepairAssembly || '',
+        assemblyName: repairJobCard?.AssemblyName || repairJobCard?.assemblyName || repairJobCard?.AssemblyDescription || repairJobCard?.Assembly || 'Assembly',
+      };
+      const receiveDisabled = assemblyStatus === 'P' && mechanicAssemblyStatus === 'I';
+      navigation.navigate(assemblyStatus === 'R' ? 'RepairWork' : 'RepairAssemblyReceive', {
+        ...assemblyParams,
+        receiveDisabled,
+        notification: repairJobCard,
+      });
+      return;
+    }
+
     if ((isMechanicUser(user) || isFieldStaffUser(user)) && isRepairJobCardAssignment) {
       const repairJobCardEntry = String(
         item?.JobCardEntry
@@ -469,16 +522,6 @@ const NotificationsScreen = ({ navigation }) => {
         });
         return;
       }
-    }
-
-    if ((isMechanicUser(user) || isFieldStaffUser(user)) && isRepairAssemblyIssue) {
-      navigation.navigate('RepairWork', {
-        jobCardEntry: item?.JobCardEntry || item?.JobCardDocEntry || item?.DocEntry || docEntry || '',
-        dbName: dbName || 'MUTSPL_TEST',
-        assemblyCode: item?.AssemblyCode || item?.assemblyCode || item?.Assembly || item?.AssemblyNo || item?.RepairAssemblyCode || item?.RepairAssembly || '',
-        assemblyName: item?.AssemblyName || item?.assemblyName || item?.AssemblyDescription || item?.Assembly || 'Assembly',
-      });
-      return;
     }
 
     if (isStoreUser(user) && isRepairAssemblyIssue) {

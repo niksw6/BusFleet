@@ -264,16 +264,21 @@ const WorkEntryScreen = ({ route, navigation }) => {
       if (Array.isArray(source.WorkEntries)) return source.WorkEntries.flatMap((item) => getWorkEntryDetails(item));
       return [];
     });
+    // Dashboard data can contain the same detail twice: one copy with entry
+    // timestamps and one without. Prefer the timestamped copy and deduplicate
+    // by the work content rather than the API's inconsistent line/date fields.
+    const sortedRows = [...rows].sort((left, right) => {
+      const leftHasDate = Boolean(left?.EntryDate || left?.CreatedDate || left?.EntryTime || left?.CreatedTime);
+      const rightHasDate = Boolean(right?.EntryDate || right?.CreatedDate || right?.EntryTime || right?.CreatedTime);
+      return Number(rightHasDate) - Number(leftHasDate);
+    });
     const seen = new Set();
-    return rows.filter((detail, index) => {
+    return sortedRows.filter((detail, index) => {
       const key = [
-        detail?.LineId,
         detail?.WorkCode,
         detail?.WorkDone,
         detail?.OtherDescription,
         detail?.Remarks,
-        detail?.EntryDate,
-        detail?.EntryTime,
       ].map((value) => String(value ?? '').trim()).join('|') || `detail-${index}`;
       if (seen.has(key)) return false;
       seen.add(key);
@@ -292,8 +297,8 @@ const WorkEntryScreen = ({ route, navigation }) => {
 
     return imageSources
       .filter((image) => {
-        const phase = String(image?.Phase || image?.ImageType || image?.ImagePhase || image?.Type || '').trim().toUpperCase();
-        return !phase || phase === 'BF' || phase === 'BEFORE' || phase === 'BEFOREIMAGE';
+        const phase = String(image?.Phase || image?.ImageType || image?.ImagePhase || image?.ImgType || image?.Type || '').trim().toUpperCase();
+        return ['BF', 'BEFORE', 'BEFOREIMAGE'].includes(phase);
       })
       .map((image, index) => {
         const fileName = image?.FileName
@@ -1464,6 +1469,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
           <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadData(); }} colors={[colors.primary]} />
         }
       >
+        <View pointerEvents={workEntryLocked ? 'none' : 'auto'} style={workEntryLocked ? { opacity: 0.65 } : undefined}>
         {/* Header Card */}
         <View style={[styles.card, { backgroundColor: colors.white }]}>
           <View style={styles.sectionHeader}>
@@ -1927,6 +1933,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
           </Button>
         </View>
         )}
+        </View>
       </ScrollView>
 
       {/* ── Add Work Entry Modal ── */}

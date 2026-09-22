@@ -14,6 +14,20 @@ const getRows = (response) => {
   return data && typeof data === 'object' ? [data] : [];
 };
 
+const getRepairJobCardRecord = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data[0] || null;
+  if (!data || typeof data !== 'object') return null;
+  if (data.Status !== undefined || data.JobCardStatus !== undefined || data.AssignmentStatus !== undefined) return data;
+  for (const key of ['Data', 'data', 'JobCard', 'JobCardDetails', 'Result']) {
+    if (data[key]) {
+      const record = getRepairJobCardRecord(data[key]);
+      if (record) return record;
+    }
+  }
+  return data;
+};
+
 const getValue = (item, keys) => {
   for (const key of keys) {
     if (item?.[key] !== undefined && item?.[key] !== null && String(item[key]).trim()) return item[key];
@@ -29,6 +43,14 @@ const getUserCodes = (user) => [...new Set([
   user?.UserCode,
   user?.EmpCode,
 ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean))];
+
+const getAssemblyStatus = (jobCard) => String(jobCard?.AssemblyStatus || '').trim().toUpperCase();
+const getMechanicAssemblyStatus = (jobCard, user) => {
+  const userCode = String(user?.User || user?.user || user?.UserCode || user?.Code || '').trim().toLowerCase();
+  const mechanic = (Array.isArray(jobCard?.Mechanics) ? jobCard.Mechanics : []).find((item) => [item?.UserCode, item?.User, item?.Code, item?.EmpCode]
+    .some(value => String(value || '').trim().toLowerCase() === userCode));
+  return String(mechanic?.Status || mechanic?.MechanicStatus || '').trim().toUpperCase();
+};
 
 const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
@@ -48,13 +70,35 @@ const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
     }
     try {
       const response = await repairService.getRepairJobCard(dbName, jobCardEntry);
-      setJobCard(getRows(response)[0] || null);
+      const fetchedJobCard = getRepairJobCardRecord(response);
+      setJobCard(fetchedJobCard);
+      const assemblyStatus = getAssemblyStatus(fetchedJobCard);
+      const mechanicAssemblyStatus = getMechanicAssemblyStatus(fetchedJobCard, user);
+      if (assemblyStatus === 'I' || (assemblyStatus === 'P' && mechanicAssemblyStatus === 'I')) {
+        navigation.replace('RepairAssemblyReceive', {
+          jobCardEntry,
+          dbName,
+          incidentEntry: getValue(fetchedJobCard, ['IncidentEntry', 'IncidentDocEntry']),
+          assemblyCode: getValue(fetchedJobCard, ['AssemblyCode', 'Assembly', 'AssemblyNo', 'RepairAssemblyCode']),
+          assemblyName: getValue(fetchedJobCard, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || 'Assembly',
+          receiveDisabled: assemblyStatus === 'P' && mechanicAssemblyStatus === 'I',
+        });
+      } else if (assemblyStatus === 'R') {
+        navigation.replace('RepairWork', {
+          jobCardEntry,
+          dbName,
+          incidentEntry: getValue(fetchedJobCard, ['IncidentEntry', 'IncidentDocEntry']),
+          storePersonID: getValue(fetchedJobCard, ['StorePersonID', 'StorePerson', 'StoreCode']),
+          assemblyCode: getValue(fetchedJobCard, ['AssemblyCode', 'Assembly', 'AssemblyNo', 'RepairAssemblyCode']),
+          assemblyName: getValue(fetchedJobCard, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || 'Assembly',
+        });
+      }
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Unable to load repair job card', text2: error?.message || 'Please try again.' });
     } finally {
       setLoading(false);
     }
-  }, [dbName, jobCardEntry]);
+  }, [dbName, jobCardEntry, navigation, user]);
 
   useEffect(() => { loadJobCard(); }, [loadJobCard]);
 

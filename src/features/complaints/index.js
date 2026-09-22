@@ -11,6 +11,8 @@ export { default as RepairIncidentReviewScreen } from './screens/RepairIncidentR
 export { default as RepairJobCardAssignmentScreen } from './screens/RepairJobCardAssignmentScreen';
 export { default as RepairWorkScreen } from './screens/RepairWorkScreen';
 export { default as RepairAssemblyIssueScreen } from './screens/RepairAssemblyIssueScreen';
+export { default as RepairAssemblyReceiveScreen } from './screens/RepairAssemblyReceiveScreen';
+export { default as RepairPartReceiveScreen } from './screens/RepairPartReceiveScreen';
 export { default as RepairPartsRequestsScreen } from './screens/RepairPartsRequestsScreen';
 
 // Components

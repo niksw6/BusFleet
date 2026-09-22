@@ -609,6 +609,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       || ''
     ).trim();
     const towStatusNormalized = towStatus.toUpperCase();
+    const explicitTowRequest = [
+      entry?.TowRequested,
+      entry?.TowRequestEntryId,
+      entry?.TowRequestDocEntry,
+    ].some((value) => value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase()));
     const hasTowImage = Boolean(String(breakdownRepair?.TowImage1 || entry?.TowImage1 || '').trim() || String(breakdownRepair?.TowImage2 || entry?.TowImage2 || '').trim());
     const towCompleted = Boolean(
       entry?.TowCompleted
@@ -621,11 +626,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       || (String(breakdownRepair?.RepairMode || '').trim().toUpperCase() === 'T' && Boolean(breakdownRepair))
     );
     const towRequested = Boolean(
-      entry?.TowRequested
-      || entry?.TowRequestEntryId
-      || entry?.TowRequestDocEntry
+      explicitTowRequest
       || rawRepairMode === 'T'
-      || breakdownRepair
       || towCompleted
       || /^(requested|in progress|pending pickup|pickup requested)$/.test(towStatusNormalized)
       || /^(requested|in progress|pending pickup|pickup requested)$/.test(String(entry?.Status || '').trim().toUpperCase())
@@ -2809,31 +2811,31 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                       </Text>
                     </View>
 
-                    {isBreakdownJobCard() && !isDriverComplaintJobCard() && (entry?.TowRequested || entry?.TowStatus || entry?.TowDepot || entry?.TowDestinationType || entry?.RepairMode || entry?.TowImage1 || entry?.TowImage2 || entry?.BreakDownRepair) && (
+                    {isBreakdownJobCard() && !isDriverComplaintJobCard() && entry?.RepairMode && entry.RepairMode !== '-' && (
                       <>
-                        <View style={styles.workOrderEntryRow}>
-                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow:</Text>
-                          <Text style={[styles.workOrderEntryValue, { color: '#C2410C', fontWeight: '700' }]}>{
-                            entry?.TowCompleted || String(entry?.RepairMode || '').trim().toUpperCase() === 'T'
-                              ? 'Completed'
-                              : entry?.TowRequested
-                                ? (entry?.TowStatus || 'Requested')
-                                : (entry?.TowStatus || 'Not requested')
-                          }</Text>
-                        </View>
-                        <View style={styles.workOrderEntryRow}>
-                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Depot:</Text>
-                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.TowDepot || entry?.TowDestinationType || 'DEFAULT'}</Text>
-                        </View>
+                        {entry?.TowRequested && (
+                          <>
+                            <View style={styles.workOrderEntryRow}>
+                              <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow:</Text>
+                              <Text style={[styles.workOrderEntryValue, { color: '#C2410C', fontWeight: '700' }]}>{entry?.TowCompleted ? 'Completed' : (entry?.TowStatus || 'Requested')}</Text>
+                            </View>
+                            <View style={styles.workOrderEntryRow}>
+                              <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Depot:</Text>
+                              <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.TowDepot || entry?.TowDestinationType || 'DEFAULT'}</Text>
+                            </View>
+                          </>
+                        )}
                         <View style={styles.workOrderEntryRow}>
                           <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair Mode:</Text>
-                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.RepairMode || (entry?.BreakDownRepair ? entry.BreakDownRepair.RepairMode : '-') || '-'}</Text>
+                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{String(entry?.RepairMode || '').trim().toUpperCase() === 'R' ? 'Repair on Site' : 'Tow to Depot'}</Text>
                         </View>
-                        <View style={styles.workOrderEntryRow}>
-                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair On Site:</Text>
-                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.RepairOnSite || (entry?.BreakDownRepair ? entry.BreakDownRepair.RepairOnSite : '') || '-'}</Text>
-                        </View>
-                        {(entry?.TowImage1 || entry?.TowImage2) && (
+                        {String(entry?.RepairMode || '').trim().toUpperCase() === 'R' && (
+                          <View style={styles.workOrderEntryRow}>
+                            <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair On Site:</Text>
+                            <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{String(entry?.RepairOnSite || '').trim().toUpperCase() === 'T' ? 'Temporary Repair' : String(entry?.RepairOnSite || '').trim().toUpperCase() === 'P' ? 'Permanent Repair' : '-'}</Text>
+                          </View>
+                        )}
+                        {entry?.TowRequested && (entry?.TowImage1 || entry?.TowImage2) && (
                           <View style={styles.workOrderEntryRow}>
                             <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Images:</Text>
                             <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{[entry?.TowImage1, entry?.TowImage2].filter(Boolean).join(' | ')}</Text>

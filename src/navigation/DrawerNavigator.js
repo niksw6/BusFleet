@@ -13,7 +13,7 @@ import { ProfileScreen } from '../features/auth';
 import { JobCardsScreen, TeamApprovalsScreen, MechanicDashboardScreen, PartsApprovalScreen, ReviewWorkEntriesScreen } from '../features/jobCards';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
 import { logout } from '../store/slices/authSlice';
-import { isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isSupervisorUser, isDriverUser, getUserRole } from '../utils/roleAccess';
+import { isMechanicUser, isElectricianUser, isTeamLeaderUser, isFieldStaffUser, isSupervisorUser, isStoreUser, isDriverUser, getUserRole } from '../utils/roleAccess';
 import { clearAuthData } from '../utils/storage';
 
 const Drawer = createDrawerNavigator();
@@ -31,6 +31,7 @@ const CustomDrawerContent = (props) => {
   const teamLeaderUser = isTeamLeaderUser(user);
   const fieldStaffUser = isFieldStaffUser(user);
   const supervisorUser = isSupervisorUser(user);
+  const storeUser = isStoreUser(user);
   const driverUser = isDriverUser(user);
   const userRole = getUserRole(user);
 
@@ -80,6 +81,7 @@ const CustomDrawerContent = (props) => {
       color: colors.primary,
       gradient: [colors.primary, colors.primaryDark || colors.primary],
       hideForDriver: true,
+      hideForStore: true,
     },
     {
       name: 'ReviewWorkEntries',
@@ -110,6 +112,7 @@ const CustomDrawerContent = (props) => {
     if (item.fieldStaffOnly) return fieldStaffUser;
     if (item.supervisorOnly) return supervisorUser;
     if (item.hideForDriver && driverUser) return false;
+    if (item.hideForStore && storeUser) return false;
     // Field staff (mechanic/electrician) and Team Leader don't raise incidents
     if (item.name === 'Complaints' && (mechanicUser || electricianUser || teamLeaderUser)) return false;
     return true;
@@ -255,6 +258,7 @@ const DrawerNavigator = () => {
   const teamLeaderUser = isTeamLeaderUser(user);
   const fieldStaffUser = isFieldStaffUser(user);
   const supervisorUser = isSupervisorUser(user);
+  const storeUser = isStoreUser(user);
   const driverUser = isDriverUser(user);
 
   return (
@@ -331,7 +335,7 @@ const DrawerNavigator = () => {
           }}
         />
       )}
-      {!driverUser && (
+      {!driverUser && !storeUser && (
         <Drawer.Screen
           name="JobCards"
           component={JobCardsScreen}

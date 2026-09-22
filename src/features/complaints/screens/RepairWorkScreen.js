@@ -4,9 +4,10 @@ import { Button, Card, RadioButton, Text, TextInput } from 'react-native-paper';
 import { useSelector } from 'react-redux';
 import Toast from 'react-native-toast-message';
 
-import { masterService, repairService, workEntryService } from '../../../api/services';
+import { masterService, repairService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
+import { API_BASE_URL } from '../../../constants/config';
 
 const isSuccess = (response) => (
   !Object.prototype.hasOwnProperty.call(response || {}, 'Success')
@@ -45,19 +46,18 @@ const normalizePart = (part) => ({
 });
 
 const normalizeWorkImage = (image) => {
-  return { ...image, uri: image?.uri || '' };
-};
-
-const extractImageBase64 = (response) => {
-  const data = response?.Data ?? response?.data ?? response;
-  if (typeof data === 'string') return data.replace(/^data:[^;]+;base64,/i, '');
-  if (!data || typeof data !== 'object') return '';
-  for (const key of ['Base64', 'ImageBase64', 'FileBase64', 'Content', 'ImageData', 'ImgData', 'Photo', 'Binary']) {
-    if (typeof data[key] === 'string' && data[key].trim()) {
-      return data[key].replace(/^data:[^;]+;base64,/i, '');
-    }
-  }
-  return '';
+  const rawType = String(image?.Phase || image?.ImgType || image?.ImageType || '').trim().toUpperCase();
+  const imagePath = String(image?.ImgPath || image?.ImagePath || image?.FileName || image?.fileName || '').trim();
+  const imageUri = String(image?.uri || image?.Uri || '').trim();
+  const serverRoot = API_BASE_URL.replace(/BMSSystem\/?$/, '');
+  const displayUri = imageUri || (imagePath.startsWith('http') || imagePath.startsWith('file:') || imagePath.startsWith('content:')
+    ? imagePath
+    : imagePath.startsWith('/') ? `${serverRoot}${imagePath}` : `${API_BASE_URL}${imagePath}`);
+  return {
+    ...image,
+    uri: displayUri,
+    Phase: rawType.includes('AFTER') || rawType === 'AF' ? 'AF' : 'BF',
+  };
 };
 
 const RepairWorkScreen = ({ route }) => {
@@ -80,13 +80,16 @@ const RepairWorkScreen = ({ route }) => {
   );
 
   const [workEntryDocEntry, setWorkEntryDocEntry] = useState(route.params?.workEntryDocEntry || null);
+  const [displayJobCard, setDisplayJobCard] = useState(String(jobCardEntry || ''));
+  const [displayWorkEntry, setDisplayWorkEntry] = useState(String(route.params?.workEntryDocEntry || ''));
+  const [displayJobCardStatus, setDisplayJobCardStatus] = useState('');
   const [entryLoading, setEntryLoading] = useState(!route.params?.workEntryDocEntry);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState('W');
-  const [pauseReason, setPauseReason] = useState('');
   const [remarks, setRemarks] = useState('');
   const [workDetails, setWorkDetails] = useState([]);
   const [images, setImages] = useState([]);
+  const [imagePhase, setImagePhase] = useState('BF');
   const [parts, setParts] = useState([]);
   const [repairPartStatuses, setRepairPartStatuses] = useState([]);
   const [configuredComponents, setConfiguredComponents] = useState([]);
@@ -96,6 +99,7 @@ const RepairWorkScreen = ({ route }) => {
   const [showAdditionalPartsModal, setShowAdditionalPartsModal] = useState(false);
   const [partMode, setPartMode] = useState('configured');
   const [activeModal, setActiveModal] = useState(null);
+  const [selectedImage, setSelectedImage] = useState(null);
   const [detailDraft, setDetailDraft] = useState({ LineId: 1, WorkType: 'Inspection', Description: '', Remarks: '' });
   const [componentDraft, setComponentDraft] = useState({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
   const [partDraft, setPartDraft] = useState({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
@@ -281,27 +285,22 @@ const RepairWorkScreen = ({ route }) => {
 
       const existingEntryId = matchingEntry?.WorkEntryDocEntry || matchingEntry?.WorkEntryEntry || matchingEntry?.DocEntry;
       if (existingEntryId) setWorkEntryDocEntry(existingEntryId);
+      setDisplayJobCard(String(matchingEntry?.JobCard || jobCardEntry || '-'));
+      setDisplayWorkEntry(String(matchingEntry?.DocNum || existingEntryId || '-'));
+      setDisplayJobCardStatus(String(matchingEntry?.JobCardStatus || matchingEntry?.Status || '').trim());
       setStatus(matchingEntry?.Status || 'W');
-      setPauseReason(matchingEntry?.PauseRmk || '');
       setRemarks(matchingEntry?.Remarks || '');
       if (Array.isArray(matchingEntry?.WorkDetails)) setWorkDetails(matchingEntry.WorkDetails);
       if (Array.isArray(matchingEntry?.Parts)) setParts(matchingEntry.Parts.map(normalizePart));
-      if (Array.isArray(matchingEntry?.Images)) {
-        const imageRows = matchingEntry.Images.map(normalizeWorkImage).filter(image => image.uri || image?.ImgPath || image?.ImagePath);
+      const dashboardImages = [
+        ...(Array.isArray(matchingEntry?.Images) ? matchingEntry.Images : []),
+        ...(Array.isArray(matchingEntry?.WorkImages) ? matchingEntry.WorkImages : []),
+        ...(Array.isArray(matchingEntry?.RepairImages) ? matchingEntry.RepairImages : []),
+        ...(Array.isArray(matchingEntry?.ImageList) ? matchingEntry.ImageList : []),
+      ];
+      if (dashboardImages.length > 0) {
+        const imageRows = dashboardImages.map(normalizeWorkImage).filter(image => image.uri);
         setImages(imageRows);
-        imageRows.filter(image => !image.uri).forEach(async (image) => {
-          try {
-            const fileName = image?.ImgPath || image?.ImagePath;
-            const response = await workEntryService.getWorkEntryImageBase64(fileName);
-            const base64 = extractImageBase64(response);
-            if (!base64) return;
-            setImages(previous => previous.map(previousImage => (
-              previousImage === image ? { ...previousImage, uri: `data:image/jpeg;base64,${base64}` } : previousImage
-            )));
-          } catch (error) {
-            console.warn('[RepairWork] Unable to load image:', fileName, error?.message || error);
-          }
-        });
       }
       console.log('[RepairWork] Existing work entry loaded:', JSON.stringify(matchingEntry));
     } catch (error) {
@@ -313,7 +312,7 @@ const RepairWorkScreen = ({ route }) => {
 
   useEffect(() => { loadExistingWorkEntry(); }, [loadExistingWorkEntry]);
 
-  const pickImages = async () => {
+  const pickImages = async (phase = imagePhase) => {
     try {
       const ImagePicker = require('expo-image-picker');
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -322,9 +321,10 @@ const RepairWorkScreen = ({ route }) => {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
         quality: 0.7,
+        base64: true,
       });
       if (!result.canceled) {
-        setImages(previous => [...previous, ...(result.assets || [])]);
+        setImages(previous => [...previous, ...(result.assets || []).map(image => ({ ...image, Phase: phase }))]);
         setActiveModal(null);
       }
     } catch (error) {
@@ -332,7 +332,7 @@ const RepairWorkScreen = ({ route }) => {
     }
   };
 
-  const captureImage = async () => {
+  const captureImage = async (phase = imagePhase) => {
     try {
       const ImagePicker = require('expo-image-picker');
       const permission = await ImagePicker.requestCameraPermissionsAsync();
@@ -343,9 +343,10 @@ const RepairWorkScreen = ({ route }) => {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.7,
+        base64: true,
       });
       if (!result.canceled) {
-        setImages(previous => [...previous, ...(result.assets || [])]);
+        setImages(previous => [...previous, ...(result.assets || []).map(image => ({ ...image, Phase: phase }))]);
         setActiveModal(null);
       }
     } catch (error) {
@@ -362,15 +363,14 @@ const RepairWorkScreen = ({ route }) => {
     setComponentDraft({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
   };
 
-  const uploadRepairImages = async () => {
-    if (!images.length) return [];
-    const response = await workEntryService.uploadImages(images);
-    return (response?.FileNames || []).map((fileName, index) => ({
+  const uploadRepairImages = async (entryDocEntry) => {
+    return images.map((image, index) => ({
       LineId: index,
-      ImgType: status === 'C' ? 'COMPLETED' : 'DAMAGE',
+      WorkEntryEntry: Number(entryDocEntry) || entryDocEntry,
+      ImgType: image?.Phase === 'AF' ? 'After Repair' : 'Before Repair',
       ImgNo: index + 1,
-      ImgPath: fileName,
-      Remarks: status === 'C' ? 'Completed assembly' : 'Damaged component',
+      ImgPath: image?.fileName || image?.name || image?.uri || '',
+      Remarks: image?.Phase === 'AF' ? 'Assembly after repair.' : 'Assembly before repair.',
     }));
   };
 
@@ -385,13 +385,15 @@ const RepairWorkScreen = ({ route }) => {
       }));
       const entryDocEntry = workEntryDocEntry || await createWorkEntry();
       if (!entryDocEntry) return;
-      const uploadedImages = await uploadRepairImages();
+      if (nextStatus === 'C' && (!images.some(image => image?.Phase === 'BF') || !images.some(image => image?.Phase === 'AF'))) {
+        throw new Error('Add both a before repair image and an after repair image before completing.');
+      }
+      const uploadedImages = await uploadRepairImages(entryDocEntry);
       const payload = {
         CompanyDB: dbName,
         WorkEntryDocEntry: Number(entryDocEntry) || entryDocEntry,
         UserCode: userCode,
         Status: nextStatus,
-        PauseRmk: nextStatus === 'P' ? pauseReason : '',
         Remarks: remarks,
         // The repair API treats every submitted work detail as a new row and
         // requires LineId zero for each one; local IDs remain distinct only
@@ -400,8 +402,6 @@ const RepairWorkScreen = ({ route }) => {
         Images: uploadedImages,
         Parts: parts,
       };
-      // The repair collection uses UpdateRepairWorkEntry for working, paused,
-      // resumed, and completed states. Images and parts travel in this same body.
       console.log('[RepairWork] POST UpdateRepairWorkEntry payload:', JSON.stringify(payload));
       const response = await repairService.updateRepairWorkEntry(payload);
       console.log('[RepairWork] UpdateRepairWorkEntry response:', JSON.stringify(response));
@@ -417,14 +417,6 @@ const RepairWorkScreen = ({ route }) => {
     }
   };
 
-  const togglePause = async () => {
-    if (status !== 'P' && !pauseReason.trim()) {
-      Toast.show({ type: 'error', text1: 'Enter a pause reason first' });
-      return;
-    }
-    await saveWork(status === 'P' ? 'W' : 'P');
-  };
-
   const requestAdditionalPart = async () => {
     const itemCode = String(partDraft.ItemCode || '').trim();
     const itemName = String(partDraft.ItemName || '').trim();
@@ -438,13 +430,25 @@ const RepairWorkScreen = ({ route }) => {
         Toast.show({ type: 'error', text1: 'Repair work entry is required', text2: 'Create the work entry before requesting an additional part.' });
         return;
       }
-      // Parts are requested as part of UpdateRepairWorkEntry, per the collection.
-      setParts(previous => [...previous, {
+      const requestedPart = {
         ItemCode: itemCode,
         ItemName: itemName,
         ReqQty: Number(partDraft.ReqQty) || 1,
         Remarks: partDraft.Remarks.trim(),
-      }]);
+      };
+      const nextParts = [...parts, requestedPart];
+      const response = await repairService.updateRepairWorkEntry({
+        CompanyDB: dbName,
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: userCode,
+        Status: 'W',
+        Remarks: remarks,
+        WorkDetails: [],
+        Images: [],
+        Parts: nextParts,
+      });
+      if (!isSuccess(response)) throw new Error(response?.Message || 'Part request failed.');
+      setParts(nextParts);
       setPartDraft({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
       setActiveModal(null);
       Toast.show({ type: 'success', text1: 'Part added', text2: 'Save the work entry to send the request.' });
@@ -479,14 +483,30 @@ const RepairWorkScreen = ({ route }) => {
     }
   };
 
+  const partTableRows = [...parts, ...repairPartStatuses].reduce((rows, part) => {
+    const code = String(part?.ItemCode || part?.Item || part?.Code || '').trim();
+    const existing = rows.find(row => row.code === code);
+    if (existing) {
+      return rows.map(row => row.code === code ? { ...row, ...part } : row);
+    }
+    return [...rows, { ...part, code }];
+  }, []).filter(part => part.code);
+
+  const getImageName = (image, fallback) => image?.ImgPath || image?.ImagePath || image?.fileName || image?.name || fallback;
+  const showImage = (image, fallback) => setSelectedImage({
+    uri: image?.uri || '',
+    name: getImageName(image, fallback),
+  });
+
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.light }]} contentContainerStyle={styles.content}>
       <Text style={[styles.title, { color: colors.dark }]}>Repair Work Entry</Text>
       <Card style={styles.summary}>
         <Card.Content>
-          <Text style={{ color: colors.dark }}>Job card: {jobCardEntry || '-'}</Text>
+          <Text style={{ color: colors.dark }}>Job card: {displayJobCard || '-'}</Text>
+          <Text style={{ color: colors.gray }}>Job card status: {displayJobCardStatus || '-'}</Text>
           <Text style={{ color: colors.dark }}>Assembly: {route.params?.assemblyName || 'Assembly'}</Text>
-          <Text style={{ color: colors.gray }}>Work entry: {workEntryDocEntry || 'Opening...'}</Text>
+          <Text style={{ color: colors.gray }}>Work entry: {displayWorkEntry || 'Opening...'}</Text>
         </Card.Content>
       </Card>
 
@@ -504,28 +524,46 @@ const RepairWorkScreen = ({ route }) => {
       ))}
       <Button mode="outlined" onPress={addWorkDetail} disabled={submitting}>Add work detail</Button>
 
-      <Text style={[styles.sectionTitle, { color: colors.dark }]}>Images</Text>
-      <Button mode="outlined" icon="camera" onPress={() => setActiveModal('images')} disabled={submitting}>Add image</Button>
-      <View style={styles.imageRow}>{images.filter(image => image?.uri).map((image, index) => <Image key={`${image.uri}-${index}`} source={{ uri: image.uri }} style={styles.image} />)}</View>
+      <Text style={[styles.sectionTitle, { color: colors.dark }]}>Before repair image (BF)</Text>
+      <Button mode="outlined" icon="camera" onPress={() => { setImagePhase('BF'); setActiveModal('images'); }} disabled={submitting}>Add before image</Button>
+      <View style={styles.imageNameList}>{images.filter(image => image?.Phase === 'BF').map((image, index) => <TouchableOpacity key={`${image?.ImgPath || image?.name || index}`} onPress={() => showImage(image, 'Before repair image')}><Text style={[styles.imageName, { color: colors.primary }]}>{getImageName(image, 'Before repair image')}</Text></TouchableOpacity>)}</View>
 
       <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts</Text>
       <Button mode="outlined" icon="playlist-plus" onPress={() => setActiveModal('parts')} disabled={partsLoading || submitting}>Add or request part</Button>
-      {parts.map((part, index) => <Text key={`${part.ItemCode}-${index}`} style={[styles.part, { color: colors.dark }]}>{part.ItemCode} - {part.ItemName} x {part.ReqQty}</Text>)}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.partsTableScroll}>
+        <View style={styles.partsTable}>
+          <View style={[styles.partsTableRow, styles.partsTableHeader, { borderColor: colors.border || '#E0E0E0' }]}>
+            {['Part', 'Requested', 'Approved', 'Issued', 'Received', 'Status', 'Action'].map((label) => (
+              <Text key={label} style={[styles.partsTableCell, styles.partsTableHeaderText, { color: colors.dark }]}>{label}</Text>
+            ))}
+          </View>
+          {partTableRows.length === 0 ? (
+            <Text style={[styles.emptyPartsText, { color: colors.gray }]}>No parts requested yet.</Text>
+          ) : partTableRows.map((part, index) => {
+            const label = getPartStatusLabel(part);
+            const issued = Number(part?.IssuedQty ?? part?.IssueQty ?? 0) || 0;
+            const received = Number(part?.ReceivedQty ?? part?.RecQty ?? 0) || 0;
+            const canReceive = issued > received;
+            return (
+              <View key={`${part.code}-${part?.LineId ?? index}`} style={[styles.partsTableRow, { borderColor: colors.border || '#E0E0E0' }]}>
+                <Text style={[styles.partsTableCell, { color: colors.dark }]}>{part?.ItemName || part?.PartName || part.code}</Text>
+                <Text style={[styles.partsTableCell, { color: colors.dark }]}>{part?.ReqQty ?? part?.Qty ?? 0}</Text>
+                <Text style={[styles.partsTableCell, { color: colors.dark }]}>{part?.ApprovedQty ?? part?.AprQty ?? 0}</Text>
+                <Text style={[styles.partsTableCell, { color: colors.dark }]}>{issued}</Text>
+                <Text style={[styles.partsTableCell, { color: colors.dark }]}>{received}</Text>
+                <Text style={[styles.partsTableCell, { color: colors.gray }]}>{label}</Text>
+                <View style={styles.partsTableAction}>
+                  {canReceive ? <Button compact mode="outlined" onPress={() => receivePart(part)} disabled={submitting}>Receive</Button> : <Text style={{ color: colors.gray }}>-</Text>}
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      </ScrollView>
 
-      <Text style={[styles.sectionTitle, { color: colors.dark }]}>Part status</Text>
-      {repairPartStatuses.length === 0
-        ? <Text style={{ color: colors.gray }}>No requested parts yet.</Text>
-        : repairPartStatuses.map((part, index) => {
-          const label = getPartStatusLabel(part);
-          const canReceive = label === 'Issued';
-          return <Card key={`${part?.ItemCode || 'part'}-${part?.LineId ?? index}`} style={styles.partCard}>
-            <Card.Content>
-              <Text style={{ color: colors.dark }}>{part?.ItemCode || '-'} - {part?.ItemName || part?.Name || '-'}</Text>
-              <Text style={{ color: colors.gray }}>Quantity: {part?.ReqQty || part?.Qty || 1} | {label}</Text>
-              {canReceive && <Button mode="outlined" onPress={() => receivePart(part)} disabled={submitting}>Receive item</Button>}
-            </Card.Content>
-          </Card>;
-        })}
+      <Text style={[styles.sectionTitle, { color: colors.dark }]}>After repair image (AF)</Text>
+      <Button mode="outlined" icon="camera" onPress={() => { setImagePhase('AF'); setActiveModal('images'); }} disabled={submitting}>Add after image</Button>
+      <View style={styles.imageNameList}>{images.filter(image => image?.Phase === 'AF').map((image, index) => <TouchableOpacity key={`${image?.ImgPath || image?.name || index}`} onPress={() => showImage(image, 'After repair image')}><Text style={[styles.imageName, { color: colors.primary }]}>{getImageName(image, 'After repair image')}</Text></TouchableOpacity>)}</View>
 
       <Text style={[styles.sectionTitle, { color: colors.dark }]}>Repair remarks</Text>
       <Button mode="outlined" icon="note-edit" onPress={() => setActiveModal('remarks')} disabled={submitting}>
@@ -533,9 +571,11 @@ const RepairWorkScreen = ({ route }) => {
       </Button>
       {remarks.trim() ? <Text style={[styles.summaryText, { color: colors.gray }]}>{remarks}</Text> : null}
       <View style={styles.buttonRow}>
-        <Button mode="outlined" onPress={() => status === 'P' ? togglePause() : setActiveModal('pause')} loading={submitting} disabled={submitting}>{status === 'P' ? 'Resume work' : 'Pause work'}</Button>
-        <Button mode="contained" onPress={() => saveWork('W')} loading={submitting} disabled={submitting}>
+        <Button mode="contained" onPress={() => saveWork('W')} loading={submitting} disabled={submitting} style={styles.workActionButton} contentStyle={styles.workActionContent}>
           {workEntryDocEntry ? 'Update Repair work entry' : 'Create Repair Work Entry'}
+        </Button>
+        <Button mode="contained" buttonColor={COLORS.success || '#007A5A'} onPress={() => saveWork('C')} loading={submitting} disabled={submitting || !workEntryDocEntry} style={styles.workActionButton} contentStyle={styles.workActionContent}>
+          Complete repair work
         </Button>
       </View>
 
@@ -562,12 +602,22 @@ const RepairWorkScreen = ({ route }) => {
             <Card.Title title="Add repair image" />
             <Card.Content>
               <Text style={{ color: colors.gray, marginBottom: SPACING.md }}>Choose how to add an image.</Text>
-              <Button mode="contained" icon="camera" onPress={captureImage} disabled={submitting} style={styles.modalButton}>Capture image</Button>
-              <Button mode="outlined" icon="image-multiple" onPress={pickImages} disabled={submitting} style={styles.modalButton}>Choose from gallery</Button>
+              <Button mode="contained" icon="camera" onPress={() => captureImage(imagePhase)} disabled={submitting} style={styles.modalButton}>Capture {imagePhase === 'AF' ? 'after' : 'before'} image</Button>
+              <Button mode="outlined" icon="image-multiple" onPress={() => pickImages(imagePhase)} disabled={submitting} style={styles.modalButton}>Choose {imagePhase === 'AF' ? 'after' : 'before'} image</Button>
               <Button onPress={() => setActiveModal(null)}>Cancel</Button>
             </Card.Content>
           </Card>
         </View>
+      </Modal>
+
+      <Modal visible={Boolean(selectedImage)} transparent animationType="fade" onRequestClose={() => setSelectedImage(null)}>
+        <TouchableOpacity style={styles.imagePreviewOverlay} activeOpacity={1} onPress={() => setSelectedImage(null)}>
+          <View style={styles.imagePreviewCard}>
+            <Text style={[styles.imagePreviewTitle, { color: colors.dark }]}>{selectedImage?.name || 'Repair image'}</Text>
+            {selectedImage?.uri ? <Image source={{ uri: selectedImage.uri }} style={styles.imagePreview} resizeMode="contain" /> : <Text style={{ color: colors.gray }}>Image preview unavailable.</Text>}
+            <Button onPress={() => setSelectedImage(null)}>Close</Button>
+          </View>
+        </TouchableOpacity>
       </Modal>
 
       <Modal visible={activeModal === 'parts'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
@@ -636,21 +686,6 @@ const RepairWorkScreen = ({ route }) => {
         }}
       />
 
-      <Modal visible={activeModal === 'pause'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
-        <View style={styles.modalOverlay}>
-          <Card style={styles.modalCard}>
-            <Card.Title title="Pause repair work" />
-            <Card.Content>
-              <TextInput mode="outlined" label="Pause reason" value={pauseReason} onChangeText={setPauseReason} multiline style={styles.input} />
-              <View style={styles.buttonRow}>
-                <Button onPress={() => setActiveModal(null)}>Cancel</Button>
-                <Button mode="contained" onPress={() => { setActiveModal(null); togglePause(); }}>Pause work</Button>
-              </View>
-            </Card.Content>
-          </Card>
-        </View>
-      </Modal>
-
       <Modal visible={activeModal === 'remarks'} transparent animationType="slide" onRequestClose={() => setActiveModal(null)}>
         <View style={styles.modalOverlay}>
           <Card style={styles.modalCard}>
@@ -677,10 +712,26 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 18, fontWeight: '700', marginTop: SPACING.md, marginBottom: SPACING.sm },
   section: { marginBottom: SPACING.sm },
   input: { marginBottom: SPACING.sm, backgroundColor: 'transparent' },
-  buttonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginTop: SPACING.sm },
+  buttonRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.sm },
+  workActionButton: { flex: 1, marginHorizontal: 0 },
+  workActionContent: { minHeight: 48, paddingHorizontal: 4 },
   imageRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginTop: SPACING.sm },
   image: { width: 76, height: 76, borderRadius: 6 },
+  imageNameList: { marginTop: SPACING.xs },
+  imageName: { fontSize: 13, marginBottom: SPACING.xs },
+  imagePreviewOverlay: { flex: 1, justifyContent: 'center', padding: SPACING.lg, backgroundColor: 'rgba(0, 0, 0, 0.65)' },
+  imagePreviewCard: { maxHeight: '85%', padding: SPACING.md, backgroundColor: '#FFFFFF', borderRadius: 8 },
+  imagePreviewTitle: { fontSize: 15, fontWeight: '700', marginBottom: SPACING.sm },
+  imagePreview: { width: '100%', height: 360, marginBottom: SPACING.sm },
   part: { marginTop: SPACING.xs },
+  partsTableScroll: { marginTop: SPACING.sm },
+  partsTable: { minWidth: 668 },
+  partsTableRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, minHeight: 52 },
+  partsTableHeader: { backgroundColor: '#F3F4F6', minHeight: 42 },
+  partsTableHeaderText: { fontWeight: '700' },
+  partsTableCell: { width: 92, paddingHorizontal: 8, fontSize: 12 },
+  partsTableAction: { width: 112, paddingHorizontal: 4, alignItems: 'flex-start' },
+  emptyPartsText: { padding: SPACING.md },
   radioRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginBottom: SPACING.sm },
   radioOption: { flexDirection: 'row', alignItems: 'center', marginRight: SPACING.md },
   partCard: { marginTop: SPACING.sm },

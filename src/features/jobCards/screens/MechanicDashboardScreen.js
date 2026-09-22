@@ -119,6 +119,28 @@ const extractItems = (data) => {
   return [];
 };
 
+const extractRepairJobCardRecord = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data[0] || null;
+  if (!data || typeof data !== 'object') return null;
+  if (data.Status !== undefined || data.JobCardStatus !== undefined || data.AssignmentStatus !== undefined) return data;
+  for (const key of ['Data', 'data', 'JobCard', 'JobCardDetails', 'Result']) {
+    if (data[key]) {
+      const record = extractRepairJobCardRecord(data[key]);
+      if (record) return record;
+    }
+  }
+  return data;
+};
+
+const getAssemblyStatus = (jobCard) => String(jobCard?.AssemblyStatus || '').trim().toUpperCase();
+const getMechanicAssemblyStatus = (jobCard, user) => {
+  const userCode = String(user?.User || user?.user || user?.UserCode || user?.Code || '').trim().toLowerCase();
+  const mechanic = (Array.isArray(jobCard?.Mechanics) ? jobCard.Mechanics : []).find((item) => [item?.UserCode, item?.User, item?.Code, item?.EmpCode]
+    .some(value => String(value || '').trim().toLowerCase() === userCode));
+  return String(mechanic?.Status || mechanic?.MechanicStatus || '').trim().toUpperCase();
+};
+
 const getDocEntry = (item) => item?.JobCardEntry
   ?? item?.jobCardEntry
   ?? item?.JobCardDocEntry
@@ -493,6 +515,9 @@ const mergeQueueItems = (apiItems, notificationItems) => {
       // A dashboard row may exist before the JR notification is read. Keep
       // its details, but let the assignment notification control its queue.
       const existingItem = merged[matchingIndex];
+      const repairJobCard = getNotificationType(item) === 'JR'
+        ? (existingItem?.JobCard || existingItem?.jobCard || existingItem?.JobCardNo || existingItem?.jobCardNo)
+        : null;
       const preservedStatus = ['JB', 'JCA'].includes(getNotificationType(item))
         ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.FaultStatus || 'P')
         : isRepairAccepted(existingItem)
@@ -506,6 +531,7 @@ const mergeQueueItems = (apiItems, notificationItems) => {
         JobType: getNotificationType(item) === 'JB' ? 'Breakdown' : getNotificationType(item) === 'JCA' ? 'Driver Complaint' : 'Repair',
         ComplaintType: getNotificationType(item) === 'JB' ? 'Breakdown' : getNotificationType(item) === 'JCA' ? 'Driver Complaint' : 'Repair Incident',
         ...(getNotificationType(item) === 'JR' ? { FaultName: 'Assembly', Fault: 'Assembly' } : {}),
+        ...(repairJobCard ? { JobCard: repairJobCard, jobCard: repairJobCard } : {}),
         Status: preservedStatus,
       };
       return;
@@ -739,11 +765,49 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
     });
   };
 
+  const openRepairAssemblyReceive = (item) => {
+    navigation.navigate('RepairAssemblyReceive', {
+      jobCardEntry: getDocEntry(item),
+      dbName: dbName || 'MUTSPL_TEST',
+      incidentEntry: item?.IncidentEntry || item?.IncidentDocEntry || '',
+      assemblyCode: getRepairAssemblyCode(item),
+      assemblyName: getRepairAssemblyName(item),
+      notification: item,
+      receiveDisabled: item?.receiveDisabled === true,
+    });
+  };
+
   const openRepairAssignment = (item) => {
     navigation.navigate('RepairJobCardAssignment', {
       jobCardEntry: getDocEntry(item),
       dbName: dbName || 'MUTSPL_TEST',
     });
+  };
+
+  const openRepairCard = async (item) => {
+    const jobCardEntry = getDocEntry(item);
+    if (!jobCardEntry) {
+      openRepairAssignment(item);
+      return;
+    }
+
+    try {
+      const response = await repairService.getRepairJobCard(dbName || 'MUTSPL_TEST', jobCardEntry);
+      const jobCard = extractRepairJobCardRecord(response);
+      const resolvedItem = jobCard && typeof jobCard === 'object' ? { ...item, ...jobCard } : item;
+      const assemblyStatus = getAssemblyStatus(resolvedItem);
+      const mechanicAssemblyStatus = getMechanicAssemblyStatus(resolvedItem, user);
+      if (assemblyStatus === 'I' || (assemblyStatus === 'P' && mechanicAssemblyStatus === 'I')) {
+        resolvedItem.receiveDisabled = assemblyStatus === 'P' && mechanicAssemblyStatus === 'I';
+        openRepairAssemblyReceive(resolvedItem);
+      } else if (assemblyStatus === 'R') {
+        openRepairWork(resolvedItem);
+      } else {
+        openRepairAssignment(resolvedItem);
+      }
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to check repair job card', text2: error?.message || 'Please try again.' });
+    }
   };
 
   const renderItem = (item) => {
@@ -760,7 +824,9 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
         ? 'Assembly'
         : item?.Fault || item?.FaultName || item?.Description || 'Driver Complaint';
     const busNo = getBusLabel(item);
-    const displayNo = item?.JobCardNo || item?.DocNum || getDocEntry(item);
+    const displayNo = repairAssignment
+      ? item?.JobCard || item?.jobCard || item?.JobCardNo || item?.jobCardNo || getDocEntry(item)
+      : item?.JobCardNo || item?.DocNum || getDocEntry(item);
     const assignedName = item?.AssignedMechanic?.UserName || item?.MechanicName || item?.AssignedToName || item?.EmployeeName || item?.EmpName || assigneeName;
     const cardDateTime = getCardDateTime(item);
 
@@ -780,11 +846,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
         activeOpacity={0.7}
         onPress={() => {
           if (repairAssignment) {
-            if (hasRepairWorkEntry(item) || isRepairAccepted(item)) {
-              openRepairWork(item);
-            } else {
-              openRepairAssignment(item);
-            }
+            openRepairCard(item);
             return;
           }
           if (breakdownAssignment) {
@@ -810,7 +872,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
             <Text style={[styles.faultName, { color: colors.dark }]}>{faultName}</Text>
             <Text style={[styles.assigneeText, { color: colors.primary }]}>Assigned to: {assignedName}</Text>
             <Text style={[styles.cardSub, { color: colors.gray }]}>
-              {repairAssignment ? `Assembly • Repair Job Card #${displayNo} • ${item?.Priority || 'Medium'}` : `${itemJobType} • Job Card #${displayNo} • Fault ${getFaultLine(item)} • ${busNo} • ${item?.Priority || 'Medium'}`}
+              {repairAssignment ? `Assembly • Repair Job Card #${displayNo} • Status: ${item?.Status || item?.JobCardStatus || item?.AssemblyStatus || '-'} • ${item?.Priority || 'Medium'}` : `${itemJobType} • Job Card #${displayNo} • Fault ${getFaultLine(item)} • ${busNo} • ${item?.Priority || 'Medium'}`}
             </Text>
           </View>
         </View>
@@ -931,7 +993,9 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
             currentGroups.map((group) => {
               const sortedGroupItems = [...group.items].sort((a, b) => getCardTimestamp(b) - getCardTimestamp(a));
               const firstItem = sortedGroupItems[0];
-              const displayNo = firstItem?.JobCardNo || firstItem?.DocNum || getDocEntry(firstItem);
+              const displayNo = isRepairAssignment(firstItem)
+                ? firstItem?.JobCard || firstItem?.jobCard || firstItem?.JobCardNo || firstItem?.jobCardNo || getDocEntry(firstItem)
+                : firstItem?.JobCardNo || firstItem?.DocNum || getDocEntry(firstItem);
               return (
                 <View key={`${activeTab}-${group.key}`} style={styles.jobCardGroup}>
                   <View style={styles.jobCardGroupHeader}>
