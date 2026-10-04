@@ -93,6 +93,17 @@ const getWorkEntryDocEntry = (item) => item?.WorkEntryDocEntry ?? item?.WorkEntr
 const getJobCardDocEntry = (item) => item?.JobCardDocEntry ?? item?.JobCardNo ?? '';
 const getPartLine = (item) => item?.PartLine ?? item?.Line ?? item?.LineNum ?? 0;
 const getToolLine = (item, index) => item?.ToolLine ?? item?.LineId ?? item?.Line ?? item?.LineNum ?? index + 1;
+const getFirstRequestValue = (item, keys) => keys
+  .map((key) => item?.[key])
+  .find((value) => value !== undefined && value !== null && String(value).trim() !== '') ?? '';
+const getRequestDate = (item) => getFirstRequestValue(item, [
+  'ReqDate', 'RequestDate', 'RequestedDate', 'RequestDateTime', 'RequestedAt',
+  'CreatedDate', 'CreateDate', 'Date',
+]);
+const getRequestTime = (item) => getFirstRequestValue(item, [
+  'ReqTime', 'RequestTime', 'RequestedTime', 'RequestTm', 'ReqTm',
+  'CreatedTime', 'CreateTime', 'Time',
+]);
 
 const groupByWorkEntry = (items) => {
   const map = new Map();
@@ -104,10 +115,15 @@ const groupByWorkEntry = (items) => {
         jobCardDocEntry: getJobCardDocEntry(item),
         mechanicName: item?.MechanicName || item?.UserName || item?.UserCode || '',
         faultName: item?.Fault || item?.FaultName || '',
+        requestedDate: getRequestDate(item),
+        requestedTime: getRequestTime(item),
         parts: [],
       });
     }
-    map.get(key).parts.push({
+    const group = map.get(key);
+    if (!group.requestedDate) group.requestedDate = getRequestDate(item);
+    if (!group.requestedTime) group.requestedTime = getRequestTime(item);
+    group.parts.push({
       partLine: getPartLine(item),
       itemCode: item?.ItemCode || '',
       itemName: item?.ItemName || item?.ItemCode || 'Item',
@@ -124,8 +140,65 @@ const groupByWorkEntry = (items) => {
   return Array.from(map.values());
 };
 
+const formatRequestDateTime = (dateValue, timeValue) => {
+  const dateText = String(dateValue || '').trim();
+  const timeText = String(timeValue || '').trim();
+  if (!dateText && !timeText) return '';
+
+  const odataMatch = dateText.match(/^\/Date\((-?\d+)/i);
+  const isoMatch = dateText.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const slashMatch = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  const parsedDate = odataMatch
+    ? new Date(Number(odataMatch[1]))
+    : isoMatch
+      ? new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]))
+      : slashMatch
+        ? new Date(`${slashMatch[1]}/${slashMatch[2]}/${slashMatch[3]}`)
+        : new Date(dateText);
+  if (!dateText && timeText) parsedDate.setTime(Date.now());
+  if (Number.isNaN(parsedDate.getTime())) return `Requested: ${dateText || timeText}`;
+
+  const embeddedTime = dateText.match(/[T ](\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?)/i)?.[1] || '';
+  const rawTime = timeText || embeddedTime;
+  const numericTime = /^\d{1,4}$/.test(rawTime) ? rawTime.padStart(4, '0') : '';
+  const clockMatch = rawTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  let hours = numericTime
+    ? Number(numericTime.slice(0, 2))
+    : clockMatch
+      ? Number(clockMatch[1])
+      : (odataMatch || (!isoMatch && !slashMatch && !embeddedTime) ? parsedDate.getHours() : 0);
+  const minutes = numericTime
+    ? Number(numericTime.slice(2, 4))
+    : clockMatch
+      ? Number(clockMatch[2])
+      : (odataMatch || (!isoMatch && !slashMatch && !embeddedTime) ? parsedDate.getMinutes() : 0);
+  const seconds = Number(clockMatch?.[3] ?? (odataMatch ? parsedDate.getSeconds() : 0));
+  const meridiem = clockMatch?.[4]?.toLowerCase();
+  if (meridiem === 'pm' && hours < 12) hours += 12;
+  if (meridiem === 'am' && hours === 12) hours = 0;
+
+  const requestedAt = new Date(
+    parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate(),
+    hours, minutes, seconds,
+  );
+  const dateStart = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const today = new Date();
+  const dayDelta = Math.round((dateStart(requestedAt) - dateStart(today)) / 86400000);
+  const dateLabel = dayDelta === 0
+    ? 'Today'
+    : dayDelta === -1
+      ? 'Yesterday'
+      : `${String(requestedAt.getDate()).padStart(2, '0')}/${String(requestedAt.getMonth() + 1).padStart(2, '0')}/${requestedAt.getFullYear()}`;
+  const hour12 = requestedAt.getHours() % 12 || 12;
+  const timeLabel = `${String(hour12).padStart(2, '0')}:${String(requestedAt.getMinutes()).padStart(2, '0')}:${String(requestedAt.getSeconds()).padStart(2, '0')} ${requestedAt.getHours() >= 12 ? 'pm' : 'am'}`;
+  return `Requested: ${dateLabel} ${timeLabel}`;
+};
+
 const PartsApprovalScreen = ({ navigation, route }) => {
   const initialSection = (route?.params?.initialSection || 'parts').toLowerCase();
+  const focusJobCardDocEntry = String(route?.params?.focusJobCardDocEntry || '').trim();
+  const focusWorkEntryDocEntry = String(route?.params?.focusWorkEntryDocEntry || '').trim();
+  const notificationTimestamp = String(route?.params?.notificationTimestamp || '').trim();
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
@@ -149,7 +222,17 @@ const PartsApprovalScreen = ({ navigation, route }) => {
         storeService.getMechanicToolRequests(companyDb),
       ]);
       if (partsResult.status === 'fulfilled' && isApiSuccess(partsResult.value)) {
-        setGroups(groupByWorkEntry(extractItems(partsResult.value)));
+        const requestGroups = groupByWorkEntry(extractItems(partsResult.value));
+        const normalizeReference = (value) => String(value ?? '').trim().replace(/^0+(?=\d)/, '');
+        const matchingGroup = requestGroups.find((group) => (
+          (focusWorkEntryDocEntry && normalizeReference(group.workEntryDocEntry) === normalizeReference(focusWorkEntryDocEntry))
+          || (focusJobCardDocEntry && normalizeReference(group.jobCardDocEntry) === normalizeReference(focusJobCardDocEntry))
+        ));
+        const timestampGroup = matchingGroup || (requestGroups.length === 1 ? requestGroups[0] : null);
+        setGroups(requestGroups.map((group) => {
+          const matchesNotification = Boolean(notificationTimestamp && timestampGroup === group);
+          return matchesNotification ? { ...group, notificationTimestamp } : group;
+        }));
       } else {
         setGroups([]);
       }
@@ -180,7 +263,7 @@ const PartsApprovalScreen = ({ navigation, route }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dbName]);
+  }, [dbName, focusJobCardDocEntry, focusWorkEntryDocEntry, notificationTimestamp]);
 
   useEffect(() => {
     fetchData();
@@ -334,6 +417,13 @@ const PartsApprovalScreen = ({ navigation, route }) => {
             <Text style={[styles.cardTitle, { color: colors.dark }]}>
               Job Card #{group.jobCardDocEntry} • Work Entry #{group.workEntryDocEntry}
             </Text>
+            {!!(group.notificationTimestamp || group.requestedDate || group.requestedTime) && (
+              <Text style={[styles.cardSub, { color: colors.gray }]}>
+                {group.notificationTimestamp
+                  ? `Requested: ${group.notificationTimestamp}`
+                  : formatRequestDateTime(group.requestedDate, group.requestedTime)}
+              </Text>
+            )}
             <Text style={[styles.cardSub, { color: colors.gray }]}>
               {group.mechanicName ? `${group.mechanicName} • ` : ''}{group.faultName}
             </Text>

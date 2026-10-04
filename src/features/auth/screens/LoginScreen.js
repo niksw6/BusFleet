@@ -91,7 +91,8 @@ const LoginScreen = ({ navigation }) => {
           || userFromApi?.role
           || userFromApi?.Role;
         const mechanicCode = userFromApi?.UserCode || userFromApi?.EmpCode || userFromApi?.Code || userFromApi?.code || userFromApi?.User || values.username;
-        const numericEmpId = Number(userFromApi?.EmpID || userFromApi?.EmployeeID || userFromApi?.ID || userFromApi?.id || 0);
+        const employeeId = userFromApi?.EmpID || userFromApi?.EmployeeID || userFromApi?.ID || userFromApi?.id || null;
+        const numericEmpId = Number(employeeId || 0);
         const user = {
           ...userFromApi,
           User: values.username,
@@ -100,8 +101,9 @@ const LoginScreen = ({ navigation }) => {
           code: mechanicCode,
           UserCode: userFromApi?.UserCode || userFromApi?.EmpCode || userFromApi?.Code || userFromApi?.code || mechanicCode,
           EmpCode: userFromApi?.EmpCode || userFromApi?.UserCode || userFromApi?.Code || userFromApi?.code || mechanicCode,
-          id: numericEmpId || null,
-          EmpID: numericEmpId || null,
+          id: numericEmpId || employeeId || null,
+          EmpID: employeeId,
+          EmployeeID: employeeId,
           Usertype: response?.Usertype || userFromApi?.Usertype || userFromApi?.usertype || null,
           role: detectedRole || userFromApi?.role || userFromApi?.Role || 'Supervisor',
           // Maintenance team mapping — foundation of Team Leader accept/reject routing (SOP §1.3)

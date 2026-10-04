@@ -150,10 +150,10 @@ const CustomDrawerContent = (props) => {
             <MaterialIcons name="person" size={32} color="#FFFFFF" />
           </LinearGradient>
         </View>
-        <Text style={styles.userName}>{user?.name || 'User Name'}</Text>
+        <Text style={styles.userName}>{user?.username || user?.User || user?.user || user?.name || 'User Name'}</Text>
         <Text style={styles.userRole}>{userRole}</Text>
-        {(user?.Code || user?.code || user?.id) && (
-          <Text style={styles.userCode}>ID: {user?.Code || user?.code || user?.id}</Text>
+        {(user?.EmpID || user?.EmployeeID || user?.id) && (
+          <Text style={styles.userCode}>EmpID: {user?.EmpID || user?.EmployeeID || user?.id}</Text>
         )}
       </LinearGradient>
 

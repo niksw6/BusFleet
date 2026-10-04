@@ -427,6 +427,15 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const renderWorkEntryResponseCards = (entry) => {
     const response = getWorkEntryResponseForDisplay(entry);
+    const responseWorkEntryId = String(asWorkEntryId(response) || '').trim();
+    const jobCardWorkEntry = (Array.isArray(workOrder?.WorkEntries) ? workOrder.WorkEntries : [])
+      .find((candidate) => String(asWorkEntryId(candidate) || '').trim() === responseWorkEntryId);
+    const jobCardResponse = workOrder || {};
+    const overviewSource = {
+      ...jobCardResponse,
+      ...(jobCardWorkEntry || {}),
+      ...response,
+    };
     const responseValue = (value) => value === null || value === undefined || value === '' ? '-' : String(value);
     const renderCard = (title, content, badge) => (
       <View style={[styles.workEntryResponseCard, { backgroundColor: colors.white, borderColor: colors.border || '#E5E7EB' }]}>
@@ -470,7 +479,24 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       { label: 'Depot', value: response.Depot },
       { label: 'Job Card', value: response.JobCardDocEntry },
       { label: 'Work Entry No', value: response.DocNum || response.DocEntry },
+      { label: 'StartDate', value: overviewSource.StartDate || overviewSource.StartDt },
+      { label: 'StartTime', value: overviewSource.StartTime || overviewSource.StartTm },
+      { label: 'CompleteDate', value: overviewSource.CompleteDate },
+      { label: 'CompleteTime', value: overviewSource.CompleteTime },
+      { label: 'TotalHrs', value: overviewSource.LabourHours ?? overviewSource.TotalHrs },
+      ...additionalFields.map(([key, value]) => ({
+        label: formatWorkEntryResponseLabel(key),
+        value,
+      })),
     ];
+    const verificationRows = [
+      { label: 'Status', value: response.Status },
+      { label: 'Verified By', value: response.VerifyBy },
+      { label: 'Verify Remarks', value: response.VerifyRemarks },
+      { label: 'Final Remarks', value: response.FinalRemarks },
+    ].filter((row) => !(row.label === 'Status' && (
+      row.value === false || String(row.value).trim().toLowerCase() === 'false'
+    )));
     const renderOpenButton = (title, item, type) => (
       <TouchableOpacity
         style={styles.workEntryResponseOpenButton}
@@ -541,12 +567,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           { label: 'Verified', value: `${responseValue(response.VerifyDate)} ${responseValue(response.VerifyTime)}` },
         ], 'timeline'))}
 
-        {renderCard('Verification', renderRows([
-          { label: 'Status', value: response.Status },
-          { label: 'Verified By', value: response.VerifyBy },
-          { label: 'Verify Remarks', value: response.VerifyRemarks },
-          { label: 'Final Remarks', value: response.FinalRemarks },
-        ], 'verification'))}
+        {renderCard('Verification', renderRows(verificationRows, 'verification'))}
 
         {renderCard('Work Details', renderWorkDetailsList, workDetails.length)}
 
@@ -1291,6 +1312,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       job?.IncidentTime ||
       job?.CreateTime ||
       job?.DocTime ||
+      job?.Time ||
       job?.BrkTime ||
       routeRegTime ||
       routeComplaintTime ||
@@ -1366,26 +1388,38 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const getMechanicSummaryFromCurrentWO = () => {
     const mechanics = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics : [];
-    if (mechanics.length === 0) {
-      return {
-        startDt: '-',
-        startTm: '-',
-        totalHrs: '-',
-        remarks: '-',
-      };
-    }
-
-    const firstWithStart = mechanics.find(mech => mech?.StartDt || mech?.StartTm) || mechanics[0];
-    const remarks = mechanics
-      .map(mech => String(mech?.Remarks || '').trim())
+    const workEntries = Array.isArray(workOrder?.WorkEntries) ? workOrder.WorkEntries : [];
+    const firstWithStart = workEntries.find(entry => (
+      entry?.StartDate || entry?.StartDt || entry?.StartTime || entry?.StartTm
+    )) || mechanics.find(mechanic => mechanic?.StartDt || mechanic?.StartTm)
+      || workEntries[0]
+      || mechanics[0]
+      || {};
+    const remarks = [
+      ...workEntries.map(entry => entry?.FinalRemarks || entry?.WorkDone || entry?.Remarks),
+      ...mechanics.map(mechanic => mechanic?.Remarks),
+    ]
+      .map(value => String(value || '').trim())
       .filter(Boolean)
       .join(', ');
-    const totalHrsValue = mechanics.reduce((sum, mech) => sum + (Number(mech?.TotalHrs) || 0), 0);
+    const workEntryHours = workEntries
+      .map(entry => entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours)
+      .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
+    const mechanicHours = mechanics
+      .map(mechanic => mechanic?.TotalHrs)
+      .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
+    const totalHrs = workEntryHours.length > 0
+      ? workEntryHours.reduce((sum, value) => sum + Number(value), 0)
+      : mechanicHours.length > 0
+        ? mechanicHours.reduce((sum, value) => sum + Number(value), 0)
+        : workOrder?.TotalHrs ?? '-';
+    const startDate = firstWithStart?.StartDate || firstWithStart?.StartDt || firstWithStart?.CreateDate || firstWithStart?.EntryDate || firstWithStart?.DocDate;
+    const startTime = firstWithStart?.StartTime || firstWithStart?.StartTm || firstWithStart?.CreateTime || firstWithStart?.EntryTime || firstWithStart?.DocTime;
 
     return {
-      startDt: firstWithStart?.StartDt ? formatDate(firstWithStart.StartDt) : '-',
-      startTm: formatMechanicTime(firstWithStart?.StartTm),
-      totalHrs: (workOrder?.TotalHrs ?? totalHrsValue ?? '-') === '' ? '-' : (workOrder?.TotalHrs ?? totalHrsValue ?? '-'),
+      startDt: startDate ? formatDate(startDate) : '-',
+      startTm: formatMechanicTime(startTime),
+      totalHrs: totalHrs === '' || totalHrs === null || totalHrs === undefined ? '-' : totalHrs,
       remarks: remarks || '-',
     };
   };
@@ -3079,7 +3113,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         >
         {tabs.map((tab) => {
           const isActive = activeTab === tab.key;
-          const count = renderTabCount(tab.key);
+          const showCount = tab.key !== 'Details';
+          const count = showCount ? renderTabCount(tab.key) : '';
           const activeColor = colors.primary;
           const inactiveColor = colors.gray;
           const tabColor = isActive ? activeColor : inactiveColor;
@@ -3091,7 +3126,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
               activeOpacity={0.7}
               accessibilityRole="tab"
               accessibilityState={{ selected: isActive }}
-              accessibilityLabel={`${tab.label} tab, ${count} items`}
+              accessibilityLabel={showCount ? `${tab.label} tab, ${count} items` : `${tab.label} tab`}
               style={[
                 styles.tab,
                 isActive && styles.activeTab,
@@ -3116,22 +3151,24 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                 >
                   {tab.label}
                 </Text>
-                <View
-                  style={[
-                    styles.tabBadge,
-                    { backgroundColor: badgeBg, borderColor: isActive ? activeColor : 'transparent' },
-                  ]}
-                >
-                  <Text
+                {showCount && (
+                  <View
                     style={[
-                      styles.tabBadgeText,
-                      { color: badgeFg },
-                      isActive && { color: '#FFFFFF' },
+                      styles.tabBadge,
+                      { backgroundColor: badgeBg, borderColor: isActive ? activeColor : 'transparent' },
                     ]}
                   >
-                    {count}
-                  </Text>
-                </View>
+                    <Text
+                      style={[
+                        styles.tabBadgeText,
+                        { color: badgeFg },
+                        isActive && { color: '#FFFFFF' },
+                      ]}
+                    >
+                      {count}
+                    </Text>
+                  </View>
+                )}
               </View>
             </TouchableOpacity>
           );

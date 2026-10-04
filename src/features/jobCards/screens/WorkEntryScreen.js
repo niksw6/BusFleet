@@ -679,6 +679,16 @@ const WorkEntryScreen = ({ route, navigation }) => {
     loadData();
   }, [loadData]);
 
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadData();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   // ─── Helpers ─────────────────────────────────────────────────────────────────
   const resolveWorkDescription = () => {
     if (!selectedWork) return '';
@@ -1466,7 +1476,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
       <ScrollView
         contentContainerStyle={styles.scroll}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadData(); }} colors={[colors.primary]} />
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[colors.primary]} />
         }
       >
         <View pointerEvents={workEntryLocked ? 'none' : 'auto'} style={workEntryLocked ? { opacity: 0.65 } : undefined}>

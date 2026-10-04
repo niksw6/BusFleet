@@ -2,6 +2,7 @@
 import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput as RNTextInput, Modal as RNModal, Image } from 'react-native';
 import { Text, TextInput, Chip } from 'react-native-paper';
 import { useSelector } from 'react-redux';
+import { useFocusEffect } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
 import MaterialIcons from '../../../components/AppIcon.js';
 
@@ -96,7 +97,7 @@ const extractSpecialToolsForFault = (workEntry, faultItem) => {
 };
 
 const FaultWorkScreen = ({ route, navigation }) => {
-  const { docEntry, faultLine, fault, complaintType: routeComplaintType, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, isWorkStarted } = route.params || {};
+  const { docEntry, faultLine, fault, complaintType: routeComplaintType, dbName: routeDbName, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, isWorkStarted, readOnly = false, supervisorVerified = false } = route.params || {};
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
@@ -136,7 +137,12 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const [step, setStep] = useState(() => (
     isWorkStarted || routeWorkEntryDocEntry || existingWorkEntry?.DocEntry ? STEP.WORKING : STEP.START
   ));
-  const [workEntryDocEntry, setWorkEntryDocEntry] = useState(routeWorkEntryDocEntry || null);
+  const [workEntryDocEntry, setWorkEntryDocEntry] = useState(
+    routeWorkEntryDocEntry
+    || existingWorkEntry?.WorkEntryDocEntry
+    || existingWorkEntry?.DocEntry
+    || null
+  );
 
   const [workList, setWorkList] = useState([]);
   const [spareParts, setSpareParts] = useState([]);
@@ -186,7 +192,15 @@ const FaultWorkScreen = ({ route, navigation }) => {
     || isAwaitingVerificationStatus(fault?.WorkStatus)
     || isAwaitingVerificationStatus(fault?.FaultStatus)
   );
-  const workEntryLocked = awaitingVerification || step === STEP.DONE;
+  const isSupervisorVerified = supervisorVerified || ['SV', 'CL', 'CM', 'C', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].some((status) => (
+    [existingWorkEntry?.Status, existingWorkEntry?.WorkStatus, fault?.Status, fault?.WorkStatus]
+      .some(value => String(value || '').trim().toUpperCase() === status)
+  ));
+  const workEntryLocked = readOnly || isSupervisorVerified || awaitingVerification || step === STEP.DONE;
+  const getPendingPartDisplayKey = (part) => {
+    const itemCode = String(part?.ItemCode || part?.Code || part?.ItemName || part?.Name || '').trim().toLowerCase();
+    return `${itemCode}-${getRequestedQty(part)}`;
+  };
 
   const extractRows = (response) => {
     const data = response?.Data ?? response?.data ?? response;
@@ -224,6 +238,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const isPartApproved = (part) => {
+    if (part?.DashboardReadyToCollect === true) return true;
     const status = getPartStatus(part);
     const approvedQty = getApprovedQty(part);
     const explicitApproval = [part?.Approved, part?.IsApproved, part?.SupervisorApproved, part?.ApprovalResponse, part?.Response]
@@ -312,6 +327,38 @@ const FaultWorkScreen = ({ route, navigation }) => {
       const approvedFromQueue = approvedResults.flatMap(result => (
         result.status === 'fulfilled' ? extractRows(result.value) : []
       ));
+      const detail = jobCardResult.status === 'fulfilled' ? (jobCardResult.value?.Data ?? jobCardResult.value) : {};
+      const dashboardData = mechanicDashboardResult?.Data ?? mechanicDashboardResult?.data ?? mechanicDashboardResult;
+      const dashboardRows = Array.isArray(dashboardData)
+        ? dashboardData
+        : ['Faults', 'Jobs', 'Items', 'List', 'Rows'].map((key) => dashboardData?.[key]).find(Array.isArray)
+          || extractRows(mechanicDashboardResult);
+      const dashboardParts = Array.isArray(dashboardData?.Parts)
+        ? dashboardData.Parts
+        : Array.isArray(mechanicDashboardResult?.Parts)
+          ? mechanicDashboardResult.Parts
+          : [];
+      const dashboardPartsForJobCard = dashboardParts.filter((part) => {
+        const partJobCard = part?.JobCardDocEntry ?? part?.JobCardNo ?? part?.JobCardEntry ?? part?.JobCard;
+        return partJobCard === undefined || partJobCard === null || String(partJobCard) === String(docEntry);
+      });
+      const dashboardJob = dashboardRows.find((row) => String(
+        row?.DocEntry ?? row?.JobCardDocEntry ?? row?.JobCardNo ?? '',
+      ) === String(docEntry));
+      const jobCardDashboardParts = Array.isArray(dashboardJob?.Parts) ? dashboardJob.Parts : [];
+      jobCardDashboardParts.forEach((part) => {
+        const partJobCard = part?.JobCardDocEntry ?? part?.JobCardNo ?? part?.JobCardEntry ?? part?.JobCard;
+        if (partJobCard !== undefined && partJobCard !== null && String(partJobCard) !== String(docEntry)) return;
+        if (!dashboardPartsForJobCard.includes(part)) dashboardPartsForJobCard.push(part);
+      });
+      const dashboardWorkEntry = (Array.isArray(dashboardJob?.WorkEntries) ? dashboardJob.WorkEntries : [])
+        .find((entry) => [
+          entry?.DocEntry,
+          entry?.WorkEntryDocEntry,
+          entry?.WorkEntryNo,
+          entry?.WorkEntryEntry,
+          entry?.WorkEntry,
+        ].some((value) => String(value ?? '') === String(workEntryDocEntry))) || null;
       // Rework can reopen a Work Entry after the dashboard response was
       // cached. Fetch that one active entry so its latest approval and part
       // quantities decide whether it is approved or awaiting approval.
@@ -320,9 +367,126 @@ const FaultWorkScreen = ({ route, navigation }) => {
         try {
           const response = await workEntryService.getWorkEntry(companyDb, workEntryDocEntry);
           const data = response?.Data ?? response?.data ?? response;
-          activeWorkEntry = Array.isArray(data) ? data[0] || activeWorkEntry : data || activeWorkEntry;
+          const queue = [data];
+          const visited = new Set();
+          let fallbackEntry = null;
+          while (queue.length > 0) {
+            const candidate = queue.shift();
+            if (Array.isArray(candidate)) {
+              queue.push(...candidate);
+              continue;
+            }
+            if (!candidate || typeof candidate !== 'object' || visited.has(candidate)) continue;
+            visited.add(candidate);
+            const candidateWorkEntryIds = [
+              candidate?.DocEntry,
+              candidate?.WorkEntryDocEntry,
+              candidate?.WorkEntryNo,
+              candidate?.WorkEntryEntry,
+            ];
+            if (candidateWorkEntryIds.some((value) => String(value ?? '') === String(workEntryDocEntry))) {
+              activeWorkEntry = candidate;
+              break;
+            }
+            if (!fallbackEntry && (
+              Array.isArray(candidate?.Details)
+              || Array.isArray(candidate?.WorkDetails)
+              || Array.isArray(candidate?.WorkDone)
+              || Array.isArray(candidate?.WorkEntryDetails)
+              || candidate?.FinalRemarks !== undefined
+            )) {
+              fallbackEntry = candidate;
+            }
+            queue.push(...Object.values(candidate));
+          }
+          activeWorkEntry = activeWorkEntry
+            || data?.WorkEntry
+            || data?.WorkEntryDetails
+            || data?.Record
+            || fallbackEntry
+            || existingWorkEntry
+            || null;
         } catch (error) {
           console.warn('[FaultWork] Active work-entry detail unavailable:', error?.message || error);
+        }
+      }
+      const jobCardWorkEntry = (Array.isArray(detail?.WorkEntries) ? detail.WorkEntries : [])
+        .find((entry) => [
+          entry?.DocEntry,
+          entry?.WorkEntryDocEntry,
+          entry?.WorkEntryNo,
+          entry?.WorkEntryEntry,
+        ].some((value) => String(value ?? '') === String(workEntryDocEntry))) || null;
+      const workEntrySources = [activeWorkEntry, dashboardWorkEntry, jobCardWorkEntry]
+        .filter((entry) => entry && typeof entry === 'object');
+      if (workEntrySources.length > 0) {
+        activeWorkEntry = Object.assign({}, ...workEntrySources.slice().reverse());
+        [
+          'Details', 'WorkDetails', 'WorkDone', 'WorkEntryDetails',
+          'BeforeImages', 'BFImages', 'Images', 'WorkEntryImages', 'ImageList',
+          'AfterImages', 'AFImages', 'Attachments', 'SpecialTools', 'Tools',
+        ].forEach((field) => {
+          const sourceWithRows = workEntrySources.find((entry) => Array.isArray(entry[field]) && entry[field].length > 0);
+          if (sourceWithRows) activeWorkEntry[field] = sourceWithRows[field];
+        });
+      }
+      if (activeWorkEntry) {
+        const savedDetails = Array.isArray(activeWorkEntry?.Details)
+          ? activeWorkEntry.Details
+          : Array.isArray(activeWorkEntry?.WorkDetails)
+            ? activeWorkEntry.WorkDetails
+            : Array.isArray(activeWorkEntry?.WorkDone)
+              ? activeWorkEntry.WorkDone
+              : Array.isArray(activeWorkEntry?.WorkEntryDetails)
+                ? activeWorkEntry.WorkEntryDetails
+              : [];
+        if (savedDetails.length > 0) {
+          setDetails((previous) => {
+            const draftDetails = previous.filter((detail) => !detail.locked);
+            const restoredDetails = savedDetails.map((detail) => ({
+              id: createDetailId(),
+              WorkCode: detail?.WorkCode || 'OTHER',
+              WorkDone: detail?.WorkDone || '',
+              OtherDescription: detail?.OtherDescription || detail?.OtherDesc || '',
+              Remarks: detail?.Remarks || '',
+              locked: true,
+            }));
+            return [...restoredDetails, ...draftDetails];
+          });
+        }
+        if (activeWorkEntry?.FinalRemarks !== undefined) {
+          setFinalRemarks(String(activeWorkEntry.FinalRemarks || ''));
+        }
+        const savedImageRows = [
+          ...(Array.isArray(activeWorkEntry?.BeforeImages) ? activeWorkEntry.BeforeImages : []),
+          ...(Array.isArray(activeWorkEntry?.BFImages) ? activeWorkEntry.BFImages : []),
+          ...(Array.isArray(activeWorkEntry?.Images) ? activeWorkEntry.Images : []),
+          ...(Array.isArray(activeWorkEntry?.WorkEntryImages) ? activeWorkEntry.WorkEntryImages : []),
+          ...(Array.isArray(activeWorkEntry?.ImageList) ? activeWorkEntry.ImageList : []),
+          ...(Array.isArray(activeWorkEntry?.AfterImages) ? activeWorkEntry.AfterImages : []),
+          ...(Array.isArray(activeWorkEntry?.AFImages) ? activeWorkEntry.AFImages : []),
+          ...(Array.isArray(activeWorkEntry?.Attachments) ? activeWorkEntry.Attachments : []),
+        ];
+        if (savedImageRows.length > 0) {
+          setSavedImages((previous) => {
+            const imagesById = new Map(previous.map((image) => [image.id, image]));
+            savedImageRows.forEach((row, index) => {
+              const fileName = extractImageFileName(row);
+              if (!fileName) return;
+              const imgNo = Number(row?.ImgNo) || index + 1;
+              const imgType = String(row?.ImgType || (imgNo === 1 ? 'BF' : 'AF')).trim().toUpperCase();
+              const id = `${fileName}-${imgNo}`;
+              imagesById.set(id, {
+                id,
+                fileName,
+                imgType,
+                imgNo,
+                displayName: `${imgNo === 1 ? 'Before image' : 'After image'}: ${fileName}`,
+                localUri: String(row?.LocalUri || row?.uri || '').trim(),
+              });
+            });
+            return Array.from(imagesById.values()).slice(0, MAX_IMAGES_PER_FAULT);
+          });
         }
       }
       const pendingForWorkEntry = extractRows(pendingRequestsResult).filter((part) => {
@@ -334,7 +498,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
         return requestedWorkEntry !== null && String(requestedWorkEntry) === String(workEntryDocEntry);
       }).filter((part) => !isPartApproved(part));
       setPendingRequestedParts(pendingForWorkEntry);
-      const detail = jobCardResult.status === 'fulfilled' ? (jobCardResult.value?.Data ?? jobCardResult.value) : {};
       const detailParts = [
         ...(Array.isArray(detail?.Parts) ? detail.Parts : []),
         ...(Array.isArray(detail?.Faults) ? detail.Faults.flatMap((row, index) => (
@@ -370,19 +533,19 @@ const FaultWorkScreen = ({ route, navigation }) => {
       const approved = [
         ...selectPartsForFault(approvedFromQueue.filter(belongsToThisJobCard)),
         ...selectPartsForFault(detailParts).map(p => ({ ...p, SupervisorProvided: true })),
+        ...dashboardPartsForJobCard.map(part => ({
+          ...part,
+          ItemCode: part?.ItemCode || part?.Code || '',
+          ItemName: part?.ItemName || part?.Name || part?.Dscription || part?.Description || part?.ItemCode || part?.Code || '',
+          SupervisorProvided: true,
+          DashboardReadyToCollect: true,
+        })),
         // GetMechanicDashboard is the authoritative assigned-fault response.
         // Its Parts collection must travel with the mechanic into Fault Work.
         ...(Array.isArray(fault?.Parts) ? fault.Parts.map(part => ({
           ...part,
           FaultLine: part?.FaultLine ?? faultLine,
           SupervisorProvided: true,
-        })) : []),
-        // Mechanic-requested parts are returned inside the active WorkEntry.
-        // Status AP marks them as approved by the Supervisor and ready to use.
-        ...(Array.isArray(activeWorkEntry?.Parts) ? activeWorkEntry.Parts.map(part => ({
-          ...part,
-          FaultLine: part?.FaultLine ?? faultLine,
-          WorkEntryDocEntry: activeWorkEntry?.DocEntry ?? activeWorkEntry?.WorkEntryDocEntry ?? workEntryDocEntry,
         })) : []),
       ];
       const uniqueParts = new Map();
@@ -413,10 +576,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
       });
       setApprovedParts(Array.from(uniqueParts.values()));
 
-      const dashboardRows = extractRows(mechanicDashboardResult);
-      const dashboardJob = dashboardRows.find((row) => String(row?.DocEntry ?? row?.JobCardDocEntry ?? row?.JobCardNo ?? '') === String(docEntry));
-      const dashboardWorkEntry = (Array.isArray(dashboardJob?.WorkEntries) ? dashboardJob.WorkEntries : [])
-        .find((entry) => String(entry?.DocEntry ?? entry?.WorkEntryDocEntry ?? entry?.WorkEntry ?? '') === String(workEntryDocEntry));
       const dashboardTools = Array.isArray(dashboardWorkEntry?.SpecialTools) ? dashboardWorkEntry.SpecialTools : [];
       if (dashboardTools.length > 0) {
         setExistingSpecialTools((previous) => normalizeSpecialToolRows([...dashboardTools, ...previous]));
@@ -446,9 +605,9 @@ const FaultWorkScreen = ({ route, navigation }) => {
     }
   }, [dbName, userCode, docEntry, faultReference, faultLine, workEntryDocEntry, existingWorkEntry, partIdentityCandidates.join('|')]);
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     loadData();
-  }, [loadData]);
+  }, [loadData]));
 
   useEffect(() => {
     setExistingSpecialTools(normalizeSpecialToolRows(extractSpecialToolsForFault(existingWorkEntry, fault)));
@@ -466,10 +625,8 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const approvedForCollection = approvedParts.filter(isPartApproved);
   const pendingSupervisorParts = approvedParts.filter(part => !isPartApproved(part));
   const awaitingApprovalParts = [...pendingSupervisorParts, ...pendingRequestedParts].filter((part, index, list) => {
-    const key = `${part?.ItemCode || part?.Code || ''}-${part?.PartLine || part?.LineId || index}`;
-    return list.findIndex((candidate, candidateIndex) => (
-      `${candidate?.ItemCode || candidate?.Code || ''}-${candidate?.PartLine || candidate?.LineId || candidateIndex}` === key
-    )) === index;
+    const key = getPendingPartDisplayKey(part);
+    return key !== '-' && list.findIndex(candidate => getPendingPartDisplayKey(candidate) === key) === index;
   });
   const savedBeforeImages = savedImages.filter((image) => String(image.imgType || '').toUpperCase() === 'BF');
   const savedAfterImages = savedImages.filter((image) => String(image.imgType || '').toUpperCase() === 'AF');
@@ -1378,6 +1535,14 @@ const FaultWorkScreen = ({ route, navigation }) => {
               </Text>
             </View>
           )}
+          {isSupervisorVerified && (
+            <View style={[styles.awaitingStatusPill, { backgroundColor: '#2B7D2B15' }]}>
+              <MaterialIcons name="verified" size={14} color="#2B7D2B" />
+              <Text style={{ color: '#2B7D2B', fontWeight: '700', fontSize: 12 }}>
+                Supervisor Verified
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Supervisor-selected parts must be visible before work starts too. */}
@@ -1552,7 +1717,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
               >
                 <MaterialIcons name="save" size={18} color="#FFF" />
                 <Text style={styles.primaryBtnText}>
-                  {submitting ? 'Saving…' : workEntryLocked ? 'Completed' : workEntryDocEntry ? 'Update Work Entry' : 'Save Work Entry'}
+                  {submitting ? 'Saving…' : isSupervisorVerified ? 'Supervisor Verified' : readOnly ? 'Read Only' : workEntryLocked ? 'Completed' : workEntryDocEntry ? 'Update Work Entry' : 'Save Work Entry'}
                 </Text>
               </TouchableOpacity>
             </View>

@@ -13,7 +13,7 @@ import Toast from 'react-native-toast-message';
 import MaterialIcons from '../components/AppIcon.js';
 
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../constants/theme';
-import { complaintService, maintenanceService, jobCardService, workEntryService } from '../api/services';
+import { complaintService, maintenanceService, jobCardService } from '../api/services';
 import { getStatusName } from '../utils/helpers';
 import { isSupervisorUser } from '../utils/roleAccess';
 
@@ -143,7 +143,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const isClosedStatus = (statusValue) => {
     const status = normalizeStatus(statusValue);
-    return status === 'C' || status === 'CM' || status === 'COMPLETED' || status === 'CLOSED';
+    return ['C', 'CM', 'CL', 'SV', 'COMPLETE', 'COMPLETED', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(status);
   };
 
   const hasMeaningfulFaultRows = (faultRows) => {
@@ -172,18 +172,37 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     const linkedJobCardDocEntry = resolveJobCardDocEntry(incidentData) || Number(routeJobCardDocEntry || 0);
 
     if (!linkedJobCardNo && !linkedJobCardDocEntry) {
-      return { count: 0, latestDocEntry: null, hasCompletionSignal: false, allCompleted: false };
+      return { count: 0, latestDocEntry: null, hasCompletionSignal: false, allCompleted: false, jobCardStatus: '' };
     }
 
     try {
-      const jobCardRef = linkedJobCardNo || linkedJobCardDocEntry;
-      const workEntriesResponse = await workEntryService.getWorkHistory(dbName || 'MUTSPL_TEST', jobCardRef);
-      const responseData = workEntriesResponse?.Data ?? workEntriesResponse?.data ?? workEntriesResponse;
-      const workEntries = Array.isArray(responseData)
-        ? responseData
-        : (responseData && typeof responseData === 'object'
-          ? Object.values(responseData).find(Array.isArray) || []
-          : []);
+      const jobCardRef = linkedJobCardDocEntry || linkedJobCardNo;
+      const jobCardResponse = await jobCardService.getJobCardDetail(dbName || 'MUTSPL_TEST', jobCardRef);
+      const responseData = jobCardResponse?.Data ?? jobCardResponse?.data ?? jobCardResponse;
+      const queue = [responseData];
+      const visited = new Set();
+      let jobCardRecord = null;
+      while (queue.length > 0) {
+        const candidate = queue.shift();
+        if (Array.isArray(candidate)) {
+          queue.push(...candidate);
+          continue;
+        }
+        if (!candidate || typeof candidate !== 'object' || visited.has(candidate)) continue;
+        visited.add(candidate);
+        const candidateJobCardId = candidate?.DocEntry ?? candidate?.JobCardDocEntry ?? candidate?.JobCardEntry;
+        const hasWorkEntries = Array.isArray(candidate?.WorkEntries);
+        if (hasWorkEntries && (
+          !jobCardRecord
+          || String(candidateJobCardId ?? '') === String(linkedJobCardDocEntry || '')
+        )) {
+          jobCardRecord = candidate;
+          if (!linkedJobCardDocEntry || String(candidateJobCardId ?? '') === String(linkedJobCardDocEntry)) break;
+        }
+        queue.push(...Object.values(candidate));
+      }
+      const workEntries = Array.isArray(jobCardRecord?.WorkEntries) ? jobCardRecord.WorkEntries : [];
+      const jobCardStatus = jobCardRecord?.Status || jobCardRecord?.JobCardStatus || incidentData?.JobCardStatus || '';
       const hasCompletionSignal = workEntries.some((entry) => (
         isWorkEntryCompletionStatus(entry?.Status || entry?.WorkStatus)
         || Boolean(String(entry?.CompleteDate || entry?.CompletedDate || '').trim())
@@ -194,12 +213,21 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       ));
       return {
         count: workEntries.length,
-        latestDocEntry: null,
+        latestDocEntry: workEntries[workEntries.length - 1]?.WorkEntryDocEntry
+          || workEntries[workEntries.length - 1]?.DocEntry
+          || null,
         hasCompletionSignal,
         allCompleted,
+        jobCardStatus,
       };
     } catch (workEntryError) {
-      return { count: 0, latestDocEntry: null, hasCompletionSignal: false, allCompleted: false };
+      return {
+        count: 0,
+        latestDocEntry: null,
+        hasCompletionSignal: false,
+        allCompleted: false,
+        jobCardStatus: incidentData?.JobCardStatus || '',
+      };
     }
   };
 
@@ -282,7 +310,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const deriveProgressMap = async (incidentData) => {
     const incidentStatus = normalizeStatus(incidentData?.Status);
-    const jobCardStatus = normalizeStatus(incidentData?.JobCardStatus);
+    const incidentJobCardStatus = normalizeStatus(incidentData?.JobCardStatus);
     const linkedJobCardNo = resolveJobCardNo(incidentData) || String(routeJobCardNo || '').trim();
     const linkedJobCardDocEntry = resolveJobCardDocEntry(incidentData) || Number(routeJobCardDocEntry || 0);
     const hasRealJobCard = hasValidLinkedJobCard(incidentData) || (String(routeJobCardNo || '').trim() && String(routeJobCardNo || '').trim() !== String(complaintNo || '').trim());
@@ -292,7 +320,9 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       latestDocEntry: workOrderDocEntry,
       hasCompletionSignal,
       allCompleted: allWorkEntriesCompleted,
+      jobCardStatus: resolvedJobCardStatus,
     } = await resolveWorkEntryCount(incidentData);
+    const jobCardStatus = normalizeStatus(resolvedJobCardStatus) || incidentJobCardStatus;
     const closed = isClosedStatus(incidentStatus);
     // Some completed job cards return the terminal state on the incident but
     // omit/stale the JobCardStatus. Either terminal signal completes the same
@@ -323,7 +353,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       workOrderCount,
       canSupervisorClose: supervisorUser && !isPreventive && jobCardCreated && workOrderCreated && allWorkEntriesCompleted && !lifecycleCompleted,
       canCloseJobCard: supervisorUser && !isPreventive && jobCardCreated && !jobCardClosed,
-      canCloseIncident: supervisorUser && !isPreventive && jobCardCreated && !lifecycleCompleted,
+      canCloseIncident: supervisorUser && !isPreventive && jobCardCreated && !closed,
     });
   };
 

@@ -9,7 +9,7 @@ import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { dashboardService, mechanicService, masterService, repairService } from '../../../api/services';
+import { dashboardService, jobCardService, mechanicService, repairService } from '../../../api/services';
 import { formatDateTime, getDateTimeTimestamp } from '../../../utils/helpers';
 import { getUserRole } from '../../../utils/roleAccess';
 
@@ -42,7 +42,9 @@ const getEffectiveStatus = (item) => {
   const workEntries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
   const submittedEntry = workEntries.find((entry) => entry?.Status || entry?.WorkStatus);
   return String(
-    submittedEntry?.Status
+    item?.JobCardDetailStatus
+    || item?.JobCardStatus
+    || submittedEntry?.Status
     || submittedEntry?.WorkStatus
     || item?.Status
     || item?.FaultStatus
@@ -134,6 +136,28 @@ const extractRepairJobCardRecord = (response) => {
 };
 
 const getAssemblyStatus = (jobCard) => String(jobCard?.AssemblyStatus || '').trim().toUpperCase();
+const extractJobCardDetailRecord = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data[0] || null;
+  if (!data || typeof data !== 'object') return null;
+  if (typeof data.Status === 'string' || typeof data.JobCardStatus === 'string') return data;
+  for (const value of Object.values(data)) {
+    if (value && typeof value === 'object') {
+      const record = extractJobCardDetailRecord(value);
+      if (record) return record;
+    }
+  }
+  return data;
+};
+const getJobCardDetailStatus = (detail) => String(
+  detail?.Status
+  || detail?.status
+  || detail?.JobCardStatus
+  || detail?.jobCardStatus
+  || detail?.Data?.Status
+  || detail?.data?.Status
+  || ''
+).trim().toUpperCase();
 const getMechanicAssemblyStatus = (jobCard, user) => {
   const userCode = String(user?.User || user?.user || user?.UserCode || user?.Code || '').trim().toLowerCase();
   const mechanic = (Array.isArray(jobCard?.Mechanics) ? jobCard.Mechanics : []).find((item) => [item?.UserCode, item?.User, item?.Code, item?.EmpCode]
@@ -508,10 +532,6 @@ const mergeQueueItems = (apiItems, notificationItems) => {
       )
     ));
     if (matchingIndex >= 0) {
-      // JCA is a job-card-level Driver Complaint notification, not a fault.
-      // The dashboard row already carries the actual fault name, so keep it
-      // instead of replacing it with the generic "Driver Complaint Incident".
-      if (getNotificationType(item) === 'JCA') return;
       // A dashboard row may exist before the JR notification is read. Keep
       // its details, but let the assignment notification control its queue.
       const existingItem = merged[matchingIndex];
@@ -519,9 +539,18 @@ const mergeQueueItems = (apiItems, notificationItems) => {
         ? (existingItem?.JobCard || existingItem?.jobCard || existingItem?.JobCardNo || existingItem?.jobCardNo)
         : null;
       const preservedStatus = ['JB', 'JCA'].includes(getNotificationType(item))
-        ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.FaultStatus || 'P')
+        ? (existingItem.JobCardDetailStatus
+          || existingItem.JobCardStatus
+          || existingItem.Status
+          || existingItem.AssignmentStatus
+          || existingItem.FaultStatus
+          || 'P')
         : isRepairAccepted(existingItem)
-        ? (existingItem.Status || existingItem.AssignmentStatus || existingItem.MechanicStatus)
+        ? (existingItem.JobCardDetailStatus
+          || existingItem.JobCardStatus
+          || existingItem.Status
+          || existingItem.AssignmentStatus
+          || existingItem.MechanicStatus)
         : 'P';
       const notificationIsJobCardMetadata = ['JB', 'JCA'].includes(getNotificationType(item));
       merged[matchingIndex] = {
@@ -533,13 +562,10 @@ const mergeQueueItems = (apiItems, notificationItems) => {
         ...(getNotificationType(item) === 'JR' ? { FaultName: 'Assembly', Fault: 'Assembly' } : {}),
         ...(repairJobCard ? { JobCard: repairJobCard, jobCard: repairJobCard } : {}),
         Status: preservedStatus,
+        ...(existingItem.JobCardDetailStatus ? { JobCardDetailStatus: existingItem.JobCardDetailStatus } : {}),
       };
       return;
     }
-    // JCA is job-card-level metadata, not an individual fault. Do not add it
-    // as a standalone actionable row when the mechanic API has not returned
-    // the corresponding fault yet.
-    if (getNotificationType(item) === 'JCA') return;
     if (!existingKeys.has(key)) {
       merged.push(item);
       existingKeys.add(key);
@@ -579,7 +605,25 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
         repairService.getMyRepairWorkDashboard(companyDb, userCode),
       ]);
       if (dashboardResult.status === 'rejected') throw dashboardResult.reason;
-      const apiItems = extractItems(dashboardResult.value?.Data ?? dashboardResult.value);
+      const rawApiItems = extractItems(dashboardResult.value?.Data ?? dashboardResult.value);
+      const apiItems = await Promise.all(rawApiItems.map(async (item) => {
+        const docEntry = getDocEntry(item);
+        if (!docEntry) return item;
+        try {
+          const detailResponse = await jobCardService.getJobCardDetail(companyDb, docEntry);
+          const detail = extractJobCardDetailRecord(detailResponse);
+          const detailStatus = getJobCardDetailStatus(detail);
+          return detail && typeof detail === 'object'
+            ? {
+                ...item,
+                ...detail,
+                ...(detailStatus ? { Status: detailStatus, JobCardDetailStatus: detailStatus } : {}),
+              }
+            : item;
+        } catch (error) {
+          return item;
+        }
+      }));
       const repairWorkItems = repairWorkResult.status === 'fulfilled'
         ? getRepairWorkQueueItems(repairWorkResult.value)
         : [];
@@ -599,7 +643,31 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       const pendingNotifications = notificationItems.filter(item => !(
         isRepairAssignment(item) && repairWorkJobCards.has(String(getDocEntry(item)).trim())
       ));
-      const queueItems = mergeQueueItems(queueWithRepairWork, pendingNotifications);
+      const mergedQueueItems = mergeQueueItems(queueWithRepairWork, pendingNotifications);
+      const queueItems = await Promise.all(mergedQueueItems.map(async (item) => {
+        const authoritativeItem = apiItems.find(apiItem => hasSameJobCard(apiItem, item));
+        let authoritativeStatus = getJobCardDetailStatus(authoritativeItem);
+
+        // Notifications can be the only source for a mechanic card when the
+        // dashboard endpoint has not returned the row yet. Hydrate those
+        // cards from GetJobCardDetail as well, otherwise a stale notification
+        // status can incorrectly place an in-progress card in New.
+        if (!authoritativeStatus) {
+          const docEntry = getDocEntry(item);
+          if (docEntry) {
+            try {
+              const detailResponse = await jobCardService.getJobCardDetail(companyDb, docEntry);
+              authoritativeStatus = getJobCardDetailStatus(extractJobCardDetailRecord(detailResponse));
+            } catch (error) {
+              authoritativeStatus = '';
+            }
+          }
+        }
+
+        return authoritativeStatus
+          ? { ...item, Status: authoritativeStatus, JobCardDetailStatus: authoritativeStatus }
+          : item;
+      }));
       setItems(queueItems);
     } catch (error) {
       console.error('❌ Error loading Mechanic Dashboard:', error);
@@ -634,22 +702,12 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       setSubmittingKey(key);
       const companyDb = dbName || 'MUTSPL_TEST';
       const breakdownAssignment = isBreakdownAssignment(item);
-      const response = breakdownAssignment
-        ? await masterService.respondBreakdownTeamAssignment(companyDb, {
-            AssignmentDocEntry: item?.AssignmentDocEntry
-              || item?.assignmentDocEntry
-              || item?.DocEntry
-              || item?.docEntry
-              || getDocEntry(item),
-            Action: 'ACCEPT',
-            Remarks: 'Team accepted the breakdown.',
-          })
-        : await mechanicService.acceptFault(
-            companyDb,
-            getDocEntry(item),
-            getFaultLine(item),
-            userCode,
-          );
+      const response = await mechanicService.acceptFault(
+        companyDb,
+        getDocEntry(item),
+        getFaultLine(item),
+        userCode,
+      );
       if (response?.Success !== false) {
         const responseData = response?.Data ?? response?.data ?? response;
         const acceptedEntry = Array.isArray(responseData)
@@ -701,6 +759,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
 
   const openFault = (item) => {
     const activeWorkEntry = getActiveWorkEntry(item);
+    const supervisorVerified = deriveBucket(item) === BUCKET.COMPLETED;
     navigation.navigate('FaultWork', {
       docEntry: getDocEntry(item),
       faultLine: getFaultLine(item),
@@ -709,6 +768,8 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       existingWorkEntry: activeWorkEntry,
       isWorkStarted: hasStartedWork(item),
       isAwaitingVerification: isAwaitingVerification(item),
+      readOnly: supervisorVerified,
+      supervisorVerified,
       complaintType: normalizeJobType(item),
       dbName: dbName || 'MUTSPL_TEST',
     });
@@ -847,6 +908,10 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
         onPress={() => {
           if (repairAssignment) {
             openRepairCard(item);
+            return;
+          }
+          if (getNotificationType(item) === 'JCA' && bucket === BUCKET.TO_ACCEPT) {
+            handleAccept(item);
             return;
           }
           if (breakdownAssignment) {

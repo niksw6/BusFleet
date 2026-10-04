@@ -1378,6 +1378,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
       setShowDenyModal(false);
       setDenyReason('');
+      setSelectedWorkEntry(null);
       navigation.setParams({
         focusWorkEntryDocEntry: null,
         focusJobCardDocEntry: null,

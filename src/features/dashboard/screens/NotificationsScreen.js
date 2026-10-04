@@ -392,10 +392,9 @@ const NotificationsScreen = ({ navigation }) => {
       notificationText.includes('supervisor inspection')
       || notificationText.includes('inspection is required')
     ));
+    const isWorkEntryVerified = rawNotificationType === 'WEV' || type === 'WEV';
     const isWorkEntryRequest = rawNotificationType === 'WERQ' || type === 'WERQ';
-    const isRepairPartRequest = rawNotificationType === 'WERQ'
-      || type === 'WERQ'
-      || ((notificationText.includes('part') || notificationText.includes('spare'))
+    const isRepairPartRequest = ((notificationText.includes('part') || notificationText.includes('spare'))
         && (notificationText.includes('request') || notificationText.includes('required'))
         && notificationText.includes('repair'));
     const isTowNotification = rawNotificationType === 'TOW' || type === 'TOW';
@@ -414,6 +413,44 @@ const NotificationsScreen = ({ navigation }) => {
         initialSection: isToolRequest ? 'tools' : 'parts',
         focusJobCardDocEntry: jobCardReference,
         focusWorkEntryDocEntry: item?.workEntryDocEntry || item?.WorkEntryDocEntry || item?.WorkEntryNo || item?.ReferenceDocEntry || '',
+        notificationTimestamp: formatNotificationDate(
+          item?.DateTime || item?.CreatedAt || item?.NotificationDateTime || item?.Date || item?.timestamp || item?.CreatedDate || item?.ReqDate || item?.RequestDate,
+          item?.Time || item?.time || item?.ReqTime || item?.RequestTime || item?.CreatedTime || item?.NotificationTime,
+        ),
+      });
+      return;
+    }
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && isWorkEntryVerified) {
+      const verifiedWorkEntryDocEntry = item?.WorkEntryDocEntry
+        || item?.workEntryDocEntry
+        || item?.WorkEntryNo
+        || item?.workEntryNo
+        || item?.WorkEntry
+        || item?.workEntry
+        || item?.ReferenceDocEntry
+        || item?.RefDocEntry
+        || '';
+      const verifiedJobCardDocEntry = item?.JobCardDocEntry
+        || item?.jobCardDocEntry
+        || item?.JobCardEntry
+        || item?.jobCardEntry
+        || item?.JobCardNo
+        || item?.jobCardNo
+        || item?.JobCard
+        || item?.jobCard
+        || jobCardReference
+        || '';
+      navigation.navigate('FaultWork', {
+        docEntry: verifiedJobCardDocEntry,
+        jobCardDocEntry: verifiedJobCardDocEntry,
+        jobCardNo: verifiedJobCardDocEntry,
+        faultLine: Number(item?.FaultLine || item?.faultLine || 1) || 1,
+        fault: item,
+        workEntryDocEntry: verifiedWorkEntryDocEntry,
+        isWorkStarted: true,
+        readOnly: true,
+        complaintType: item?.ComplaintType || item?.complaintType || item?.FormType || item?.formType || '',
+        dbName: dbName || 'MUTSPL_TEST',
       });
       return;
     }
@@ -466,10 +503,44 @@ const NotificationsScreen = ({ navigation }) => {
         || Boolean(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.ComplaintNo || item?.complaintNo || item?.BreakdownNo || item?.BreakdownDocEntry || item?.BreakdownId)
       );
 
-    // JB/JCA/WER are mechanic work-queue notifications. Handle them before the
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && (rawNotificationType === 'WER' || type === 'WER')) {
+      const workEntryDocEntry = item?.WorkEntryDocEntry
+        || item?.workEntryDocEntry
+        || item?.WorkEntryNo
+        || item?.workEntryNo
+        || item?.WorkEntry
+        || item?.workEntry
+        || item?.ReferenceDocEntry
+        || item?.RefDocEntry
+        || '';
+      const workJobCardDocEntry = item?.JobCardDocEntry
+        || item?.jobCardDocEntry
+        || item?.JobCardEntry
+        || item?.jobCardEntry
+        || item?.JobCardNo
+        || item?.jobCardNo
+        || item?.JobCard
+        || item?.jobCard
+        || jobCardReference
+        || '';
+      navigation.navigate('FaultWork', {
+        docEntry: workJobCardDocEntry,
+        jobCardDocEntry: workJobCardDocEntry,
+        jobCardNo: item?.JobCardNo || item?.jobCardNo || workJobCardDocEntry,
+        faultLine: Number(item?.FaultLine || item?.faultLine || 1) || 1,
+        fault: item,
+        workEntryDocEntry,
+        isWorkStarted: true,
+        complaintType: item?.ComplaintType || item?.complaintType || item?.FormType || item?.formType || '',
+        dbName: dbName || 'MUTSPL_TEST',
+      });
+      return;
+    }
+
+    // JB/JCA are mechanic work-queue notifications. Handle them before the
     // message-text repair-assignment heuristic below, which may contain the
     // words "repair" and "job card" but is not an Assembly assignment.
-    if ((isMechanicUser(user) || isFieldStaffUser(user)) && ['JB', 'JCA', 'WER'].includes(type)) {
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && ['JB', 'JCA'].includes(type)) {
       navigation.navigate('MechanicDashboard', { initialTab: 'TO_ACCEPT' });
       return;
     }
@@ -969,8 +1040,9 @@ const NotificationsScreen = ({ navigation }) => {
       P: 'Parts',
       W: 'Work Entry',
       WE: 'Work Entry',
-      WER: 'Work Entry Review',
+      WER: 'Work Entry Rework',
       WERQ: 'Work Entry Request',
+      WEV: 'Work Entry Verified',
       WETC: 'Tow Completed',
       LBWE: 'Line Breakdown Work Entry',
       R: 'Repair',
