@@ -661,6 +661,11 @@ const RepairWorkScreen = ({ route }) => {
         loading={partsLoading}
         displayKey="ItemName"
         valueKey="ItemCode"
+        renderItem={(item) => (
+          <Text style={{ color: colors.dark, fontWeight: '600' }}>
+            {item?.ItemCode ? `${item.ItemCode} - ` : ''}{item?.ItemName || item?.ItemCode || 'Component'}
+          </Text>
+        )}
         searchKeys={['ItemName', 'ItemCode']}
         searchPlaceholder="Search configured components..."
       />

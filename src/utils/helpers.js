@@ -336,6 +336,7 @@ export const getStatusColor = (status, isDark = false) => {
     'I': isDark ? '#29B6F6' : '#17A2B8', // In Progress
     'CM': isDark ? '#4CAF50' : '#28A745', // Completed
     'C': isDark ? '#4CAF50' : '#28A745', // Completed
+    'CL': isDark ? '#4CAF50' : '#28A745', // Completed
     'D': isDark ? '#F44336' : '#DC3545', // Declined
     // Old status names (for backward compatibility)
     'Open': isDark ? '#FFB300' : '#FFC107',
@@ -354,6 +355,7 @@ export const getStatusName = (status) => {
     'I': 'In Progress',
     'CM': 'Completed',
     'C': 'Completed',
+    'CL': 'Completed',
     'D': 'Declined',
   };
   return statusNames[status] || status;

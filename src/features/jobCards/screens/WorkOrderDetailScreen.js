@@ -1012,10 +1012,13 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   const findJobCardInList = (rows = [], referenceDocEntry, referenceJobCardNo) => {
     const refDoc = String(referenceDocEntry || '').trim();
     const refJobNo = String(referenceJobCardNo || '').trim();
+    const referenceNumber = refJobNo.match(/(\d+)\s*$/)?.[1] || '';
     return (Array.isArray(rows) ? rows : []).find((row) => {
       const rowDoc = String(row?.DocEntry || row?.JobCardDocEntry || '').trim();
       const rowJob = String(row?.JobCardNo || row?.DocNum || '').trim();
-      return (refDoc && rowDoc === refDoc) || (refJobNo && rowJob === refJobNo);
+      return (refDoc && rowDoc === refDoc)
+        || (refJobNo && rowJob === refJobNo)
+        || (referenceNumber && rowJob.match(/(\d+)\s*$/)?.[1] === referenceNumber);
     }) || null;
   };
 
@@ -1403,13 +1406,13 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       .filter(Boolean)
       .join(', ');
     const workEntryHours = workEntries
-      .map(entry => entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours)
-      .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
+      .map(entry => entry?.LabourHours)
+      .find(value => value !== null && value !== undefined && String(value).trim() !== '');
     const mechanicHours = mechanics
       .map(mechanic => mechanic?.TotalHrs)
       .filter(value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
-    const totalHrs = workEntryHours.length > 0
-      ? workEntryHours.reduce((sum, value) => sum + Number(value), 0)
+    const totalHrs = workEntryHours !== undefined
+      ? workEntryHours
       : mechanicHours.length > 0
         ? mechanicHours.reduce((sum, value) => sum + Number(value), 0)
         : workOrder?.TotalHrs ?? '-';
@@ -1430,6 +1433,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       case 'I': return colors.statusInProgress || colors.warning;
       case 'C': return colors.statusCompleted || colors.success;
       case 'CM': return colors.statusCompleted || colors.success;
+      case 'CL': return colors.statusCompleted || colors.success;
       case 'D': return colors.statusDeclined || colors.danger;
       default: return colors.statusCancelled || colors.gray;
     }
@@ -1550,14 +1554,48 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     try {
       setLoading(true);
       const companyDb = dbName || 'MUTSPL_TEST';
-      const lookupCandidates = [docEntry, jobCardNo].map((value) => String(value || '').trim()).filter(Boolean);
+      const breakdown = String(routeComplaintType || jobType || '').toLowerCase().includes('breakdown');
+      const lookupCandidates = [];
+      if (breakdown && jobCardNo) {
+        try {
+          const jobCardsResponse = await jobCardService.getJobCards(companyDb, null);
+          const matchedCard = findJobCardInList(extractRows(jobCardsResponse), docEntry, jobCardNo);
+          if (matchedCard?.DocEntry || matchedCard?.JobCardDocEntry) {
+            lookupCandidates.push(matchedCard.DocEntry || matchedCard.JobCardDocEntry);
+          }
+        } catch (lookupError) {
+          console.warn('[JobCardDetail] Breakdown job-card number lookup failed:', lookupError?.message || lookupError);
+        }
+      }
+      lookupCandidates.push(...[docEntry, jobCardNo]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean));
+      const uniqueLookupCandidates = [...new Set(lookupCandidates.map(String))];
       let sourceData = null;
 
-      for (const candidate of lookupCandidates) {
+      for (const candidate of uniqueLookupCandidates) {
         try {
           const detailResponse = await jobCardService.getJobCardDetail(companyDb, candidate);
-          sourceData = extractDataRecord(detailResponse);
-          if (sourceData) break;
+          const candidateData = extractDataRecord(detailResponse);
+          if (!candidateData) continue;
+          if (breakdown && jobCardNo) {
+            const expectedNumber = String(jobCardNo).match(/(\d+)\s*$/)?.[1] || '';
+            const returnedReferences = [
+              candidateData?.JobCardNo,
+              candidateData?.JobcardNo,
+              candidateData?.DocNum,
+              candidateData?.JCDocNum,
+              candidateData?.DocEntry,
+              candidateData?.JobCardDocEntry,
+            ].map((value) => String(value ?? '').trim());
+            const matchesRequestedCard = returnedReferences.some((value) => (
+              value === String(jobCardNo).trim()
+              || (expectedNumber && value.match(/(\d+)\s*$/)?.[1] === expectedNumber)
+            ));
+            if (!matchesRequestedCard) continue;
+          }
+          sourceData = candidateData;
+          break;
         } catch (detailError) {
           console.log('GetJobCardDetail attempt failed:', candidate, detailError?.message || detailError);
         }
@@ -2993,7 +3031,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     return n > 0 ? String(n) : '0';
   };
 
-  const jobCardIsClosed = ['C', 'CM', 'CLOSED', 'COMPLETED'].includes(String(workOrder?.Status || '').trim().toUpperCase());
+  const jobCardIsClosed = ['C', 'CM', 'CL', 'CLOSED', 'COMPLETED'].includes(String(workOrder?.Status || '').trim().toUpperCase());
   const incidentIsClosed = ['C', 'CM', 'CLOSED', 'COMPLETED'].includes(String(
     workOrder?.ComplaintStatus || workOrder?.IncidentStatus || workOrder?.CmplaintStatus || '',
   ).trim().toUpperCase());

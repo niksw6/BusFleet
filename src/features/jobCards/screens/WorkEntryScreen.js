@@ -157,7 +157,7 @@ const groupPartRequestsByWorkEntry = (rawItems = [], jobCardDocEntry) => {
 };
 
 const WorkEntryScreen = ({ route, navigation }) => {
-  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, breakdownRepair: routeBreakdownRepair = null, towRequested: routeTowRequested = false, canRepairOnSite: routeCanRepairOnSite, fault: routeFault = null, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', complaintNo: routeComplaintNo = '', depot: routeDepot = '' } = route.params || {};
+  const { workOrderDocEntry, dbName: routeDbName, jobCardNo, jobCardDocEntry, workEntryDocEntry: routeWorkEntryDocEntry, existingWorkEntry, startWorkRequired = false, breakdownRepair: routeBreakdownRepair = null, towRequested: routeTowRequested = false, canRepairOnSite: routeCanRepairOnSite, fault: routeFault = null, faultLine: routeFaultLine = 0, complaintType: routeComplaintType = '', complaintNo: routeComplaintNo = '', depot: routeDepot = '' } = route.params || {};
   const breakdownRepair = getBreakdownRepairInfo(routeBreakdownRepair, existingWorkEntry);
   const routeRepairMode = String(breakdownRepair?.RepairMode || '').trim().toUpperCase();
   const routeRepairOnSite = String(breakdownRepair?.RepairOnSite || '').trim().toUpperCase();
@@ -193,6 +193,14 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [entryRemarks, setEntryRemarks] = useState('');
   const [repairType, setRepairType] = useState(routeRepairOnSite === 'T' ? 'T' : 'P');
   const isBreakdownJob = String(routeComplaintType || '').toLowerCase().includes('breakdown');
+  const hasBreakdownStartDate = [
+    routeFault?.StartDate,
+    routeFault?.StartDt,
+    existingWorkEntry?.StartDate,
+    existingWorkEntry?.StartDt,
+  ].some(value => String(value || '').trim());
+  const breakdownStartGateRequired = isBreakdownJob && startWorkRequired && !hasBreakdownStartDate;
+  const [breakdownWorkStarted, setBreakdownWorkStarted] = useState(!breakdownStartGateRequired);
   const initialRepairOnSite = routeRepairMode === 'T' ? false : (routeRepairMode === 'R' ? true : !routeIndicatesTow);
   const [canRepairOnSite, setCanRepairOnSite] = useState(initialRepairOnSite);
   const towWorkflowLocked = routeRepairMode === 'T' || Boolean(routeTowRequested) || towRequestEntryId; 
@@ -1370,6 +1378,32 @@ const WorkEntryScreen = ({ route, navigation }) => {
     }
   };
 
+  const handleStartBreakdownWork = async () => {
+    if (!resolvedJobCardDocEntry) {
+      Toast.show({ type: 'error', text1: 'Job card unavailable', text2: 'Cannot start work without a job card.' });
+      return;
+    }
+    try {
+      setSubmitting(true);
+      const response = await mechanicService.startWork(
+        dbName || 'MUTSPL_TEST',
+        resolvedJobCardDocEntry,
+        routeFaultLine,
+        mechanicCode,
+      );
+      if (!isApiSuccess(response)) {
+        throw new Error(response?.Message || 'Unable to start breakdown work.');
+      }
+      setBreakdownWorkStarted(true);
+      navigation.setParams({ startWorkRequired: false });
+      Toast.show({ type: 'success', text1: 'Work started', text2: 'You can now continue with the breakdown repair.' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to start work', text2: error?.message || 'Please try again.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   // ─── Part status badge ────────────────────────────────────────────────────────
   const getPartStatusConfig = (status) => {
     switch (String(status || '').toUpperCase()) {
@@ -1432,6 +1466,43 @@ const WorkEntryScreen = ({ route, navigation }) => {
       || entryDetails.some((detail) => detail?.EntryDate || detail?.CreatedDate || detail?.Date),
     );
   });
+
+  if (breakdownStartGateRequired && !breakdownWorkStarted) {
+    return (
+      <View style={[styles.container, { backgroundColor: colors.light }]}>
+        <ScrollView contentContainerStyle={styles.scroll}>
+          <View style={[styles.card, { backgroundColor: colors.white }]}>
+            <View style={styles.sectionHeader}>
+              <MaterialIcons name="warning" size={20} color="#E65100" />
+              <Text style={[styles.cardTitle, { color: colors.dark, marginLeft: 8 }]}>{faultName}</Text>
+            </View>
+            {faultCode && faultCode !== faultName ? (
+              <Text style={[styles.cardSubtitle, { color: colors.gray }]}>{faultCode}</Text>
+            ) : null}
+            <Text style={[styles.cardSubtitle, { color: colors.gray }]}>Job Card #: {displayedJobCardNo || '-'}</Text>
+            <Text style={[styles.cardSubtitle, { color: colors.gray }]}>Work Entry #: {displayedWorkEntryNo || 'Not created'}</Text>
+          </View>
+          <View style={[styles.card, { backgroundColor: colors.white }]}>
+            <Text style={[styles.sectionTitle, { color: colors.dark }]}>Ready to Start Work</Text>
+            <Text style={[styles.completeHint, { color: colors.gray, marginTop: SPACING.sm }]}>
+              Start the accepted breakdown job before recording repair details or requesting parts.
+            </Text>
+            <Button
+              mode="contained"
+              icon="play"
+              onPress={handleStartBreakdownWork}
+              loading={submitting}
+              disabled={submitting}
+              style={{ marginTop: SPACING.md, backgroundColor: colors.primary }}
+              contentStyle={{ paddingVertical: 6 }}
+            >
+              Start Work
+            </Button>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   const renderWorkEntryBeforeImageSection = () => isBreakdownJob ? (
     <View style={[styles.card, { backgroundColor: colors.white }]}>
@@ -1861,8 +1932,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
                 <Text style={{ color: colors.gray, fontSize: 11 }}>{part.ItemCode || part.Code}</Text>
               </View>
               <RNTextInput
-                value={String(part.Qty || '1')}
+                value={String(part.Qty ?? '')}
                 onChangeText={(value) => setCompletionParts((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, Qty: value } : item))}
+                onBlur={() => setCompletionParts((current) => current.map((item, itemIndex) => (
+                  itemIndex === index && !String(item.Qty ?? '').trim() ? { ...item, Qty: '1' } : item
+                )))}
                 keyboardType="numeric"
                 style={[styles.qtyInput, { color: colors.dark, borderColor: colors.border || '#CCC' }]}
               />

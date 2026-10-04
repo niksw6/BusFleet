@@ -94,7 +94,7 @@ const getMechanicStatusLabel = (item, bucket, awaitingVerification) => {
 
   if (bucket === BUCKET.COMPLETED) {
     if (raw === 'SV' || raw === 'SUPERVISOR VERIFIED') return 'Supervisor Verified';
-    if (raw === 'CL' || raw === 'CLOSED') return 'Closed';
+    if (raw === 'CLOSED') return 'Closed';
     return 'Completed';
   }
 
@@ -741,7 +741,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
             : i.WorkEntries,
         } : i)));
         if (breakdownAssignment) {
-          Toast.show({ type: 'success', text1: 'Breakdown accepted', text2: 'Opening work entry.' });
+          Toast.show({ type: 'success', text1: 'Breakdown accepted', text2: 'Start work when you are ready.' });
           openBreakdownWorkEntry(item, acceptedWorkEntryDocEntry, acceptedEntry);
         } else {
           Toast.show({ type: 'success', text1: 'Fault accepted', text2: 'Head to "In Progress" to start work.' });
@@ -775,9 +775,15 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
     });
   };
 
-  const openBreakdownWorkEntry = (item, acceptedWorkEntryDocEntry = null, acceptedWorkEntry = null) => {
+  const openBreakdownWorkEntry = (item, acceptedWorkEntryDocEntry = null, acceptedWorkEntry = null, startWorkRequired = null) => {
     const jobCardDocEntry = getBreakdownJobCardDocEntry(item);
     const activeWorkEntry = acceptedWorkEntry || getActiveWorkEntry(item) || {};
+    const workStartRecorded = [
+      item?.StartDate,
+      item?.StartDt,
+      activeWorkEntry?.StartDate,
+      activeWorkEntry?.StartDt,
+    ].some(value => String(value || '').trim());
     const breakdownRepair = activeWorkEntry?.BreakDownRepair?.[0]
       || item?.BreakDownRepair?.[0]
       || activeWorkEntry?.BreakDownRepair
@@ -805,6 +811,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       faultLine: getFaultLine(item) || 1,
       workEntryDocEntry: acceptedWorkEntryDocEntry || getActiveWorkEntry(item)?.WorkEntryDocEntry || getActiveWorkEntry(item)?.DocEntry || null,
       existingWorkEntry: activeWorkEntry || null,
+      startWorkRequired: startWorkRequired ?? !workStartRecorded,
       breakdownRepair,
       towRequested,
       canRepairOnSite: item?.CanRepairOnSite ?? activeWorkEntry?.CanRepairOnSite,

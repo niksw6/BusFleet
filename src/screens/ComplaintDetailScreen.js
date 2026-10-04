@@ -235,11 +235,11 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
     const existingJobCardNo = resolveJobCardNo(incidentData) || String(routeJobCardNo || '').trim();
     const existingJobCardDocEntry = resolveJobCardDocEntry(incidentData) || Number(routeJobCardDocEntry || 0);
 
-    if (existingJobCardNo || existingJobCardDocEntry > 0) {
+    if (existingJobCardDocEntry > 0 && isClosedStatus(incidentData?.JobCardStatus)) {
       return {
         ...incidentData,
         JobCardNo: existingJobCardNo,
-        JobCardDocEntry: existingJobCardDocEntry || undefined,
+        JobCardDocEntry: existingJobCardDocEntry,
       };
     }
 
@@ -263,6 +263,20 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
       const incidentBusNo = String(incidentData?.BusNo || routeBusNo || '').trim();
 
       const linkedCard = jobCards.find((card) => {
+        const cardDocEntry = String(card?.DocEntry || card?.JobCardDocEntry || card?.JCDocEnt || '').trim();
+        if (existingJobCardDocEntry > 0 && cardDocEntry === String(existingJobCardDocEntry)) return true;
+
+        if (existingJobCardNo) {
+          const cardNumbers = [card?.JobCardNo, card?.JobcardNo, card?.DocNum, card?.JCDocNum]
+            .map((value) => String(value || '').trim());
+          const targetNumber = existingJobCardNo.match(/(\d+)\s*$/)?.[1] || '';
+          const matchesJobCardNumber = cardNumbers.some((value) => (
+            value === existingJobCardNo
+            || (targetNumber && value.match(/(\d+)\s*$/)?.[1] === targetNumber)
+          ));
+          if (matchesJobCardNumber) return true;
+        }
+
         const cardComplaintValues = [
           card?.CmplaintNo,
           card?.ComplaintNo,
@@ -294,13 +308,19 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
         return !cardBusNo || cardBusNo === incidentBusNo;
       });
 
-      if (!linkedCard) return incidentData;
+      if (!linkedCard) {
+        return {
+          ...incidentData,
+          JobCardNo: existingJobCardNo,
+          JobCardDocEntry: existingJobCardDocEntry || undefined,
+        };
+      }
 
       return {
         ...incidentData,
-        JobCardNo: String(linkedCard?.JobCardNo || linkedCard?.DocNum || linkedCard?.JCDocNum || linkedCard?.DocEntry || '').trim(),
+        JobCardNo: String(linkedCard?.JobCardNo || linkedCard?.JobcardNo || linkedCard?.DocNum || linkedCard?.JCDocNum || existingJobCardNo || linkedCard?.DocEntry || '').trim(),
         JobCardDocEntry: Number(linkedCard?.DocEntry || linkedCard?.JCDocEnt || 0) || undefined,
-        JobCardStatus: linkedCard?.Status || incidentData?.JobCardStatus,
+        JobCardStatus: linkedCard?.Status || linkedCard?.JobCardStatus || incidentData?.JobCardStatus,
       };
     } catch (jobCardLookupError) {
       console.warn('Unable to resolve linked job card:', jobCardLookupError?.message || jobCardLookupError);
