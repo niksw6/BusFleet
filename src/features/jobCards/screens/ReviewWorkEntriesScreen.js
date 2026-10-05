@@ -99,7 +99,12 @@ const extractImageRecords = (entry) => {
       const fileName = extractImageFileName(row);
       if (!fileName) return null;
       const imgNo = Number(row?.ImgNo) || index + 1;
-      const imgType = String(row?.ImgType || (imgNo === 1 ? 'BF' : 'AF')).trim().toUpperCase();
+      const rawImageType = String(row?.ImgType || row?.ImageType || (imgNo === 1 ? 'BF' : 'AF')).trim().toUpperCase();
+      const imgType = rawImageType.includes('BEFORE') || rawImageType === 'BF'
+        ? 'BF'
+        : rawImageType.includes('AFTER') || rawImageType === 'AF'
+          ? 'AF'
+          : rawImageType;
       const key = `${fileName}-${imgType}`;
       if (seen.has(key)) return null;
       seen.add(key);
@@ -108,8 +113,8 @@ const extractImageRecords = (entry) => {
         fileName,
         imgNo,
         imgType,
-        captureDate: String(row?.CaptureDate || '').trim(),
-        captureTime: String(row?.CaptureTime || '').trim(),
+        captureDate: String(row?.CaptureDate || row?.CaptureDt || row?.CreateDt || '').trim(),
+        captureTime: String(row?.CaptureTime || row?.CaptureTm || row?.CreateTm || '').trim(),
         remarks: String(row?.Remarks || '').trim(),
         userCode: String(row?.UserCode || '').trim(),
       };
@@ -160,7 +165,7 @@ const extractWorkDetailsRecords = (entry) => {
 
   return rows.map((row, index) => ({
     id: `${entry?.DocEntry || entry?.WorkEntryDocEntry || 'work'}-detail-${index}`,
-    workCode: String(row?.WorkCode || row?.Code || '').trim(),
+    workCode: String(row?.WorkCode || row?.WorkType || row?.Code || '').trim(),
     workDone: String(row?.WorkDone || row?.Name || row?.Description || '').trim(),
     otherDescription: String(row?.OtherDescription || row?.OtherDesc || '').trim(),
     remarks: String(row?.Remarks || '').trim(),
@@ -296,8 +301,8 @@ const resolveLabourHours = (entry) => {
   const direct = Number(entry?.LabourHours);
   if (Number.isFinite(direct) && direct > 0) return direct;
 
-  const start = parseDateTimeToken(entry?.StartDate, entry?.StartTime);
-  const end = parseDateTimeToken(entry?.CompleteDate, entry?.CompleteTime);
+  const start = parseDateTimeToken(entry?.StartDate || entry?.StartDt, entry?.StartTime || entry?.StartTm);
+  const end = parseDateTimeToken(entry?.CompleteDate || entry?.CompleteDt || entry?.EndDt, entry?.CompleteTime || entry?.CompleteTm || entry?.EndTm);
   if (!start || !end) return null;
 
   const diffMs = end.getTime() - start.getTime();
@@ -442,18 +447,36 @@ const groupPartRequestsByWorkEntry = (items = []) => {
 const mergeParts = (entryParts = [], requestParts = []) => {
   const existing = Array.isArray(entryParts) ? entryParts : [];
   const fallback = Array.isArray(requestParts) ? requestParts : [];
-  if (existing.length === 0) return fallback;
-  if (fallback.length === 0) return existing;
-
   const seen = new Set();
   const merged = [];
   [...existing, ...fallback].forEach((part, index) => {
-    const key = `${String(part?.ItemCode || part?.itemCode || '').trim()}::${String(part?.PartLine ?? part?.Line ?? index)}`;
+    const itemCode = String(part?.ItemCode || part?.itemCode || part?.Code || '').trim().toUpperCase();
+    const partLine = String(part?.LineId ?? part?.PartLine ?? part?.LineNum ?? part?.Line ?? '').trim();
+    const key = itemCode || partLine
+      ? `${itemCode}::${partLine}`
+      : `${String(part?.ItemName || part?.PartName || '').trim().toUpperCase()}::${index}`;
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(part);
   });
   return merged;
+};
+
+const dedupeRepairPartsByItem = (parts = []) => {
+  const byItem = new Map();
+  parts.forEach((part) => {
+    const itemKey = String(part?.ItemCode || part?.itemCode || part?.Code || part?.ItemName || part?.PartName || '')
+      .trim()
+      .toUpperCase();
+    if (!itemKey) return;
+    const current = byItem.get(itemKey);
+    const quantityFields = ['ReqQty', 'ApprovedQty', 'IssuedQty', 'ReceivedQty', 'RecQty', 'RetQty', 'ReturnedQty'];
+    const completeness = row => quantityFields.reduce((score, field) => score + (Number(row?.[field]) > 0 ? 1 : 0), 0)
+      + (row?.Remarks ? 1 : 0)
+      + (row?.IssueStatus ? 1 : 0);
+    if (!current || completeness(part) > completeness(current)) byItem.set(itemKey, part);
+  });
+  return Array.from(byItem.values());
 };
 
 const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '') => {
@@ -462,13 +485,26 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '') => {
   const resolvedWorkEntryDocEntry = resolveWorkEntryIdentifier(entry);
   const faultKey = resolveFaultIdentifier(entry, fallbackItem);
   const labourHoursValue = resolveLabourHours(entry);
+  const entryParts = Array.isArray(entry?.Parts) ? entry.Parts : [];
+  const fallbackParts = Array.isArray(fallbackItem?.Parts) ? fallbackItem.Parts : [];
+  const entrySpecialTools = Array.isArray(entry?.SpecialTools) ? entry.SpecialTools : [];
+  const fallbackSpecialTools = Array.isArray(fallbackItem?.SpecialTools) ? fallbackItem.SpecialTools : [];
+  const specialTools = [...entrySpecialTools, ...fallbackSpecialTools].filter((tool, index, allTools) => (
+    allTools.findIndex(candidate => (
+      String(candidate?.ToolCode || candidate?.Code || '').trim().toUpperCase() === String(tool?.ToolCode || tool?.Code || '').trim().toUpperCase()
+      && String(candidate?.LineId ?? candidate?.ToolLine ?? '') === String(tool?.LineId ?? tool?.ToolLine ?? '')
+    )) === index
+  ));
+  const mechanic = (Array.isArray(fallbackItem?.Mechanics) ? fallbackItem.Mechanics : []).find(person => (
+    entry?.EmpID && Number(person?.EmpID) === Number(entry.EmpID)
+  )) || (Array.isArray(fallbackItem?.Mechanics) ? fallbackItem.Mechanics[0] : null);
 
   return {
     key: `${keyPrefix}${resolvedWorkEntryDocEntry || 'unknown'}`,
     workEntryDocEntry: resolvedWorkEntryDocEntry || null,
     faultKey,
-    mechanicName: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.CreatedBy || fallbackItem?.MechanicName || fallbackItem?.AssignedToName || '-',
-    faultName: entry?.Fault || entry?.FaultName || entry?.Description || fallbackItem?.Fault || fallbackItem?.FaultName || '-',
+    mechanicName: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.CreatedBy || mechanic?.EmpName || mechanic?.MechanicName || fallbackItem?.MechanicName || fallbackItem?.AssignedToName || '-',
+    faultName: entry?.Fault || entry?.FaultName || entry?.Description || fallbackItem?.Fault || fallbackItem?.FaultName || fallbackItem?.AssemblyName || '-',
     finalRemarks: entry?.FinalRemarks || entry?.Remarks || '-',
     workDetails,
     status: entry?.Status || entry?.WorkStatus || fallbackItem?.Status || fallbackItem?.WorkStatus || '',
@@ -476,27 +512,31 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '') => {
     date: entry?.CreateDate || entry?.Date || entry?.DocDate || fallbackItem?.UpdateDate || fallbackItem?.AssignDt || '',
     time: entry?.CreateTime || entry?.Time || entry?.DocTime || fallbackItem?.UpdateTime || '',
     images,
-    docNum: entry?.DocNum || entry?.WorkEntryNo || '',
-    jobCardDocEntry: entry?.JobCardDocEntry || fallbackItem?.JobCardDocEntry || fallbackItem?.DocEntry || '',
+    docNum: entry?.DocNum || entry?.WorkEntryDocNum || entry?.WorkEntryNo || '',
+    jobCardDocEntry: entry?.JobCardDocEntry || entry?.JobCard || fallbackItem?.JobCardDocEntry || fallbackItem?.DocEntry || '',
     faultLine: entry?.FaultLine || fallbackItem?.FaultLine || '',
     faultCode: entry?.FaultCode || fallbackItem?.FaultCode || '',
     BreakDownRepair: entry?.BreakDownRepair || fallbackItem?.BreakDownRepair || [],
-    depot: entry?.Depot || fallbackItem?.Depot || '',
+    depot: entry?.Depot || fallbackItem?.Depot || fallbackItem?.DepotName || '',
     vehicle: entry?.Vehicle || fallbackItem?.Vehicle || fallbackItem?.BusNo || '',
-    mechanicCode: entry?.MechanicCode || entry?.UserCode || fallbackItem?.MechanicCode || '',
+    mechanicCode: entry?.MechanicCode || entry?.UserCode || mechanic?.UserCode || mechanic?.EmpCode || fallbackItem?.MechanicCode || '',
+    assemblyName: fallbackItem?.AssemblyName || entry?.AssemblyName || '',
+    assemblyCode: fallbackItem?.Assembly || fallbackItem?.AssemblyCode || entry?.Assembly || entry?.AssemblyCode || '',
+    incidentNo: fallbackItem?.IncidentNum || fallbackItem?.IncidentEntry || '',
     labourHours: labourHoursValue,
     labourHoursDisplay: labourHoursValue === null ? '-' : formatDurationHMS(labourHoursValue),
-    startDate: entry?.StartDate || '',
-    startTime: entry?.StartTime || '',
-    acceptDate: entry?.AcceptDate || '',
-    acceptTime: entry?.AcceptTime || '',
-    completeDate: entry?.CompleteDate || '',
-    completeTime: entry?.CompleteTime || '',
-    verifyBy: entry?.VerifyBy || '',
-    verifyDate: entry?.VerifyDate || '',
-    verifyTime: entry?.VerifyTime || '',
-    verifyRemarks: entry?.VerifyRemarks || '',
-    parts: Array.isArray(entry?.Parts) ? entry.Parts : [],
+    startDate: entry?.StartDate || entry?.StartDt || '',
+    startTime: entry?.StartTime || entry?.StartTm || '',
+    acceptDate: entry?.AcceptDate || entry?.AcceptDt || fallbackItem?.Incident?.SupervisorResponseDt || '',
+    acceptTime: entry?.AcceptTime || entry?.AcceptTm || fallbackItem?.Incident?.SupervisorResponseTm || '',
+    completeDate: entry?.CompleteDate || entry?.CompleteDt || entry?.EndDt || '',
+    completeTime: entry?.CompleteTime || entry?.CompleteTm || entry?.EndTm || '',
+    verifyBy: entry?.VerifyBy || entry?.VerifiedBy || entry?.ApprovedBy || '',
+    verifyDate: entry?.VerifyDate || entry?.VerifyDt || entry?.ApprovedDate || '',
+    verifyTime: entry?.VerifyTime || entry?.VerifyTm || entry?.ApprovedTime || '',
+    verifyRemarks: entry?.VerifyRemarks || entry?.ApprovalRemarks || '',
+    parts: dedupeRepairPartsByItem(entryParts.length > 0 ? entryParts : fallbackParts),
+    specialTools,
   };
 };
 
@@ -550,6 +590,129 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
   const fetchData = useCallback(async () => {
     try {
       const companyDb = dbName || 'MUTSPL_TEST';
+      if (route?.params?.assemblyRepairQueue) {
+        const identityCandidates = resolveNotificationCandidates(user);
+        const notificationBucket = new Map();
+        (Array.isArray(storedNotifications) ? storedNotifications : []).forEach((item, index) => {
+          const key = toCleanString(item?.Code || item?.code || item?.id || `stored-werc-${index}`);
+          notificationBucket.set(`stored-${key}`, item);
+        });
+        for (const identity of identityCandidates) {
+          try {
+            const notificationResponse = await dashboardService.getNotifications(companyDb, identity);
+            extractRows(notificationResponse).forEach((item, index) => {
+              const key = toCleanString(item?.Code || item?.code || item?.id || `${identity}-werc-${index}`);
+              notificationBucket.set(`${identity}-${key}`, item);
+            });
+          } catch (error) {
+            // Continue with stored notifications and other identity candidates.
+          }
+        }
+
+        const wercNotifications = Array.from(notificationBucket.values()).filter(item => (
+          [item?.Type, item?.type, item?.NotificationType, item?.notificationType, item?.NotificationCode, item?.notificationCode]
+            .some(value => String(value || '').trim().toUpperCase() === 'WERC')
+        ));
+        const repairCardReferences = new Map();
+        wercNotifications.forEach(notification => {
+          const jobCardEntry = toCleanString(
+            notification?.JobCardEntry
+            || notification?.jobCardEntry
+            || notification?.JobCardDocEntry
+            || notification?.jobCardDocEntry
+            || notification?.JobCardNo
+            || notification?.jobCardNo
+            || notification?.JobCard
+            || notification?.ReferenceJobCardEntry
+            || notification?.DocEntry
+            || notification?.detailDocEntry
+            || notification?.docEntry,
+          );
+          if (!jobCardEntry) return;
+          const workEntryDocEntry = toCleanString(
+            notification?.WorkEntryDocEntry
+            || notification?.workEntryDocEntry
+            || notification?.WorkEntryNo
+            || notification?.ReferenceWorkEntryDocEntry
+            || notification?.WorkEntry
+            || '',
+          );
+          const existing = repairCardReferences.get(jobCardEntry) || { workEntryIds: new Set() };
+          if (workEntryDocEntry) existing.workEntryIds.add(workEntryDocEntry);
+          repairCardReferences.set(jobCardEntry, existing);
+        });
+
+        const repairCardResults = await Promise.allSettled(
+          Array.from(repairCardReferences.entries()).map(async ([jobCardEntry, reference]) => ({
+            jobCardEntry,
+            reference,
+            card: extractSingleRecord(await repairService.getRepairJobCard(companyDb, jobCardEntry)),
+          })),
+        );
+        const assemblyRepairCards = repairCardResults
+          .filter(result => result.status === 'fulfilled')
+          .map(result => {
+            const { jobCardEntry, reference, card } = result.value;
+            const cardData = card?.Data ?? card?.data ?? card;
+            const rawEntries = Array.isArray(cardData?.WorkEntries) ? cardData.WorkEntries : [];
+            const matchingEntries = reference.workEntryIds.size > 0
+              ? rawEntries.filter(entry => reference.workEntryIds.has(toCleanString(resolveWorkEntryIdentifier(entry))))
+              : rawEntries;
+            const workEntries = matchingEntries
+              .map((entry, index) => buildWorkEntryView(entry, cardData, `assembly-queue-${jobCardEntry}-${index}-`))
+              .filter(entry => isValidWorkEntryId(entry.workEntryDocEntry));
+            if (workEntries.length === 0) return null;
+            return {
+              key: `assembly-review-${jobCardEntry}`,
+              jobCardDocEntry: cardData?.DocEntry || jobCardEntry,
+              jobCardNo: cardData?.DocNum || cardData?.DocEntry || jobCardEntry,
+              busNo: getBusLabel(cardData),
+              complaintType: 'Assembly Repair',
+              driverCode: '',
+              driverName: '',
+              status: cardData?.Status || cardData?.AssemblyStatus || '',
+              complaintNo: cardData?.IncidentNum || cardData?.IncidentEntry || '',
+              workEntries,
+              allWorkEntriesCompleted: workEntries.every(entry => entry.completed),
+            };
+          })
+          .filter(Boolean);
+        setReviewCards(assemblyRepairCards);
+        return;
+      }
+      if (route?.params?.assemblyRepair && focusJobCard) {
+        const repairResponse = await repairService.getRepairJobCard(companyDb, focusJobCard);
+        const repairCard = repairResponse?.Data ?? repairResponse?.data ?? repairResponse;
+        const repairWorkEntries = Array.isArray(repairCard?.WorkEntries) ? repairCard.WorkEntries : [];
+        const focusedEntries = focusWorkEntry
+          ? repairWorkEntries.filter(entry => toCleanString(resolveWorkEntryIdentifier(entry)) === focusWorkEntry)
+          : repairWorkEntries;
+        const reviewEntries = focusedEntries
+          .map((entry, index) => buildWorkEntryView(entry, repairCard, `assembly-${focusJobCard}-${index}-`))
+          .filter(entry => isValidWorkEntryId(entry?.workEntryDocEntry));
+        const repairReviewCard = {
+          key: `assembly-repair-${focusJobCard}`,
+          jobCardDocEntry: repairCard?.DocEntry || focusJobCard,
+          jobCardNo: repairCard?.DocNum || repairCard?.DocEntry || focusJobCard,
+          busNo: getBusLabel(repairCard),
+          complaintType: 'Assembly Repair',
+          driverCode: '',
+          driverName: '',
+          status: repairCard?.Status || repairCard?.AssemblyStatus || '',
+          complaintNo: repairCard?.IncidentEntry || repairCard?.IncidentNum || '',
+          workEntries: reviewEntries,
+          allWorkEntriesCompleted: reviewEntries.length > 0 && reviewEntries.every(entry => entry.completed),
+        };
+        setReviewCards(reviewEntries.length > 0 ? [repairReviewCard] : []);
+        const focusedReviewEntry = focusWorkEntry
+          ? reviewEntries.find(entry => toCleanString(entry.workEntryDocEntry) === focusWorkEntry)
+          : reviewEntries[0];
+        if (focusedReviewEntry) {
+          setSelectedWorkEntry({ entry: focusedReviewEntry, parentItem: repairReviewCard });
+          consumedFocusEntryRef.current = toCleanString(focusedReviewEntry.workEntryDocEntry);
+        }
+        return;
+      }
       const identityCandidates = resolveNotificationCandidates(user);
       const notificationBucket = new Map();
       let partRequestsByWorkEntry = new Map();
@@ -892,7 +1055,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dbName, focusJobCard, focusWorkEntry, storedNotifications, user]);
+  }, [dbName, focusJobCard, focusWorkEntry, route?.params?.assemblyRepair, route?.params?.assemblyRepairQueue, storedNotifications, user]);
 
   useEffect(() => {
     fetchData();
@@ -1141,14 +1304,23 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
     try {
       setActioningWorkEntry(workEntryDocEntry);
-      const reviewPayload = {
-        CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        UserCode: resolveCurrentUserCode(),
-        Status: 'SV',
-        Remarks: remarks,
-        JobCardEntry: Number(selected?.entry?.jobCardDocEntry) || selected?.entry?.jobCardDocEntry,
-      };
+      const jobCardEntry = selected?.parentItem?.jobCardDocEntry || selected?.entry?.jobCardDocEntry;
+      const reviewPayload = route?.params?.repair
+        ? {
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          JobCardEntry: Number(jobCardEntry) || jobCardEntry,
+          UserCode: resolveCurrentUserCode(),
+          Response: 'A',
+          Remarks: remarks,
+        }
+        : {
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+          UserCode: resolveCurrentUserCode(),
+          Status: 'SV',
+          Remarks: remarks,
+          JobCardEntry: Number(jobCardEntry) || jobCardEntry,
+        };
       const response = route?.params?.repair
         ? await repairService.reviewRepairJobCard(reviewPayload)
         : await workEntryService.verifyWorkEntry(reviewPayload);
@@ -1337,14 +1509,23 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
     try {
       setActioningWorkEntry(workEntryDocEntry);
 
-      const reviewPayload = {
-        CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        UserCode: resolveCurrentUserCode(),
-        Status: 'RW',
-        Remarks: reason,
-        JobCardEntry: Number(selected?.entry?.jobCardDocEntry) || selected?.entry?.jobCardDocEntry,
-      };
+      const jobCardEntry = selected?.parentItem?.jobCardDocEntry || selected?.entry?.jobCardDocEntry;
+      const reviewPayload = route?.params?.repair
+        ? {
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          JobCardEntry: Number(jobCardEntry) || jobCardEntry,
+          UserCode: resolveCurrentUserCode(),
+          Response: 'R',
+          Remarks: reason,
+        }
+        : {
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+          UserCode: resolveCurrentUserCode(),
+          Status: 'RW',
+          Remarks: reason,
+          JobCardEntry: Number(jobCardEntry) || jobCardEntry,
+        };
       const response = route?.params?.repair
         ? await repairService.reviewRepairJobCard(reviewPayload)
         : await workEntryService.verifyWorkEntry(reviewPayload);
@@ -1597,11 +1778,14 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                 { label: 'Depot', value: entry?.depot || '-' },
                 { label: 'Job Card', value: entry?.jobCardDocEntry || '-' },
                 { label: 'Work Entry No', value: entry?.docNum || '-' },
+                ...(entry?.assemblyName ? [{ label: 'Assembly', value: entry.assemblyName }] : []),
+                ...(entry?.assemblyCode ? [{ label: 'Assembly Code', value: entry.assemblyCode }] : []),
+                ...(entry?.incidentNo ? [{ label: 'Incident', value: entry.incidentNo }] : []),
               ];
 
               const faultRows = [
                 { label: 'Fault', value: entry?.faultName || '-' },
-                { label: 'Fault Code', value: entry?.faultCode || '-' },
+                { label: entry?.assemblyCode ? 'Assembly Code' : 'Fault Code', value: entry?.faultCode || entry?.assemblyCode || '-' },
                 { label: 'Fault Line', value: entry?.faultLine || '-' },
                 { label: 'Labour Hours', value: entry?.labourHoursDisplay || '-' },
               ];
@@ -1833,6 +2017,23 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                         </View>
                       );
                     })
+                  )}
+                </View>
+
+                <View style={{ marginTop: 12 }}>
+                  <Text style={[styles.imageLabel, { color: colors.dark }]}>Special Tools</Text>
+                  {(Array.isArray(entry?.specialTools) ? entry.specialTools : []).length === 0 ? (
+                    <Text style={[styles.metaText, { color: colors.gray }]}>No special tools linked.</Text>
+                  ) : (
+                    entry.specialTools.map((tool, toolIndex) => (
+                      <View key={`special-tool-${tool?.LineId ?? toolIndex}-${tool?.ToolCode || ''}`} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
+                        <Text style={[styles.metaText, { color: colors.dark, fontWeight: '700' }]}>{tool?.ToolName || tool?.ToolCode || 'Special tool'}</Text>
+                        <Text style={[styles.metaText, { color: colors.gray }]}>Code: {tool?.ToolCode || '-'}</Text>
+                        <Text style={[styles.metaText, { color: colors.gray }]}>Status: {tool?.Status || tool?.ToolStatus || '-'}</Text>
+                        <Text style={[styles.metaText, { color: colors.gray }]}>Requested by: {tool?.RequestedBy || '-'}</Text>
+                        {tool?.Remarks ? <Text style={[styles.metaText, { color: colors.gray }]}>Remarks: {tool.Remarks}</Text> : null}
+                      </View>
+                    ))
                   )}
                 </View>
 

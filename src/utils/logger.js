@@ -34,7 +34,8 @@ const formatEntry = (level, args) => {
       return String(a);
     })
     .join(' ');
-  return `[${time}] ${msg}`;
+  const levelPrefix = level === 'WARN' || level === 'ERROR' ? `[${level}] ` : '';
+  return `[${time}] ${levelPrefix}${msg}`;
 };
 
 const _origLog   = console.log.bind(console);

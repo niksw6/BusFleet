@@ -1048,6 +1048,23 @@ const DashboardScreen = ({ navigation }) => {
                   </View>
                   <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
                 </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.overdueCard, { backgroundColor: colors.white, borderColor: '#0F766E40' }]}
+                  onPress={() => navigation.navigate('ReviewWorkEntries', { assemblyRepairQueue: true, repair: true })}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.overdueLeft}>
+                    <View style={[styles.overdueDot, { backgroundColor: '#0F766E' }]} />
+                    <View>
+                      <Text style={[styles.overdueTitle, { color: colors.dark }]}>Review Assembly Work Entry</Text>
+                      <Text style={[styles.overdueSub, { color: colors.gray }]}>
+                        Review assembly repairs awaiting supervisor approval
+                      </Text>
+                    </View>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={colors.gray} />
+                </TouchableOpacity>
               </View>
             )}
 

@@ -820,15 +820,21 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
     });
   };
 
-  const openRepairWork = (item) => {
+  const openRepairWork = (
+    item,
+    selectedJobCardEntry = getDocEntry(item),
+    selectedJobCardNo = item?.JobCard || item?.jobCard || item?.JobCardNo || item?.jobCardNo || selectedJobCardEntry,
+  ) => {
     const activeWorkEntry = getActiveWorkEntry(item);
     navigation.navigate('RepairWork', {
-      jobCardEntry: getDocEntry(item),
+      jobCardEntry: selectedJobCardEntry,
+      jobCardNo: selectedJobCardNo,
       dbName: dbName || 'MUTSPL_TEST',
       incidentEntry: item?.IncidentEntry || item?.IncidentDocEntry || '',
       storePersonID: item?.StorePersonID || item?.StorePerson || item?.StoreCode || '',
       assemblyCode: getRepairAssemblyCode(item),
       assemblyName: getRepairAssemblyName(item),
+      existingWorkEntry: activeWorkEntry || null,
       workEntryDocEntry: activeWorkEntry?.WorkEntryDocEntry || activeWorkEntry?.WorkEntryEntry || activeWorkEntry?.DocEntry || null,
     });
   };
@@ -854,6 +860,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
 
   const openRepairCard = async (item) => {
     const jobCardEntry = getDocEntry(item);
+    const jobCardNo = item?.JobCard || item?.jobCard || item?.JobCardNo || item?.jobCardNo || item?.DocNum || jobCardEntry;
     if (!jobCardEntry) {
       openRepairAssignment(item);
       return;
@@ -869,7 +876,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
         resolvedItem.receiveDisabled = assemblyStatus === 'P' && mechanicAssemblyStatus === 'I';
         openRepairAssemblyReceive(resolvedItem);
       } else if (assemblyStatus === 'R') {
-        openRepairWork(resolvedItem);
+        openRepairWork(resolvedItem, jobCardEntry, jobCardNo);
       } else {
         openRepairAssignment(resolvedItem);
       }

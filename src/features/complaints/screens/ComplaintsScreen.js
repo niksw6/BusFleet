@@ -6,6 +6,7 @@ import {
   RefreshControl,
   TouchableOpacity,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { Text, Searchbar, Chip, Menu } from 'react-native-paper';
 import { useSelector } from 'react-redux';
@@ -185,6 +186,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
   const [repairIncidents, setRepairIncidents] = useState([]);
   const [preventiveMaintenances, setPreventiveMaintenances] = useState([]);
   const [filteredComplaints, setFilteredComplaints] = useState([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState(normalizeStatusFilter(route.params?.initialFilter));
@@ -317,6 +319,8 @@ const ComplaintsScreen = ({ navigation, route }) => {
       setComplaints([]);
       setRepairIncidents([]);
       setPreventiveMaintenances([]);
+    } finally {
+      setInitialLoading(false);
     }
   };
 
@@ -574,12 +578,19 @@ const ComplaintsScreen = ({ navigation, route }) => {
           />
         }
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <MaterialIcons name="inbox" size={64} color={colors.gray} />
-            <Text style={[styles.emptyText, { color: colors.gray }]}>
-              No {dataType === 'breakdowns' ? 'breakdowns' : dataType === 'preventive' ? 'preventive maintenance incidents' : dataType === 'assembly' ? 'assembly incidents' : dataType === 'complaints' ? 'complaints' : 'incidents'} found
-            </Text>
-          </View>
+          initialLoading ? (
+            <View style={styles.emptyContainer}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={[styles.emptyText, { color: colors.gray }]}>Loading incidents...</Text>
+            </View>
+          ) : (
+            <View style={styles.emptyContainer}>
+              <MaterialIcons name="inbox" size={64} color={colors.gray} />
+              <Text style={[styles.emptyText, { color: colors.gray }]}>
+                No {dataType === 'breakdowns' ? 'breakdowns' : dataType === 'preventive' ? 'preventive maintenance incidents' : dataType === 'assembly' ? 'assembly incidents' : dataType === 'complaints' ? 'complaints' : 'incidents'} found
+              </Text>
+            </View>
+          )
         }
       />
 

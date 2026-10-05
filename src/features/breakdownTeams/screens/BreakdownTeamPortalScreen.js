@@ -4,12 +4,32 @@ import { Text, Button, Card } from 'react-native-paper';
 import { masterService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import { useSelector } from 'react-redux';
+import Toast from 'react-native-toast-message';
 
 const BreakdownTeamPortalScreen = ({ route, navigation }) => {
   const { teamCode } = route.params || {};
   const dbName = useSelector(s => s.auth.dbName);
   const [loading, setLoading] = useState(true);
   const [assignments, setAssignments] = useState([]);
+  const [respondingKey, setRespondingKey] = useState('');
+
+  const respondToAssignment = async (item, decision) => {
+    const assignmentKey = String(item?.AssignmentId || item?.DocEntry || item?.BreakdownNo || 'assignment');
+    try {
+      setRespondingKey(`${assignmentKey}:${decision}`);
+      await masterService.respondBreakdownTeamAssignment(dbName || 'MUTSPL_TEST', {
+        BreakdownNo: item.DocEntry || item.BreakdownNo,
+        TeamCode: teamCode,
+        EmpCode: item.EmpCode || '',
+        Decision: decision,
+      });
+      navigation.goBack();
+    } catch (error) {
+      Toast.show({ type: 'error', text1: `Unable to ${decision.toLowerCase()} assignment`, text2: error?.message || 'Please try again.' });
+    } finally {
+      setRespondingKey('');
+    }
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -47,22 +67,17 @@ const BreakdownTeamPortalScreen = ({ route, navigation }) => {
               <Text>Status: {item.AvailabilityStatus || item.Status || '-'}</Text>
             </Card.Content>
             <Card.Actions>
-              <Button mode="contained" onPress={async () => {
-                try {
-                  await masterService.respondBreakdownTeamAssignment(dbName || 'MUTSPL_TEST', { BreakdownNo: item.DocEntry || item.BreakdownNo, TeamCode: teamCode, EmpCode: item.EmpCode || '' , Decision: 'Accepted' });
-                  navigation.goBack();
-                } catch (e) {
-                  console.warn('Respond failed:', e?.message || e);
-                }
-              }}>Accept</Button>
-              <Button onPress={async () => {
-                try {
-                  await masterService.respondBreakdownTeamAssignment(dbName || 'MUTSPL_TEST', { BreakdownNo: item.DocEntry || item.BreakdownNo, TeamCode: teamCode, EmpCode: item.EmpCode || '' , Decision: 'Rejected' });
-                  navigation.goBack();
-                } catch (e) {
-                  console.warn('Respond failed:', e?.message || e);
-                }
-              }}>Reject</Button>
+              <Button
+                mode="contained"
+                onPress={() => respondToAssignment(item, 'Accepted')}
+                loading={respondingKey === `${String(item?.AssignmentId || item?.DocEntry || item?.BreakdownNo || 'assignment')}:Accepted`}
+                disabled={Boolean(respondingKey)}
+              >Accept</Button>
+              <Button
+                onPress={() => respondToAssignment(item, 'Rejected')}
+                loading={respondingKey === `${String(item?.AssignmentId || item?.DocEntry || item?.BreakdownNo || 'assignment')}:Rejected`}
+                disabled={Boolean(respondingKey)}
+              >Reject</Button>
             </Card.Actions>
           </Card>
         )}

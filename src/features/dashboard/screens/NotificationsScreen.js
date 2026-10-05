@@ -9,7 +9,7 @@ import {
   ScrollView,
   Clipboard,
 } from 'react-native';
-import { Text, IconButton } from 'react-native-paper';
+import { Text, IconButton, ActivityIndicator } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
 import { useFocusEffect } from '@react-navigation/native';
 import MaterialIcons from '../../../shared/components/AppIcon.js';
@@ -32,6 +32,7 @@ const NotificationsScreen = ({ navigation }) => {
   const { notifications, unreadCount } = useSelector(state => state.notification);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
 
+  const [initialLoading, setInitialLoading] = useState(notifications.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [logEntries, setLogEntries] = useState([]);
@@ -51,9 +52,16 @@ const NotificationsScreen = ({ navigation }) => {
     return () => clearInterval(refreshLogs);
   }, [showLogs]);
 
-  const copyLogs = () => {
-    Clipboard.setString(logEntries.join('\n'));
-    Toast.show({ type: 'success', text1: 'Logs copied to clipboard' });
+  const visibleDebugLogs = logEntries.filter(entry => {
+    const isDiagnostic = /\[(?:WARN|ERROR)\]|\b(?:WARN(?:ING)?|ERROR)\b/i.test(entry);
+    const isPostWithPayload = /\bPOST\s*\|\s*(?:SUCCESS|ERROR)\b/i.test(entry)
+      && /\bPayload:\s*\S/i.test(entry);
+    return isDiagnostic || isPostWithPayload;
+  });
+
+  const copyLogEntry = (entry) => {
+    Clipboard.setString(entry);
+    Toast.show({ type: 'success', text1: 'Log entry copied' });
   };
 
   useFocusEffect(
@@ -239,6 +247,7 @@ const NotificationsScreen = ({ navigation }) => {
 
   async function fetchNotifications() {
     try {
+      if (notifications.length === 0) setInitialLoading(true);
       const companyDb = dbName || 'MUTSPL_TEST';
       const identityCandidates = resolveUserIdCandidates();
       const primaryIdentity = identityCandidates[0] || '';
@@ -266,6 +275,8 @@ const NotificationsScreen = ({ navigation }) => {
         text2: String(error.message || error),
         visibilityTime: 8000,
       });
+    } finally {
+      setInitialLoading(false);
     }
   }
 
@@ -388,16 +399,36 @@ const NotificationsScreen = ({ navigation }) => {
       || notificationText.includes('transferred')
       || ['TRANSFER', 'JOB_CARD_TRANSFER', 'JOBCARDTRANSFER', 'JT', 'JCT'].includes(type)
       || Boolean(item?.TransferJobCard || item?.TransferStatus || item?.ToSupervisorCode || item?.TrnSupCode);
-    const requiresSupervisorVerification = ['WE', 'WER', 'LBWE', 'TOW'].includes(rawNotificationType) || ['WE', 'WER', 'LBWE', 'TOW'].includes(type) || (notificationText.includes('work entry') && (
+    const isAssemblyRepairWorkEntryCompleted = rawNotificationType === 'WERC'
+      || type === 'WERC'
+      || notificationTypeFields.includes('WERC');
+    const requiresSupervisorVerification = ['WE', 'WER', 'WERC', 'LBWE', 'TOW'].includes(rawNotificationType) || ['WE', 'WER', 'WERC', 'LBWE', 'TOW'].includes(type) || (notificationText.includes('work entry') && (
       notificationText.includes('supervisor inspection')
       || notificationText.includes('inspection is required')
     ));
     const isWorkEntryVerified = rawNotificationType === 'WEV' || type === 'WEV';
     const isWorkEntryRequest = rawNotificationType === 'WERQ' || type === 'WERQ';
+    const isSpecialToolRequest = rawNotificationType === 'STREQ'
+      || type === 'STREQ'
+      || notificationTypeFields.includes('STREQ');
+    const isAssemblyWorkEntryRequest = ['AWERQ', 'AWE', 'AWER'].includes(rawNotificationType)
+      || ['AWERQ', 'AWE', 'AWER'].includes(type)
+      || notificationTypeFields.some(value => ['AWERQ', 'AWE', 'AWER'].includes(value));
     const isRepairPartRequest = ((notificationText.includes('part') || notificationText.includes('spare'))
         && (notificationText.includes('request') || notificationText.includes('required'))
-        && notificationText.includes('repair'));
+        && notificationText.includes('repair'))
+      || isAssemblyWorkEntryRequest;
     const isTowNotification = rawNotificationType === 'TOW' || type === 'TOW';
+
+    if (supervisorUser && isSpecialToolRequest) {
+      navigation.navigate('RepairPartsRequests', {
+        initialSection: 'tools',
+        repairSpecialTool: true,
+        focusJobCardDocEntry: jobCardReference,
+        focusWorkEntryDocEntry: item?.workEntryDocEntry || item?.WorkEntryDocEntry || item?.WorkEntryNo || item?.ReferenceDocEntry || '',
+      });
+      return;
+    }
 
     if (supervisorUser && isRepairPartRequest) {
       navigation.navigate('RepairPartsRequests', {
@@ -683,9 +714,10 @@ const NotificationsScreen = ({ navigation }) => {
 
     if (supervisorUser && requiresSupervisorVerification) {
       navigation.navigate('ReviewWorkEntries', {
-        focusWorkEntryDocEntry: item?.WorkEntryDocEntry || docEntry,
-        focusJobCardDocEntry: item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || '',
-        repair: rawNotificationType === 'WER' || type === 'WER',
+        focusWorkEntryDocEntry: item?.WorkEntryDocEntry || item?.workEntryDocEntry || item?.WorkEntryNo || item?.ReferenceDocEntry || docEntry,
+        focusJobCardDocEntry: item?.JobCardEntry || item?.JobCardDocEntry || item?.jobCardDocEntry || item?.JobCardNo || item?.jobCardNo || jobCardReference || '',
+        repair: rawNotificationType === 'WER' || type === 'WER' || isAssemblyRepairWorkEntryCompleted,
+        assemblyRepair: isAssemblyRepairWorkEntryCompleted,
         createDriverComplaintAfterApproval: rawNotificationType === 'LBWE' || type === 'LBWE',
       });
       return;
@@ -837,7 +869,7 @@ const NotificationsScreen = ({ navigation }) => {
   const getNotificationIcon = (type, item = {}) => {
     const rawType = String(type || '').trim().toUpperCase();
     const notificationText = `${item?.title || item?.Title || ''} ${item?.message || item?.Message || ''}`.toUpperCase();
-    if (['W', 'WE', 'WERQ', 'LBWE', 'WORK', 'WORKENTRY', 'WORK ENTRY'].includes(rawType) || notificationText.includes('WORK ENTRY')) {
+    if (['W', 'WE', 'WERQ', 'AWERQ', 'STREQ', 'LBWE', 'WORK', 'WORKENTRY', 'WORK ENTRY'].includes(rawType) || notificationText.includes('WORK ENTRY')) {
       return 'build';
     }
     switch (type) {
@@ -888,7 +920,9 @@ const NotificationsScreen = ({ navigation }) => {
       case 'V':
         return '#6D28D9'; // Verification purple
       case 'WERQ':
-        return '#EA580C'; // Work-entry request approval
+      case 'AWERQ':
+      case 'STREQ':
+        return '#EA580C'; // Work-entry / assembly repair request approval
       case 'WETC':
         return '#0F766E'; // Read-only tow completion update
       default:
@@ -1042,6 +1076,8 @@ const NotificationsScreen = ({ navigation }) => {
       WE: 'Work Entry',
       WER: 'Work Entry Rework',
       WERQ: 'Work Entry Request',
+      AWERQ: 'Assembly Work Entry Request',
+      STREQ: 'Special Tool Request',
       WEV: 'Work Entry Verified',
       WETC: 'Tow Completed',
       LBWE: 'Line Breakdown Work Entry',
@@ -1221,11 +1257,8 @@ const NotificationsScreen = ({ navigation }) => {
       <Modal visible={showLogs} animationType="slide" onRequestClose={() => setShowLogs(false)}>
         <View style={{ flex: 1, backgroundColor: '#111', padding: 8, paddingTop: 40 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>Debug Logs ({logEntries.length})</Text>
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>Debug Logs ({visibleDebugLogs.length})</Text>
             <View style={{ flexDirection: 'row', gap: 8 }}>
-              <TouchableOpacity onPress={copyLogs} style={{ backgroundColor: '#0070F2', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, marginRight: 8 }}>
-                <Text style={{ color: '#fff', fontSize: 13 }}>Copy All</Text>
-              </TouchableOpacity>
               <TouchableOpacity onPress={() => { clearLogs(); setLogEntries([]); }} style={{ backgroundColor: '#BB0000', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, marginRight: 8 }}>
                 <Text style={{ color: '#fff', fontSize: 13 }}>Clear</Text>
               </TouchableOpacity>
@@ -1235,13 +1268,27 @@ const NotificationsScreen = ({ navigation }) => {
             </View>
           </View>
           <ScrollView style={{ flex: 1 }}>
-            {logEntries.map((entry, i) => (
-              <Text key={i} style={{ color: entry.includes('ERROR') ? '#ff6b6b' : entry.includes('WARN') ? '#ffd93d' : '#aaffaa', fontSize: 11, fontFamily: 'monospace', marginBottom: 2 }}>
-                {entry}
-              </Text>
-            ))}
-            {logEntries.length === 0 && (
-              <Text style={{ color: '#888', fontSize: 13 }}>No logs captured yet.</Text>
+            {visibleDebugLogs.map((entry, i) => {
+              const isError = /\[(?:ERROR)\]|\bERROR\b/i.test(entry);
+              const isWarning = /\[(?:WARN)\]|\bWARN(?:ING)?\b/i.test(entry);
+              return (
+                <View key={`${i}-${entry.slice(0, 32)}`} style={{ flexDirection: 'row', alignItems: 'flex-start', borderBottomWidth: 1, borderBottomColor: '#333', paddingVertical: 8 }}>
+                  <Text selectable style={{ flex: 1, color: isError ? '#ff6b6b' : isWarning ? '#ffd93d' : '#aaffaa', fontSize: 11, fontFamily: 'monospace', marginRight: 8 }}>
+                    {entry}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => copyLogEntry(entry)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Copy this API request or diagnostic"
+                    style={{ backgroundColor: '#0070F2', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 12 }}>Copy</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+            {visibleDebugLogs.length === 0 && (
+              <Text style={{ color: '#888', fontSize: 13 }}>No POST requests with payloads or warnings/errors captured yet.</Text>
             )}
           </ScrollView>
         </View>
@@ -1289,12 +1336,19 @@ const NotificationsScreen = ({ navigation }) => {
           />
         }
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <MaterialIcons name="notifications-none" size={64} color={colors.gray} />
-            <Text style={[styles.emptyText, { color: colors.gray }]}>
-              {hasBackendCountMismatch ? 'Notifications are pending backend sync' : 'No notifications yet'}
-            </Text>
-          </View>
+          initialLoading ? (
+            <View style={styles.emptyContainer}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={[styles.emptyText, { color: colors.gray }]}>Loading notifications...</Text>
+            </View>
+          ) : (
+            <View style={styles.emptyContainer}>
+              <MaterialIcons name="notifications-none" size={64} color={colors.gray} />
+              <Text style={[styles.emptyText, { color: colors.gray }]}>
+                {hasBackendCountMismatch ? 'Notifications are pending backend sync' : 'No notifications yet'}
+              </Text>
+            </View>
+          )
         }
       />
 

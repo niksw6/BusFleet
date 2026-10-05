@@ -194,7 +194,35 @@ export const repairService = {
 
   requestRepairAdditionalPart: async (payload) => {
     try {
-      const response = await post('RequestRepairAdditionalPart', payload);
+      const {
+        CompanyDB,
+        WorkEntryDocEntry,
+        UserCode,
+        Status = 'W',
+        Remarks = '',
+        Part,
+        ItemCode,
+        ItemName,
+        ReqQty,
+        Qty,
+        ...rest
+      } = payload || {};
+
+      const partPayload = Part || {
+        ItemCode: ItemCode || '',
+        ItemName: ItemName || '',
+        ReqQty: ReqQty ?? Qty ?? 1,
+        Remarks: rest.Remarks || '',
+      };
+
+      const response = await post('UpdateRepairWorkEntry', {
+        CompanyDB,
+        WorkEntryDocEntry,
+        UserCode,
+        Status,
+        Remarks,
+        Parts: [partPayload],
+      });
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));
@@ -273,6 +301,15 @@ export const repairService = {
   reviewRepairJobCard: async (payload) => {
     try {
       const response = await post('ReviewRepairJobCard', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  approveRepairSpecialTool: async (payload) => {
+    try {
+      const response = await post('ApproveRepairSpecialTool', payload);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));

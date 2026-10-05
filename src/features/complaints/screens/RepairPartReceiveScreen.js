@@ -78,11 +78,15 @@ const RepairPartReceiveScreen = ({ route, navigation }) => {
     }
     try {
       setReceivingLine(String(lineId));
+      const receiveQty = Number(part?.ReceiveQty ?? part?.ReceivedQty ?? part?.Qty ?? part?.ReqQty ?? 1) || 1;
       const response = await repairService.receiveRepairPart({
         CompanyDB: dbName,
         JobCardEntry: Number(resolvedJobCardEntry) || resolvedJobCardEntry,
         MechanicUserCode: userCode,
-        Parts: [{ LineId: Number(lineId) || lineId }],
+        Parts: [{
+          LineId: Number(lineId) || lineId,
+          ReceiveQty: receiveQty,
+        }],
       });
       if (!isSuccess(response)) throw new Error(response?.Message || 'Part receipt failed.');
       const updatedParts = parts.map(item => String(item?.LineId ?? item?.LineNum ?? item?.LineID ?? item?.PartLine) === String(lineId)
@@ -108,11 +112,15 @@ const RepairPartReceiveScreen = ({ route, navigation }) => {
       setReceivingLine('ALL');
       for (const part of pending) {
         const lineId = part?.LineId ?? part?.LineNum ?? part?.LineID ?? part?.PartLine;
+        const receiveQty = Number(part?.ReceiveQty ?? part?.ReceivedQty ?? part?.Qty ?? part?.ReqQty ?? 1) || 1;
         const response = await repairService.receiveRepairPart({
           CompanyDB: dbName,
           JobCardEntry: Number(resolvedJobCardEntry) || resolvedJobCardEntry,
           MechanicUserCode: userCode,
-          Parts: [{ LineId: Number(lineId) || lineId }],
+          Parts: [{
+            LineId: Number(lineId) || lineId,
+            ReceiveQty: receiveQty,
+          }],
         });
         if (!isSuccess(response)) throw new Error(response?.Message || 'Part receipt failed.');
       }

@@ -9,7 +9,7 @@ import Loader from '../../../shared/components/Loader';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { storeService } from '../../../api/services';
+import { repairService, storeService } from '../../../api/services';
 
 const BUS_LOCATIONS = [
   'FRONT', 'BACK', 'LEFT', 'RIGHT', 'TOP', 'BOTTOM',
@@ -213,6 +213,7 @@ const PartsApprovalScreen = ({ navigation, route }) => {
   const [toolRequests, setToolRequests] = useState([]);
   const [submittingKey, setSubmittingKey] = useState(null);
   const [locationTarget, setLocationTarget] = useState(null);
+  const toolSectionFocused = React.useRef(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -319,12 +320,19 @@ const PartsApprovalScreen = ({ navigation, route }) => {
     const key = `tool-${tool.workEntryDocEntry}-${tool.lineId}`;
     try {
       setSubmittingKey(key);
-      const response = await storeService.approveSpecialToolRequest({
-        CompanyDB: dbName || 'MUTSPL_TEST',
-        WorkEntryDocEntry: Number(tool.workEntryDocEntry) || tool.workEntryDocEntry,
-        SupervisorCode: userCode,
-        Tools: [{ LineId: Number(tool.lineId) || tool.lineId, Approved: tool.approved, Remarks: tool.remarks || '' }],
-      });
+      const response = tool.approved && route?.params?.repairSpecialTool === true
+        ? await repairService.approveRepairSpecialTool({
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          WorkEntryDocEntry: Number(tool.workEntryDocEntry) || tool.workEntryDocEntry,
+          UserCode: userCode,
+          ToolLineIds: [Number(tool.lineId) || tool.lineId],
+        })
+        : await storeService.approveSpecialToolRequest({
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          WorkEntryDocEntry: Number(tool.workEntryDocEntry) || tool.workEntryDocEntry,
+          SupervisorCode: userCode,
+          Tools: [{ LineId: Number(tool.lineId) || tool.lineId, Approved: tool.approved, Remarks: tool.remarks || '' }],
+        });
       if (!isApiSuccess(response)) throw new Error(response?.Message || 'Could not process special tool request.');
       setToolRequests(previous => previous.filter((_, index) => index !== toolIndex));
       Toast.show({ type: 'success', text1: 'Special tool request processed' });
@@ -528,15 +536,22 @@ const PartsApprovalScreen = ({ navigation, route }) => {
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
       <ScreenHeader
-        title="Parts Requests"
-        subtitle="Approve mechanic parts"
+        title="Parts & Special Tool Requests"
+        subtitle="Approve mechanic parts and special tools"
         onMenuPress={() => navigation.openDrawer && navigation.openDrawer()}
         showNotifications={true}
         useGradient={false}
       />
 
       <ScrollView
+        ref={scrollViewRef}
         contentContainerStyle={styles.scrollContent}
+        onContentSizeChange={() => {
+          if (initialSection === 'tools' && toolRequests.length > 0 && !toolSectionFocused.current) {
+            toolSectionFocused.current = true;
+            scrollViewRef.current?.scrollToEnd({ animated: false });
+          }
+        }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
       >
         {groups.length === 0 && toolRequests.length === 0 ? (
