@@ -8,7 +8,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { LoginScreen } from '../features/auth';
 import { CreateFuelLogScreen, CreateScheduleScreen } from '../features/maintenance';
 import { CreateJobCardScreen, JobCardsScreen, WorkOrderDetailScreen, WorkEntryScreen, TeamApprovalsScreen, MechanicDashboardScreen, FaultWorkScreen, PartsApprovalScreen, ReviewWorkEntriesScreen } from '../features/jobCards';
-import { CreateIncidentScreen, RepairIncidentReviewScreen, RepairJobCardAssignmentScreen, RepairWorkScreen, RepairAssemblyIssueScreen, RepairAssemblyReceiveScreen, RepairPartReceiveScreen, RepairPartsRequestsScreen } from '../features/complaints';
+import { CreateIncidentScreen, RepairIncidentReviewScreen, RepairJobCardAssignmentScreen, RepairJobCardDetailsScreen, RepairWorkScreen, RepairAssemblyIssueScreen, RepairAssemblyReceiveScreen, RepairPartReceiveScreen, RepairPartsRequestsScreen } from '../features/complaints';
 import BreakdownTeamsListScreen from '../features/breakdownTeams/screens/BreakdownTeamsListScreen';
 import BreakdownTeamPortalScreen from '../features/breakdownTeams/screens/BreakdownTeamPortalScreen';
 import DrawerNavigator from './DrawerNavigator';
@@ -186,6 +186,13 @@ const AppNavigator = () => {
                 name="RepairIncidentReview"
                 component={RepairIncidentReviewScreen}
                 options={{ title: 'Repair Incident Review' }}
+              />
+            )}
+            {(supervisorUser || storeUser || fieldStaffUser) && (
+              <Stack.Screen
+                name="RepairJobCardDetails"
+                component={RepairJobCardDetailsScreen}
+                options={{ title: 'Repair Job Card Details' }}
               />
             )}
             {fieldStaffUser && (

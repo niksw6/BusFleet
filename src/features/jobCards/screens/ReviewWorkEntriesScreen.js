@@ -20,6 +20,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { dashboardService, jobCardService, masterService, mechanicService, repairService, storeService, teamService, workEntryService } from '../../../api/services';
 import { formatDateTime, getDateTimeTimestamp, formatDurationHMS } from '../../../utils/helpers';
+import { getLoginUserCode } from '../../../utils/roleAccess';
 
 const isAwaitingVerificationStatus = (value) => {
   const status = String(value || '').trim().toUpperCase();
@@ -157,11 +158,29 @@ const getTowWorkflowState = (entry) => {
   };
 };
 
-const extractWorkDetailsRecords = (entry) => {
-  const rows = [
-    ...(Array.isArray(entry?.WorkDetails) ? entry.WorkDetails : []),
-    ...(Array.isArray(entry?.Details) ? entry.Details : []),
-  ];
+const extractWorkDetailsRecords = (entry, dedupeRepresentations = false) => {
+  const workRows = Array.isArray(entry?.WorkDetails) ? entry.WorkDetails : [];
+  const detailRows = Array.isArray(entry?.Details) ? entry.Details : [];
+  let rows = [...workRows, ...detailRows];
+  if (dedupeRepresentations) {
+    const identity = row => [
+      row?.WorkCode || row?.WorkType || row?.Code || '',
+      row?.WorkDone || row?.Name || row?.Description || '',
+      row?.OtherDescription || row?.OtherDesc || '',
+      row?.Remarks || '',
+      row?.EntryDate || row?.Date || '',
+      row?.EntryTime || row?.Time || '',
+    ].map(value => String(value).trim().toLowerCase());
+    const seen = new Set();
+    rows = rows.filter(row => {
+      const values = identity(row);
+      if (!values.some(Boolean)) return true;
+      const key = JSON.stringify(values);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
 
   return rows.map((row, index) => ({
     id: `${entry?.DocEntry || entry?.WorkEntryDocEntry || 'work'}-detail-${index}`,
@@ -243,9 +262,22 @@ const getStatusLabel = (statusValue) => {
   return status;
 };
 
+const getSpecialToolStatusLabel = (statusValue) => {
+  const status = String(statusValue || '').trim().toUpperCase();
+  const labels = {
+    RQ: 'Requested',
+    AP: 'Approved',
+    IS: 'Issued',
+    RC: 'Received',
+    RT: 'Returned',
+    RJ: 'Rejected',
+  };
+  return labels[status] || status || '-';
+};
+
 const getStatusTone = (statusValue) => {
   const status = String(statusValue || '').trim().toUpperCase();
-  if (['SV', 'CL', 'CM', 'C', 'COMPLETE', 'COMPLETED'].includes(status)) {
+  if (['SV', 'CL', 'CM', 'C', 'COMPLETE', 'COMPLETED', 'RT', 'RETURNED'].includes(status)) {
     return { fg: '#166534', bg: '#DCFCE7' };
   }
   if (['RW', 'DENIED', 'R', 'REJECTED'].includes(status)) {
@@ -479,9 +511,9 @@ const dedupeRepairPartsByItem = (parts = []) => {
   return Array.from(byItem.values());
 };
 
-const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '') => {
+const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '', dedupeAssemblyDetails = false) => {
   const images = extractImageRecords(entry);
-  const workDetails = extractWorkDetailsRecords(entry);
+  const workDetails = extractWorkDetailsRecords(entry, dedupeAssemblyDetails);
   const resolvedWorkEntryDocEntry = resolveWorkEntryIdentifier(entry);
   const faultKey = resolveFaultIdentifier(entry, fallbackItem);
   const labourHoursValue = resolveLabourHours(entry);
@@ -508,7 +540,7 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '') => {
     finalRemarks: entry?.FinalRemarks || entry?.Remarks || '-',
     workDetails,
     status: entry?.Status || entry?.WorkStatus || fallbackItem?.Status || fallbackItem?.WorkStatus || '',
-    completed: isWorkEntryCompleted(entry),
+    completed: isWorkEntryCompleted(entry) || (dedupeAssemblyDetails && ['CL', 'SV'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase())),
     date: entry?.CreateDate || entry?.Date || entry?.DocDate || fallbackItem?.UpdateDate || fallbackItem?.AssignDt || '',
     time: entry?.CreateTime || entry?.Time || entry?.DocTime || fallbackItem?.UpdateTime || '',
     images,
@@ -659,7 +691,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
               ? rawEntries.filter(entry => reference.workEntryIds.has(toCleanString(resolveWorkEntryIdentifier(entry))))
               : rawEntries;
             const workEntries = matchingEntries
-              .map((entry, index) => buildWorkEntryView(entry, cardData, `assembly-queue-${jobCardEntry}-${index}-`))
+              .map((entry, index) => buildWorkEntryView(entry, cardData, `assembly-queue-${jobCardEntry}-${index}-`, true))
               .filter(entry => isValidWorkEntryId(entry.workEntryDocEntry));
             if (workEntries.length === 0) return null;
             return {
@@ -688,7 +720,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
           ? repairWorkEntries.filter(entry => toCleanString(resolveWorkEntryIdentifier(entry)) === focusWorkEntry)
           : repairWorkEntries;
         const reviewEntries = focusedEntries
-          .map((entry, index) => buildWorkEntryView(entry, repairCard, `assembly-${focusJobCard}-${index}-`))
+          .map((entry, index) => buildWorkEntryView(entry, repairCard, `assembly-${focusJobCard}-${index}-`, true))
           .filter(entry => isValidWorkEntryId(entry?.workEntryDocEntry));
         const repairReviewCard = {
           key: `assembly-repair-${focusJobCard}`,
@@ -1066,16 +1098,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
     fetchData();
   };
 
-  const resolveCurrentUserCode = () => toCleanString(
-    user?.User
-    || user?.user
-    || user?.username
-    || user?.Code
-    || user?.code
-    || user?.Name
-    || user?.name
-    || ''
-  );
+  const resolveCurrentUserCode = () => getLoginUserCode(user);
 
   const updateLocalWorkEntryState = useCallback((workEntryDocEntry, updater) => {
     const target = toCleanString(workEntryDocEntry);
@@ -1770,6 +1793,8 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
             {selectedWorkEntry ? (() => {
               const entry = selectedWorkEntry.entry || {};
+              const entryStatus = String(entry?.status || '').trim().toUpperCase();
+              const workEntryAlreadyVerified = ['SV', 'CL', 'CM', 'C', 'COMPLETED', 'CLOSED', 'SUPERVISOR VERIFIED'].includes(entryStatus);
               const statusTone = getStatusTone(entry?.status);
               const overviewRows = [
                 { label: 'Mechanic', value: entry?.mechanicName || '-' },
@@ -2025,15 +2050,24 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                   {(Array.isArray(entry?.specialTools) ? entry.specialTools : []).length === 0 ? (
                     <Text style={[styles.metaText, { color: colors.gray }]}>No special tools linked.</Text>
                   ) : (
-                    entry.specialTools.map((tool, toolIndex) => (
-                      <View key={`special-tool-${tool?.LineId ?? toolIndex}-${tool?.ToolCode || ''}`} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
-                        <Text style={[styles.metaText, { color: colors.dark, fontWeight: '700' }]}>{tool?.ToolName || tool?.ToolCode || 'Special tool'}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Code: {tool?.ToolCode || '-'}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Status: {tool?.Status || tool?.ToolStatus || '-'}</Text>
-                        <Text style={[styles.metaText, { color: colors.gray }]}>Requested by: {tool?.RequestedBy || '-'}</Text>
-                        {tool?.Remarks ? <Text style={[styles.metaText, { color: colors.gray }]}>Remarks: {tool.Remarks}</Text> : null}
-                      </View>
-                    ))
+                    entry.specialTools.map((tool, toolIndex) => {
+                      const toolStatus = tool?.Status || tool?.ToolStatus;
+                      const statusTone = getStatusTone(toolStatus);
+                      return (
+                        <View key={`special-tool-${tool?.LineId ?? toolIndex}-${tool?.ToolCode || ''}`} style={[styles.detailRow, { borderColor: colors.border || '#E0E0E0' }]}>
+                          <Text style={[styles.metaText, { color: colors.dark, fontWeight: '700' }]}>{tool?.ToolName || tool?.ToolCode || 'Special tool'}</Text>
+                          <Text style={[styles.metaText, { color: colors.gray }]}>Code: {tool?.ToolCode || '-'}</Text>
+                          <View style={styles.specialToolStatusRow}>
+                            <Text style={[styles.metaText, { color: colors.gray }]}>Status:</Text>
+                            <View style={[styles.statusPill, { backgroundColor: statusTone.bg }]}>
+                              <Text style={[styles.statusPillText, { color: statusTone.fg }]}>{getSpecialToolStatusLabel(toolStatus)}</Text>
+                            </View>
+                          </View>
+                          <Text style={[styles.metaText, { color: colors.gray }]}>Requested by: {tool?.RequestedBy || '-'}</Text>
+                          {tool?.Remarks ? <Text style={[styles.metaText, { color: colors.gray }]}>Remarks: {tool.Remarks}</Text> : null}
+                        </View>
+                      );
+                    })
                   )}
                 </View>
 
@@ -2056,11 +2090,11 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       styles.actionBtn,
                       {
                         backgroundColor: '#2B7D2B',
-                        opacity: actioningWorkEntry && toCleanString(selectedWorkEntry.entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
+                        opacity: workEntryAlreadyVerified ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
                       },
                     ]}
                     onPress={handleApproveWorkEntry}
-                    disabled={!!actioningWorkEntry || String(selectedWorkEntry?.entry?.status || '').trim().toUpperCase() === 'RW'}
+                    disabled={!!actioningWorkEntry || workEntryAlreadyVerified || entryStatus === 'RW'}
                     activeOpacity={0.85}
                   >
                     <MaterialIcons name="check-circle" size={16} color="#FFFFFF" />
@@ -2072,11 +2106,11 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       styles.actionBtn,
                       {
                         backgroundColor: '#B91C1C',
-                        opacity: actioningWorkEntry && toCleanString(selectedWorkEntry.entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
+                        opacity: workEntryAlreadyVerified ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
                       },
                     ]}
                     onPress={openDenyFlow}
-                    disabled={!!actioningWorkEntry || ['SV', 'CL', 'CM'].includes(String(selectedWorkEntry?.entry?.status || '').trim().toUpperCase())}
+                    disabled={!!actioningWorkEntry || workEntryAlreadyVerified}
                     activeOpacity={0.85}
                   >
                     <MaterialIcons name="cancel" size={16} color="#FFFFFF" />
@@ -2193,6 +2227,7 @@ const styles = StyleSheet.create({
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
   statusPillText: { fontSize: 11, fontWeight: '700' },
+  specialToolStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
   imageLabel: { fontSize: 12, fontWeight: '700', marginBottom: 4 },
   imageRow: {
     borderWidth: 1,

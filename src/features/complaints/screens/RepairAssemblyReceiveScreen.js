@@ -7,6 +7,7 @@ import Toast from 'react-native-toast-message';
 import { repairService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
+import { getLoginUserCode } from '../../../utils/roleAccess';
 
 const isSuccess = (response) => (
   !Object.prototype.hasOwnProperty.call(response || {}, 'Success')
@@ -31,7 +32,7 @@ const RepairAssemblyReceiveScreen = ({ route, navigation }) => {
   const assemblyCode = getValue(route.params, ['assemblyCode', 'AssemblyCode', 'assembly', 'Assembly']);
   const assemblyName = getValue(route.params, ['assemblyName', 'AssemblyName']) || 'Assembly';
   const receiveDisabled = route.params?.receiveDisabled === true;
-  const userCode = getValue(user, ['User', 'user', 'UserCode', 'Code', 'code']);
+  const userCode = getLoginUserCode(user);
   const empId = getValue(user, ['EmpID', 'EmployeeID', 'ID', 'id']);
   const [assembly, setAssembly] = useState(notification);
   const [loading, setLoading] = useState(true);
@@ -85,10 +86,12 @@ const RepairAssemblyReceiveScreen = ({ route, navigation }) => {
         AssemblyCode: resolvedAssemblyCode,
       });
       if (!isSuccess(response)) throw new Error(response?.Message || 'Assembly receipt failed.');
-      Toast.show({ type: 'success', text1: 'Assembly received', text2: 'Now receive any issued repair parts.' });
-      navigation.replace('RepairPartReceive', {
+      Toast.show({ type: 'success', text1: 'Assembly received' });
+      navigation.replace('RepairWork', {
         jobCardEntry: String(resolvedJobCardEntry),
         dbName,
+        incidentEntry: getValue(assembly, ['IncidentEntry', 'IncidentDocEntry']) || route.params?.incidentEntry || '',
+        storePersonID: getValue(assembly, ['StorePersonID', 'StorePerson', 'StoreCode']) || route.params?.storePersonID || '',
         assemblyCode: resolvedAssemblyCode,
         assemblyName: getValue(assembly, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || assemblyName,
       });

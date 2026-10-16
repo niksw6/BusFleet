@@ -18,13 +18,13 @@ const getRepairJobCardRecord = (response) => {
   const data = response?.Data ?? response?.data ?? response;
   if (Array.isArray(data)) return data[0] || null;
   if (!data || typeof data !== 'object') return null;
-  if (data.Status !== undefined || data.JobCardStatus !== undefined || data.AssignmentStatus !== undefined) return data;
   for (const key of ['Data', 'data', 'JobCard', 'JobCardDetails', 'Result']) {
     if (data[key]) {
       const record = getRepairJobCardRecord(data[key]);
       if (record) return record;
     }
   }
+  if (data.Status !== undefined || data.JobCardStatus !== undefined || data.AssignmentStatus !== undefined || data.StorePersonID !== undefined) return data;
   return data;
 };
 
@@ -58,6 +58,7 @@ const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const jobCardEntry = String(route.params?.jobCardEntry || route.params?.JobCardEntry || route.params?.docEntry || '').trim();
+  const readOnlyDetail = route.params?.readOnlyDetail === true;
   const [jobCard, setJobCard] = useState(null);
   const [remarks, setRemarks] = useState('');
   const [loading, setLoading] = useState(true);
@@ -74,6 +75,9 @@ const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
       setJobCard(fetchedJobCard);
       const assemblyStatus = getAssemblyStatus(fetchedJobCard);
       const mechanicAssemblyStatus = getMechanicAssemblyStatus(fetchedJobCard, user);
+      if (readOnlyDetail) {
+        return;
+      }
       if (assemblyStatus === 'I' || (assemblyStatus === 'P' && mechanicAssemblyStatus === 'I')) {
         navigation.replace('RepairAssemblyReceive', {
           jobCardEntry,
@@ -98,7 +102,7 @@ const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
     } finally {
       setLoading(false);
     }
-  }, [dbName, jobCardEntry, navigation, user]);
+  }, [dbName, jobCardEntry, navigation, readOnlyDetail, user]);
 
   useEffect(() => { loadJobCard(); }, [loadJobCard]);
 
@@ -139,13 +143,14 @@ const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
       }
       Toast.show({ type: 'success', text1: responseStatus === 'A' ? 'Repair assignment accepted' : 'Repair assignment rejected' });
       if (responseStatus === 'A') {
-        navigation.replace('RepairWork', {
+        navigation.replace('RepairAssemblyReceive', {
           jobCardEntry,
           dbName,
           incidentEntry: getValue(jobCard, ['IncidentEntry', 'IncidentDocEntry']),
           storePersonID: getValue(jobCard, ['StorePersonID', 'StorePerson', 'StoreCode']),
           assemblyCode: getValue(jobCard, ['AssemblyCode', 'Assembly', 'AssemblyNo', 'RepairAssemblyCode']),
           assemblyName: getValue(jobCard, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || 'Assembly',
+          receiveDisabled: true,
         });
         return;
       }
@@ -161,18 +166,38 @@ const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.light }]} contentContainerStyle={styles.content}>
-      <Text style={[styles.title, { color: colors.dark }]}>Repair Job Assignment</Text>
+      <Text style={[styles.title, { color: colors.dark }]}>{readOnlyDetail ? 'Repair Job Card Details' : 'Repair Job Assignment'}</Text>
       <View style={[styles.details, { backgroundColor: colors.card || colors.white }]}>
         <Text style={[styles.detail, { color: colors.dark }]}>Job card: {jobCardEntry}</Text>
-        <Text style={[styles.detail, { color: colors.dark }]}>Assembly: {getValue(jobCard, ['AssemblyName', 'Assembly']) || '-'}</Text>
-        <Text style={[styles.detail, { color: colors.dark }]}>Supervisor remarks: {getValue(jobCard, ['Remarks', 'Description']) || '-'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Assembly: {getValue(jobCard, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || '-'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Assembly code: {getValue(jobCard, ['Assembly', 'AssemblyCode', 'AssemblyNo']) || '-'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Incident: {getValue(jobCard, ['IncidentNum', 'IncidentEntry', 'IncidentDocEntry']) || '-'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Depot: {getValue(jobCard, ['Depot', 'DepotName']) || '-'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Store person: {getValue(jobCard, ['StorePersonID', 'StorePerson', 'StoreCode']) || '-'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Supervisor: {getValue(jobCard, ['SupName', 'SupervisorName', 'Supervisor']) || '-'}</Text>
         <Text style={[styles.detail, { color: colors.dark }]}>Status: {getValue(jobCard, ['Status', 'AssignmentStatus']) || 'Pending'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Assembly status: {getValue(jobCard, ['AssemblyStatus']) || '-'}</Text>
+        <Text style={[styles.detail, { color: colors.dark }]}>Remarks: {getValue(jobCard, ['Remarks', 'Description']) || '-'}</Text>
+        {(Array.isArray(jobCard?.Mechanics) ? jobCard.Mechanics : []).map((mechanic, index) => (
+          <Text key={`${mechanic?.EmpID || mechanic?.EmpCode || index}`} style={[styles.detail, { color: colors.dark }]}>
+            Mechanic {index + 1}: {mechanic?.EmpName || mechanic?.MechanicName || mechanic?.UserCode || mechanic?.EmpCode || '-'} ({mechanic?.Status || mechanic?.MechanicStatus || 'Pending'})
+          </Text>
+        ))}
+        {(Array.isArray(jobCard?.Parts) ? jobCard.Parts : []).map((part, index) => (
+          <Text key={`${part?.LineId || index}-${part?.ItemCode || ''}`} style={[styles.detail, { color: colors.dark }]}>
+            Part: {part?.ItemName || part?.ItemCode || '-'} | Requested: {part?.ReqQty ?? 0} | Issued: {part?.IssuedQty ?? 0} | Received: {part?.ReceivedQty ?? 0} | Returned: {part?.ReturnedQty ?? 0}
+          </Text>
+        ))}
       </View>
-      <TextInput mode="outlined" label="Response remarks" value={remarks} onChangeText={setRemarks} multiline numberOfLines={4} style={styles.input} />
-      <View style={styles.actions}>
-        <Button mode="outlined" onPress={() => respond('R')} loading={responding} disabled={responding} textColor={colors.danger || COLORS.danger}>Reject</Button>
-        <Button mode="contained" onPress={() => respond('A')} loading={responding} disabled={responding}>Accept</Button>
-      </View>
+      {!readOnlyDetail && (
+        <>
+          <TextInput mode="outlined" label="Response remarks" value={remarks} onChangeText={setRemarks} multiline numberOfLines={4} style={styles.input} />
+          <View style={styles.actions}>
+            <Button mode="outlined" onPress={() => respond('R')} loading={responding} disabled={responding} textColor={colors.danger || COLORS.danger}>Reject</Button>
+            <Button mode="contained" onPress={() => respond('A')} loading={responding} disabled={responding}>Accept</Button>
+          </View>
+        </>
+      )}
     </ScrollView>
   );
 };

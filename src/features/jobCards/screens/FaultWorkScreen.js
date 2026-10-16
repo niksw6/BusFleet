@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput as RNTextInput, Modal as RNModal, Image } from 'react-native';
+import { View, StyleSheet, ScrollView, RefreshControl, TouchableOpacity, TextInput as RNTextInput, Modal as RNModal, Image } from 'react-native';
 import { Text, TextInput, Chip } from 'react-native-paper';
 import { useSelector } from 'react-redux';
 import { useFocusEffect } from '@react-navigation/native';
@@ -10,6 +10,7 @@ import Loader from '../../../shared/components/Loader';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { mechanicService, storeService, masterService, jobCardService, workEntryService } from '../../../api/services';
+import { getLoginUserCode } from '../../../utils/roleAccess';
 
 /**
  * FaultWorkScreen — Mechanic/Electrician's step-by-step work flow for ONE fault line.
@@ -102,7 +103,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || routeDbName;
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const userCode = user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || user?.name || '';
+  const userCode = getLoginUserCode(user);
   const createDetailId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const getInitialSavedImages = () => {
@@ -133,6 +134,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [step, setStep] = useState(() => (
     isWorkStarted || routeWorkEntryDocEntry || existingWorkEntry?.DocEntry ? STEP.WORKING : STEP.START
@@ -278,16 +280,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const faultReference = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || fault?.Code || '').trim();
-  const partIdentityCandidates = [...new Set([
-    userCode,
-    user?.EmpCode,
-    user?.EmployeeCode,
-    user?.EmpID,
-    user?.EmployeeID,
-    user?.username,
-    user?.Name,
-    user?.name,
-  ].map(value => String(value || '').trim()).filter(Boolean))];
+  const partIdentityCandidates = userCode ? [userCode] : [];
 
   const loadData = useCallback(async () => {
     try {
@@ -608,6 +601,15 @@ const FaultWorkScreen = ({ route, navigation }) => {
   useFocusEffect(useCallback(() => {
     loadData();
   }, [loadData]));
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadData();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadData]);
 
   useEffect(() => {
     setExistingSpecialTools(normalizeSpecialToolRows(extractSpecialToolsForFault(existingWorkEntry, fault)));
@@ -1514,7 +1516,12 @@ const FaultWorkScreen = ({ route, navigation }) => {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} colors={[colors.primary]} />}
+      >
         {/* Fault header */}
         <View style={[styles.card, { backgroundColor: colors.white }]}>
           <View style={styles.faultHeaderRow}>
@@ -1900,6 +1907,8 @@ const FaultWorkScreen = ({ route, navigation }) => {
                     const rawStatus = String(tool?.Status || '').trim().toUpperCase();
                     const statusLabel = rawStatus === 'RT' || rawStatus === 'RETURNED'
                       ? 'Returned'
+                      : rawStatus === 'RQ' || rawStatus === 'REQUESTED'
+                      ? 'Requested - awaiting approval'
                       : rawStatus === 'IS' || rawStatus === 'ISSUED'
                       ? 'Issued'
                       : rawStatus === 'AP' || rawStatus === 'APPROVED' || rawStatus === 'A'

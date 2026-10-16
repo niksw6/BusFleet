@@ -9,6 +9,7 @@ export { default as CreateIncidentScreen } from './screens/CreateIncidentScreen'
 export { default as CreateRepairIncidentScreen } from './screens/CreateRepairIncidentScreen';
 export { default as RepairIncidentReviewScreen } from './screens/RepairIncidentReviewScreen';
 export { default as RepairJobCardAssignmentScreen } from './screens/RepairJobCardAssignmentScreen';
+export { default as RepairJobCardDetailsScreen } from './screens/RepairJobCardDetailsScreen';
 export { default as RepairWorkScreen } from './screens/RepairWorkScreen';
 export { default as RepairAssemblyIssueScreen } from './screens/RepairAssemblyIssueScreen';
 export { default as RepairAssemblyReceiveScreen } from './screens/RepairAssemblyReceiveScreen';

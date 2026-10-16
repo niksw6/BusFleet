@@ -173,7 +173,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const storeEntries = useSelector(state => state.workEntry.workEntries[String(workOrderDocEntry)] || EMPTY_LIST);
   const storePartsRequests = useSelector(state => state.workEntry.partsRequests[String(workOrderDocEntry)] || EMPTY_LIST);
 
-  const mechanicCode = user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || user?.name || '';
+  const mechanicCode = String(user?.User || user?.username || user?.user || '').trim();
   const mechanicName = user?.FirstName || user?.Name || user?.name || '';
 
   // ─── Local state ─────────────────────────────────────────────────────────────

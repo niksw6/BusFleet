@@ -7,6 +7,7 @@ import { repairService, masterService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
+import { getUserDepot } from '../../../utils/roleAccess';
 
 const extractRows = (response) => {
   const data = response?.Data ?? response?.data ?? response;
@@ -23,6 +24,7 @@ const CreateRepairIncidentScreen = ({ navigation }) => {
   const dbName = useSelector(state => state.auth.dbName) || 'MUTSPL_TEST';
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const storePerson = String(user?.User || user?.user || user?.UserCode || user?.Code || user?.code || '').trim();
+  const loggedInDepot = getUserDepot(user) || '';
 
   const [assemblies, setAssemblies] = useState([]);
   const [depots, setDepots] = useState([]);
@@ -34,7 +36,6 @@ const CreateRepairIncidentScreen = ({ navigation }) => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [assemblyModalVisible, setAssemblyModalVisible] = useState(false);
-  const [depotModalVisible, setDepotModalVisible] = useState(false);
   const [supervisorModalVisible, setSupervisorModalVisible] = useState(false);
 
   useEffect(() => {
@@ -45,7 +46,17 @@ const CreateRepairIncidentScreen = ({ navigation }) => {
           masterService.getDepots(dbName),
         ]);
         setAssemblies(extractRows(assemblyResponse));
-        setDepots(extractRows(depotResponse));
+        const depotRows = extractRows(depotResponse);
+        setDepots(depotRows);
+        if (loggedInDepot) {
+          const matchedDepot = depotRows.find(depot => String(
+            depot?.DepotCode || depot?.Code || depot?.Depot || depot?.Value || '',
+          ).trim().toLowerCase() === loggedInDepot.toLowerCase());
+          setSelectedDepot(matchedDepot || {
+            DepotCode: loggedInDepot,
+            DepotName: user?.DepotName || user?.depotName || loggedInDepot,
+          });
+        }
       } catch (error) {
         Toast.show({ type: 'error', text1: 'Unable to load repair data', text2: error?.message || 'Please try again.' });
       } finally {
@@ -53,7 +64,7 @@ const CreateRepairIncidentScreen = ({ navigation }) => {
       }
     };
     loadData();
-  }, [dbName]);
+  }, [dbName, loggedInDepot, user?.DepotName, user?.depotName]);
 
   const selectedDepotCode = String(
     selectedDepot?.DepotCode || selectedDepot?.Code || selectedDepot?.Depot || selectedDepot?.Value || '',
@@ -90,6 +101,7 @@ const CreateRepairIncidentScreen = ({ navigation }) => {
       const response = await repairService.createRepairIncident({
         CompanyDB: dbName,
         StorePerson: storePerson,
+        Depot: selectedDepotCode,
         Assembly: String(assembly?.AssemblyCode || assembly?.Assembly || assembly?.Code || assembly?.Value || '').trim(),
         AssemblyName: String(assembly?.AssemblyName || assembly?.Name || assembly?.Description || '').trim(),
         Supervisor: String(supervisor?.EmpID || supervisor?.Supervisor || supervisor?.SupervisorCode || supervisor?.Code || '').trim(),
@@ -142,30 +154,14 @@ const CreateRepairIncidentScreen = ({ navigation }) => {
       </TouchableOpacity>
 
       <Text style={[styles.label, { color: colors.dark }]}>Depot:</Text>
-      <ModalSelector
-        visible={depotModalVisible}
-        onClose={() => setDepotModalVisible(false)}
-        onSelect={(value, item) => { setSelectedDepot(item || value); setDepotModalVisible(false); }}
-        title="Select Depot"
-        data={depots}
-        loading={false}
-        displayKey="DepotName"
-        valueKey="DepotCode"
-        searchKeys={['DepotName', 'DepotCode']}
-        searchPlaceholder="Search depots..."
+      <TextInput
+        mode="outlined"
+        value={selectedDepot?.DepotName || selectedDepot?.Name || selectedDepot?.DepotCode || ''}
+        placeholder="Depot unavailable"
+        editable={false}
+        style={styles.input}
+        outlineColor={colors.border || COLORS.border}
       />
-      <TouchableOpacity activeOpacity={0.8} onPress={() => setDepotModalVisible(true)}>
-        <TextInput
-          mode="outlined"
-          value={selectedDepot?.DepotName || selectedDepot?.Name || selectedDepot?.DepotCode || ''}
-          placeholder="Select depot"
-          editable={false}
-          pointerEvents="none"
-          style={styles.input}
-          outlineColor={colors.border || COLORS.border}
-          right={<TextInput.Icon icon="chevron-down" />}
-        />
-      </TouchableOpacity>
 
       <Text style={[styles.label, { color: colors.dark }]}>Supervisor:</Text>
       <ModalSelector

@@ -217,14 +217,9 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   );
 
   const resolveUserCode = () => String(
-    user?.UserCode
-    || user?.EmpCode
-    || user?.Code
-    || user?.code
-    || user?.User
+    user?.User
     || user?.user
     || user?.username
-    || user?.name
     || ''
   ).trim();
 

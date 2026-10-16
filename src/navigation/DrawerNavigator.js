@@ -152,8 +152,8 @@ const CustomDrawerContent = (props) => {
         </View>
         <Text style={styles.userName}>{user?.username || user?.User || user?.user || user?.name || 'User Name'}</Text>
         <Text style={styles.userRole}>{userRole}</Text>
-        {(user?.EmpID || user?.EmployeeID || user?.id) && (
-          <Text style={styles.userCode}>EmpID: {user?.EmpID || user?.EmployeeID || user?.id}</Text>
+        {(user?.EmpCode || user?.UserCode || user?.Code || user?.EmpID || user?.EmployeeID || user?.id) && (
+          <Text style={styles.userCode}>EmpCode: {user?.EmpCode || user?.UserCode || user?.Code || user?.EmpID || user?.EmployeeID || user?.id}</Text>
         )}
       </LinearGradient>
 
@@ -290,7 +290,7 @@ const DrawerNavigator = () => {
           headerShown: false,
         }}
       />
-      {!mechanicUser && !electricianUser && !teamLeaderUser && (
+      {!mechanicUser && !electricianUser && (
         <Drawer.Screen
           name="Complaints"
           component={ComplaintsScreen}

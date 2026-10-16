@@ -17,7 +17,7 @@ import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { teamService, masterService } from '../../../api/services';
 import { formatDate } from '../../../utils/helpers';
-import { getStaffRoleLabel, getUserTeamCode } from '../../../utils/roleAccess';
+import { getLoginUserCode, getStaffRoleLabel, getUserTeamCode } from '../../../utils/roleAccess';
 
 /**
  * TeamApprovalsScreen — Team Leader's queue.
@@ -32,12 +32,14 @@ import { getStaffRoleLabel, getUserTeamCode } from '../../../utils/roleAccess';
  */
 
 const STATUS = {
+  ALL: 'ALL',
   PENDING: 'PENDING',
   ACCEPTED: 'ACCEPTED',
   REJECTED: 'REJECTED',
 };
 
 const TABS = [
+  { key: STATUS.ALL, label: 'All', icon: 'view-list' },
   { key: STATUS.PENDING, label: 'Pending', icon: 'hourglass-empty' },
   { key: STATUS.ACCEPTED, label: 'Accepted', icon: 'check-circle' },
   { key: STATUS.REJECTED, label: 'Rejected', icon: 'cancel' },
@@ -384,7 +386,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const teamLeaderCode = user?.User || user?.user || user?.Code || user?.code || '';
+  const teamLeaderCode = getLoginUserCode(user);
   const teamLeaderName = user?.FirstName || user?.Name || user?.name || 'Team Leader';
   const teamLeaderTeamCode = getUserTeamCode(user);
 
@@ -408,6 +410,11 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
   const [rejectTarget, setRejectTarget] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
   const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+
+  useEffect(() => {
+    const requestedStatus = String(route?.params?.initialStatus || '').trim().toUpperCase();
+    if (Object.values(STATUS).includes(requestedStatus)) setActiveTab(requestedStatus);
+  }, [route?.params?.initialStatus]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -464,6 +471,7 @@ const TeamApprovalsScreen = ({ navigation, route }) => {
   };
 
   const grouped = {
+    [STATUS.ALL]: jobCards,
     [STATUS.PENDING]: jobCards.filter((j) => deriveStatus(j) === STATUS.PENDING),
     [STATUS.ACCEPTED]: jobCards.filter((j) => deriveStatus(j) === STATUS.ACCEPTED),
     [STATUS.REJECTED]: jobCards.filter((j) => deriveStatus(j) === STATUS.REJECTED),

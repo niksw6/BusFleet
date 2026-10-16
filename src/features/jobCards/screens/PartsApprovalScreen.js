@@ -203,7 +203,7 @@ const PartsApprovalScreen = ({ navigation, route }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const userCode = user?.Code || user?.code || user?.User || user?.user || user?.name || '';
+  const userCode = String(user?.User || user?.username || user?.user || '').trim();
 
   const scrollViewRef = React.useRef(null);
 

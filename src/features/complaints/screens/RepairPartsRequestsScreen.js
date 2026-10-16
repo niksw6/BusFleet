@@ -5,10 +5,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSelector } from 'react-redux';
 import Toast from 'react-native-toast-message';
 
-import { repairService } from '../../../api/services';
+import { dashboardService, repairService } from '../../../api/services';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
-import { isStoreUser } from '../../../utils/roleAccess';
+import { getLoginUserCode, isStoreUser } from '../../../utils/roleAccess';
 
 const rowsFrom = (response) => {
   const data = response?.Data ?? response?.data ?? response;
@@ -20,7 +20,22 @@ const rowsFrom = (response) => {
   return Object.values(data).find(Array.isArray) || [];
 };
 
-const workEntryId = (part) => part?.WorkEntryDocEntry ?? part?.WorkEntryEntry ?? part?.WorkEntry ?? part?.DocEntry ?? '';
+const workEntryId = (part) => {
+  const workEntry = part?.WorkEntry;
+  return [
+    part?.WorkEntryDocEntry,
+    part?.WorkEntryEntry,
+    part?.WorkEntryNo,
+    part?.WorkEntryNumber,
+    part?.WorkEntryDocNum,
+    part?.WorkEntryID,
+    part?.WorkEntryId,
+    typeof workEntry === 'object' ? workEntry?.WorkEntryDocEntry : workEntry,
+    typeof workEntry === 'object' ? workEntry?.WorkEntryEntry : '',
+    typeof workEntry === 'object' ? workEntry?.DocEntry : '',
+    part?.DocEntry,
+  ].find(value => value !== undefined && value !== null && String(value).trim()) || '';
+};
 const jobCardId = (part) => part?.JobCardEntry ?? part?.JobCardDocEntry ?? part?.JobCard ?? part?.JobCardNo ?? '';
 const lineId = (part) => part?.LineId ?? part?.LineNum ?? part?.PartLine ?? 0;
 const quantity = (part) => Number(part?.ApprovedQty ?? part?.ReqQty ?? part?.Qty ?? 1) || 1;
@@ -29,12 +44,49 @@ const toolLineId = (tool, index) => tool?.ToolLine ?? tool?.LineId ?? tool?.Line
 const toolWorkEntryId = (tool) => tool?.WorkEntryDocEntry ?? tool?.WorkEntryNo ?? tool?.DocEntry ?? '';
 const repairWorkEntryId = (entry) => entry?.WorkEntryDocEntry ?? entry?.WorkEntryEntry ?? entry?.DocEntry ?? entry?.WorkEntryNo ?? entry?.DocNum ?? '';
 
+const isSpecialToolNotification = (item) => [
+  item?.Type,
+  item?.type,
+  item?.NotificationType,
+  item?.notificationType,
+  item?.NotificationCode,
+  item?.notificationCode,
+].some(value => String(value || '').trim().toUpperCase() === 'STREQ');
+
+const getJobCardReference = (item) => {
+  const direct = [
+    item?.JobCard,
+    item?.jobCard,
+    item?.JobCardDocEntry,
+    item?.jobCardDocEntry,
+    item?.JobCardEntry,
+    item?.jobCardEntry,
+    item?.JobCardNo,
+    item?.jobCardNo,
+    item?.JobcardNo,
+  ].map(value => String(value || '').trim()).find(Boolean);
+  if (direct) return direct;
+  const text = `${item?.Message || item?.message || ''} ${item?.Title || item?.title || ''}`;
+  return text.match(/job\s*card\s*(?:no\.?|number|#|:|-)?\s*([A-Za-z0-9-]+)/i)?.[1] || '';
+};
+
+const repairJobCardRecord = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data[0] || null;
+  if (!data || typeof data !== 'object') return null;
+  for (const key of ['JobCard', 'JobCardDetails', 'RepairJobCard', 'Result']) {
+    if (data[key]) return repairJobCardRecord(data[key]);
+  }
+  return data;
+};
+
 const RepairPartsRequestsScreen = ({ navigation, route = { params: {} } }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || 'MUTSPL_TEST';
   const colors = useSelector(state => state.theme.isDarkMode) ? DARK_COLORS : COLORS;
   const storeUser = isStoreUser(user);
-  const userCode = user?.User || user?.UserCode || user?.Code || user?.code || '';
+  const userCode = getLoginUserCode(user);
+  const storedNotifications = useSelector(state => state.notification?.notifications || []);
   const [parts, setParts] = useState([]);
   const [toolRequests, setToolRequests] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -48,24 +100,74 @@ const RepairPartsRequestsScreen = ({ navigation, route = { params: {} } }) => {
         storeUser
           ? repairService.getApprovedRepairParts(dbName, userCode)
           : repairService.getPendingRepairPartRequests(dbName, userCode),
-        !storeUser && route?.params?.repairSpecialTool
-          ? route?.params?.focusJobCardDocEntry
-            ? repairService.getRepairJobCard(dbName, route.params.focusJobCardDocEntry)
-            : repairService.getMyRepairWorkDashboard(dbName, userCode)
-          : Promise.resolve(null),
+        (async () => {
+          if (storeUser) return [];
+          const focusJobCard = String(route?.params?.focusJobCardDocEntry || '').trim();
+          if (focusJobCard) return [await repairService.getRepairJobCard(dbName, focusJobCard)];
+
+          const notificationRows = [...rowsFrom(storedNotifications)];
+          try {
+            const response = await dashboardService.getNotifications(dbName, userCode);
+            notificationRows.push(...rowsFrom(response));
+          } catch (error) {
+            console.warn('[RepairPartsRequests] Unable to refresh tool-request notifications:', error?.message || error);
+          }
+          const jobCardReferences = [...new Set(notificationRows
+            .filter(isSpecialToolNotification)
+            .map(getJobCardReference)
+            .filter(Boolean))];
+          const cardResults = await Promise.allSettled(jobCardReferences.map(reference => repairService.getRepairJobCard(dbName, reference)));
+          return cardResults.filter(result => result.status === 'fulfilled').map(result => result.value);
+        })(),
       ]);
-      if (partsResult.status === 'fulfilled') setParts(rowsFrom(partsResult.value));
-      else throw partsResult.reason;
+      if (partsResult.status !== 'fulfilled') throw partsResult.reason;
+      const partRows = rowsFrom(partsResult.value);
+      const parentJobCardIds = [...new Set(partRows
+        .filter(part => !workEntryId(part))
+        .map(jobCardId)
+        .map(value => String(value || '').trim())
+        .filter(Boolean))];
+      const parentJobCardResults = await Promise.allSettled(parentJobCardIds.map(id => repairService.getRepairJobCard(dbName, id)));
+      const parentJobCards = new Map(parentJobCardResults.flatMap((result, index) => (
+        result.status === 'fulfilled'
+          ? [[parentJobCardIds[index], repairJobCardRecord(result.value)]]
+          : []
+      )));
+      const enrichedParts = partRows.map(part => {
+        if (workEntryId(part)) return part;
+        const parent = parentJobCards.get(String(jobCardId(part) || '').trim());
+        const entries = Array.isArray(parent?.WorkEntries) ? parent.WorkEntries : [];
+        const itemCode = String(part?.ItemCode || part?.Code || '').trim().toLowerCase();
+        const partLine = String(lineId(part));
+        const matchingEntry = entries.find(entry => {
+          const entryParts = [
+            ...(Array.isArray(entry?.Parts) ? entry.Parts : []),
+            ...(Array.isArray(entry?.RepairParts) ? entry.RepairParts : []),
+            ...(Array.isArray(entry?.PartRequests) ? entry.PartRequests : []),
+          ];
+          return entryParts.some(entryPart => (
+            String(entryPart?.ItemCode || entryPart?.Code || '').trim().toLowerCase() === itemCode
+            && String(entryPart?.LineId ?? entryPart?.LineNum ?? entryPart?.PartLine ?? partLine) === partLine
+          ));
+        });
+        const workEntry = matchingEntry || (entries.length === 1 ? entries[0] : null);
+        const entryId = repairWorkEntryId(workEntry);
+        return entryId ? { ...part, WorkEntryDocEntry: entryId } : part;
+      });
+      setParts(enrichedParts);
       if (toolsResult.status === 'fulfilled' && toolsResult.value) {
         const focusWorkEntry = String(route?.params?.focusWorkEntryDocEntry || '').trim();
-        const repairJobCard = toolsResult.value?.Data ?? toolsResult.value?.data ?? toolsResult.value;
-        const workEntries = Array.isArray(repairJobCard?.WorkEntries) ? repairJobCard.WorkEntries : [];
-        const tools = workEntries.flatMap(entry => (
+        const repairJobCards = toolsResult.value.map(repairJobCardRecord).filter(Boolean);
+        const workEntries = repairJobCards.flatMap(repairJobCard => (
+          (Array.isArray(repairJobCard?.WorkEntries) ? repairJobCard.WorkEntries : []).map(entry => ({ entry, repairJobCard }))
+        ));
+        const tools = workEntries.flatMap(({ entry, repairJobCard }) => (
           (Array.isArray(entry?.SpecialTools) ? entry.SpecialTools : []).map((tool, index) => ({
             ...tool,
             LineId: toolLineId(tool, index),
             WorkEntryDocEntry: toolWorkEntryId(tool) || repairWorkEntryId(entry),
-            JobCardEntry: entry?.JobCardEntry ?? entry?.JobCardDocEntry ?? entry?.JobCard ?? '',
+            JobCardEntry: tool?.JobCardEntry ?? entry?.JobCardEntry ?? entry?.JobCardDocEntry ?? entry?.JobCard ?? repairJobCard?.DocEntry ?? repairJobCard?.JobCardEntry ?? repairJobCard?.JobCardNo ?? '',
+            JobCardNumber: tool?.JobCardNumber ?? tool?.JobCardNo ?? entry?.JobCardNumber ?? entry?.JobCardNo ?? repairJobCard?.DocNum ?? repairJobCard?.JobCardNumber ?? repairJobCard?.JobCardNo ?? repairJobCard?.DocEntry ?? '',
             ToolCode: tool?.ToolCode || tool?.Code || '',
             ToolName: tool?.ToolName || tool?.Name || tool?.Description || tool?.ToolCode || 'Special tool',
           }))
@@ -81,7 +183,7 @@ const RepairPartsRequestsScreen = ({ navigation, route = { params: {} } }) => {
     } finally {
       setLoading(false);
     }
-  }, [dbName, route?.params?.focusWorkEntryDocEntry, route?.params?.repairSpecialTool, storeUser, userCode]);
+  }, [dbName, route?.params?.focusJobCardDocEntry, route?.params?.focusWorkEntryDocEntry, storeUser, storedNotifications, userCode]);
 
   useFocusEffect(useCallback(() => { loadParts(); }, [loadParts]));
 
@@ -203,7 +305,8 @@ const RepairPartsRequestsScreen = ({ navigation, route = { params: {} } }) => {
                 <Card key={`${key}-${index}`} style={styles.card}>
                   <Card.Content>
                     <Text style={[styles.name, { color: colors.dark }]}>{tool.ToolName || tool.ToolCode || 'Special tool'}</Text>
-                    <Text style={{ color: colors.gray }}>Code: {tool.ToolCode || '-'} | Work entry: {tool.WorkEntryDocEntry || '-'}</Text>
+                    <Text style={{ color: colors.gray }}>Code: {tool.ToolCode || '-'} | Job card: {tool.JobCardNumber || tool.JobCardEntry || '-'}</Text>
+                    <Text style={{ color: colors.gray }}>Work entry: {tool.WorkEntryDocEntry || '-'}</Text>
                     {tool?.Remarks ? <Text style={{ color: colors.gray }}>Remarks: {tool.Remarks}</Text> : null}
                     <Button mode="contained" onPress={() => approveRepairTool(tool)} loading={workingKey === key} disabled={Boolean(workingKey)} style={styles.toolButton}>Approve special tool</Button>
                   </Card.Content>
@@ -222,7 +325,8 @@ const RepairPartsRequestsScreen = ({ navigation, route = { params: {} } }) => {
           return <Card key={key} style={styles.card}><Card.Content>
             <Text style={[styles.name, { color: colors.dark }]}>{part?.ItemName || part?.ItemCode || 'Repair part'}</Text>
             <Text style={{ color: colors.gray }}>Code: {part?.ItemCode || '-'} | Requested qty: {requested}</Text>
-            <Text style={{ color: colors.gray }}>Job card: {jobCardId(part) || '-'} | Work entry: {workEntryId(part) || '-'}</Text>
+            <Text style={{ color: colors.gray }}>Job card: {jobCardId(part) || '-'}</Text>
+            <Text style={{ color: colors.gray }}>Work entry: {workEntryId(part) || '-'}</Text>
             {part?.Remarks ? <Text style={{ color: colors.gray }}>Remarks: {part.Remarks}</Text> : null}
             {!storeUser && (
               <View style={styles.qtyRow}>

@@ -133,7 +133,7 @@ const request = async (url, options = {}) => {
       url: fullUrl,
       payload: method === 'GET' ? '' : options.body || '',
       responseBody: method === 'POST' ? JSON.stringify(data) : '',
-      message,
+      message: method === 'GET' ? '' : message,
     }), method);
     
     return { data, status: response.status, ok: response.ok };

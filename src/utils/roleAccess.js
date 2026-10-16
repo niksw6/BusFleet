@@ -13,6 +13,10 @@ export const mapUsertypeToRole = (usertype) => {
   return null;
 };
 
+export const getLoginUserCode = (user) => String(
+  user?.User || user?.username || user?.user || ''
+).trim();
+
 const normalizeExplicitRole = (roleValue) => {
   const rawRole = String(roleValue || '').trim();
   if (!rawRole) return null;

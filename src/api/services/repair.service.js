@@ -42,6 +42,26 @@ export const repairService = {
     }
   },
 
+  getRepairIncidents: async (companyDB) => {
+    try {
+      const response = await get(`GetRepairIncidents?CompanyDB=${encodeURIComponent(companyDB)}`);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  getRepairIncidentDashboard: async (companyDB, depot) => {
+    try {
+      const response = await get(
+        `GetRepairIncidentDashboard?CompanyDB=${encodeURIComponent(companyDB)}&Depot=${encodeURIComponent(depot || '')}`,
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   respondToRepairIncident: async (payload) => {
     try {
       const response = await post('RespondToRepairIncident', payload);
@@ -125,6 +145,24 @@ export const repairService = {
   receiveRepairAssembly: async (payload) => {
     try {
       const response = await post('ReceiveRepairAssembly', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  receiveRepairSpecialTools: async (payload) => {
+    try {
+      const response = await post('ReceiveRepairSpecialTools', payload);
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
+  startRepairWork: async (payload) => {
+    try {
+      const response = await post('StartRepairWork', payload);
       return response.data;
     } catch (error) {
       throw new Error(handleApiError(error));

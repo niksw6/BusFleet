@@ -7,6 +7,7 @@ import Toast from 'react-native-toast-message';
 import { repairService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
+import { getLoginUserCode } from '../../../utils/roleAccess';
 
 const getRows = (response) => {
   const data = response?.Data ?? response?.data ?? response;
@@ -24,15 +25,23 @@ const getPartStatus = (part) => String(
   part?.Status || part?.PartStatus || part?.IssueStatus || '',
 ).trim().toUpperCase();
 
-const isReceived = (part) => ['RC', 'RECEIVED', 'R'].includes(getPartStatus(part))
-  || Number(part?.ReceivedQty || part?.RecQty || 0) > 0;
+const getIssuedQty = (part) => Number(
+  part?.IssuedQty ?? part?.IssueQty ?? part?.IssQty ?? part?.ReceiveQty ?? part?.Qty ?? part?.ReqQty ?? part?.Quantity ?? 1,
+) || 1;
+
+const getReceivedQty = (part) => Number(part?.ReceivedQty ?? part?.RecQty ?? 0) || 0;
+
+const getOutstandingReceiveQty = (part) => Math.max(getIssuedQty(part) - getReceivedQty(part), 0);
+
+const isReceived = (part) => getOutstandingReceiveQty(part) === 0
+  || (getReceivedQty(part) === 0 && ['RC', 'RECEIVED', 'R'].includes(getPartStatus(part)));
 
 const RepairPartReceiveScreen = ({ route, navigation }) => {
   const user = useSelector(state => state.auth.user);
   const dbName = useSelector(state => state.auth.dbName) || route.params?.dbName || 'MUTSPL_TEST';
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
-  const userCode = user?.User || user?.user || user?.UserCode || user?.Code || user?.code || '';
+  const userCode = getLoginUserCode(user);
   const jobCardEntry = String(route.params?.jobCardEntry || route.params?.JobCardEntry || '').trim();
   const assemblyCode = route.params?.assemblyCode || route.params?.AssemblyCode || '';
   const assemblyName = route.params?.assemblyName || route.params?.AssemblyName || 'Assembly';
@@ -78,7 +87,8 @@ const RepairPartReceiveScreen = ({ route, navigation }) => {
     }
     try {
       setReceivingLine(String(lineId));
-      const receiveQty = Number(part?.ReceiveQty ?? part?.ReceivedQty ?? part?.Qty ?? part?.ReqQty ?? 1) || 1;
+      const receiveQty = getOutstandingReceiveQty(part);
+      if (receiveQty <= 0) return;
       const response = await repairService.receiveRepairPart({
         CompanyDB: dbName,
         JobCardEntry: Number(resolvedJobCardEntry) || resolvedJobCardEntry,
@@ -90,7 +100,7 @@ const RepairPartReceiveScreen = ({ route, navigation }) => {
       });
       if (!isSuccess(response)) throw new Error(response?.Message || 'Part receipt failed.');
       const updatedParts = parts.map(item => String(item?.LineId ?? item?.LineNum ?? item?.LineID ?? item?.PartLine) === String(lineId)
-        ? { ...item, Status: 'RC', ReceivedQty: item?.ReceivedQty || item?.Qty || item?.ReqQty || 1 }
+        ? { ...item, Status: 'RC', ReceivedQty: getReceivedQty(item) + receiveQty, RecQty: getReceivedQty(item) + receiveQty }
         : item);
       setParts(updatedParts);
       Toast.show({ type: 'success', text1: 'Part received' });
@@ -112,7 +122,8 @@ const RepairPartReceiveScreen = ({ route, navigation }) => {
       setReceivingLine('ALL');
       for (const part of pending) {
         const lineId = part?.LineId ?? part?.LineNum ?? part?.LineID ?? part?.PartLine;
-        const receiveQty = Number(part?.ReceiveQty ?? part?.ReceivedQty ?? part?.Qty ?? part?.ReqQty ?? 1) || 1;
+        const receiveQty = getOutstandingReceiveQty(part);
+        if (receiveQty <= 0) continue;
         const response = await repairService.receiveRepairPart({
           CompanyDB: dbName,
           JobCardEntry: Number(resolvedJobCardEntry) || resolvedJobCardEntry,
@@ -162,7 +173,7 @@ const RepairPartReceiveScreen = ({ route, navigation }) => {
           <Card key={`${part?.ItemCode || part?.Item || 'part'}-${lineId}`} style={styles.card}>
             <Card.Content>
               <Text style={[styles.partName, { color: colors.dark }]}>{part?.ItemCode || part?.Item || '-'} - {part?.ItemName || part?.PartName || part?.Name || '-'}</Text>
-              <Text style={{ color: colors.gray }}>Quantity: {part?.Qty || part?.ReqQty || part?.Quantity || 1}</Text>
+              <Text style={{ color: colors.gray }}>Issued quantity: {getIssuedQty(part)} | Received: {getReceivedQty(part)}</Text>
               <Button mode={received ? 'outlined' : 'contained'} onPress={() => receivePart(part)} loading={receivingLine === lineId} disabled={received || !!receivingLine} style={styles.button}>
                 {received ? 'Received' : 'Receive part'}
               </Button>

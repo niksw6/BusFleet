@@ -18,9 +18,9 @@ import { StatusBadge } from '../../../shared/components/Badge';
 import FAB from '../../../shared/components/FAB';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { complaintService, dashboardService, jobCardService, maintenanceService, teamService, mechanicService } from '../../../api/services';
+import { complaintService, dashboardService, jobCardService, maintenanceService, teamService, mechanicService, repairService } from '../../../api/services';
 import { formatDateTime, getDateTimeTimestamp } from '../../../utils/helpers';
-import { isMechanicUser, isStoreUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser, getUserTeamCode } from '../../../utils/roleAccess';
+import { getLoginUserCode, isMechanicUser, isStoreUser, isSupervisorUser, isTechnicalHeadUser, isDepotHeadUser, isTeamLeaderUser, isFieldStaffUser, isDriverUser } from '../../../utils/roleAccess';
 
 const looksLikeJobCard = (item) => {
   if (!item || typeof item !== 'object') return false;
@@ -357,7 +357,6 @@ const DashboardScreen = ({ navigation }) => {
   const teamLeaderUser = isTeamLeaderUser(user);
   const fieldStaffUser = isFieldStaffUser(user);
   const driverUser = isDriverUser(user);
-  const userTeamCode = getUserTeamCode(user);
   const userDepot = user?.Depot || user?.depot || '';
   // BUG FIX: this used to check only isMechanicUser, so Electricians fell through
   // to the generic Supervisor-style dashboard instead of the Job Cards overview.
@@ -405,22 +404,17 @@ const DashboardScreen = ({ navigation }) => {
 
       if (teamLeaderUser) {
         try {
-          const teamLeaderCode = String(
-            user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || user?.name || ''
-          ).trim();
+          const teamLeaderCode = getLoginUserCode(user);
           const teamResponse = await teamService.getMechanicalDashboard(dbName || 'MUTSPL_TEST', teamLeaderCode);
           const jobCards = extractTeamLeaderJobCards(teamResponse?.Data ?? teamResponse);
-          const scoped = userTeamCode
-            ? jobCards.filter((c) => !c?.TeamCode || String(c?.TeamCode || '').trim() === userTeamCode)
-            : jobCards;
 
-          const pendingCount = scoped.filter(c => deriveTeamLeaderStatus(c) === 'PENDING').length;
+          const pendingCount = jobCards.filter(c => deriveTeamLeaderStatus(c) === 'PENDING').length;
           setPendingApprovals(pendingCount);
           setStats({
-            total: scoped.length,
+            total: jobCards.length,
             open: pendingCount,
-            inProgress: scoped.filter(c => deriveTeamLeaderStatus(c) === 'ACCEPTED').length,
-            completed: scoped.filter(c => deriveTeamLeaderStatus(c) === 'REJECTED').length,
+            inProgress: jobCards.filter(c => deriveTeamLeaderStatus(c) === 'ACCEPTED').length,
+            completed: jobCards.filter(c => deriveTeamLeaderStatus(c) === 'REJECTED').length,
           });
         } catch (e) {
           console.warn('Team Leader dashboard fetch failed:', e?.message);
@@ -474,63 +468,28 @@ const DashboardScreen = ({ navigation }) => {
       }
 
       if (showMechanicDashboard) {
-        let jobCards = [];
         let breakdownJobs = [];
         let mechanicJobCards = [];
-        let mechanicDashboardLoaded = false;
 
         try {
-          const jobCardsResponse = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null, userDepot);
-          jobCards = Array.isArray(jobCardsResponse?.Data) ? jobCardsResponse.Data : [];
-        } catch (jobCardsError) {
-          console.warn('Mechanic dashboard job-cards fetch failed:', jobCardsError?.message || jobCardsError);
-          jobCards = [];
-        }
-
-        try {
-          const mechanicUserCode = String(
-            user?.UserCode || user?.EmpCode || user?.Code || user?.code || user?.User || user?.user || ''
-          ).trim();
+          const mechanicUserCode = getLoginUserCode(user);
           if (mechanicUserCode) {
             const mechanicJobsResponse = await mechanicService.getMechanicDashboard(dbName || 'MUTSPL_TEST', mechanicUserCode);
-            const mechanicJobs = extractArrayItems(mechanicJobsResponse?.Data ?? mechanicJobsResponse ?? []);
-            mechanicJobCards = mechanicJobs;
-            mechanicDashboardLoaded = true;
-            breakdownJobs = mechanicJobs.filter(isBreakdownAssignmentItem);
+            mechanicJobCards = extractArrayItems(mechanicJobsResponse?.Data ?? mechanicJobsResponse ?? []);
+            breakdownJobs = mechanicJobCards.filter(isBreakdownAssignmentItem);
           }
         } catch (mechanicJobsError) {
-          console.info('Mechanic dashboard assignment fallback used; no assignment rows returned.', mechanicJobsError?.message || mechanicJobsError);
+          console.warn('Mechanic dashboard fetch failed:', mechanicJobsError?.message || mechanicJobsError);
           breakdownJobs = [];
         }
 
         setBreakdownWorkItems(breakdownJobs);
 
-        const openCount = jobCards.filter((card) => {
-          const status = String(card?.Status || '').trim().toUpperCase();
-          return status === 'O' || status === 'OPEN';
-        }).length;
-
-        const inProgressCount = jobCards.filter((card) => {
-          const status = String(card?.Status || '').trim().toUpperCase();
-          return status === 'I' || status === 'IN PROGRESS' || status === 'INPROGRESS';
-        }).length;
-
-        const completedCount = jobCards.filter((card) => {
-          const status = String(card?.Status || '').trim().toUpperCase();
-          return status === 'C' || status === 'CM' || status === 'COMPLETED';
-        }).length;
-
-        const countMechanicFaults = (predicate = () => true) => mechanicJobCards.filter(predicate).length;
-        const mechanicFaultCount = countMechanicFaults();
-        const mechanicOpenCount = countMechanicFaults(isOpenMechanicItem);
-        const mechanicInProgressCount = countMechanicFaults(isInProgressMechanicItem);
-        const mechanicCompletedCount = countMechanicFaults(isCompletedMechanicItem);
-
         setStats({
-          total: mechanicDashboardLoaded ? mechanicFaultCount : jobCards.length,
-          open: mechanicDashboardLoaded ? mechanicOpenCount : openCount,
-          inProgress: mechanicDashboardLoaded ? mechanicInProgressCount : inProgressCount,
-          completed: mechanicDashboardLoaded ? mechanicCompletedCount : completedCount,
+          total: mechanicJobCards.length,
+          open: mechanicJobCards.filter(isOpenMechanicItem).length,
+          inProgress: mechanicJobCards.filter(isInProgressMechanicItem).length,
+          completed: mechanicJobCards.filter(isCompletedMechanicItem).length,
         });
 
         setRecentIncidents([]);
@@ -605,10 +564,28 @@ const DashboardScreen = ({ navigation }) => {
       }
 
       const companyDb = dbName || 'MUTSPL_TEST';
-      const [incidentsResponse, serviceSchedulersResponse] = await Promise.all([
+      const [incidentsResponse, serviceSchedulersResponse, repairDashboardResponse] = await Promise.all([
         complaintService.getIncidents(companyDb, null, null, userDepot),
         maintenanceService.getServiceSchedulers(companyDb),
+        repairService.getRepairIncidentDashboard(companyDb, userDepot).catch((repairDashboardError) => {
+          console.warn('Repair incident dashboard count fetch failed:', repairDashboardError?.message || repairDashboardError);
+          return null;
+        }),
       ]);
+
+      const repairDashboard = repairDashboardResponse?.Data ?? repairDashboardResponse?.data ?? {};
+      const repairIncidentCounts = {
+        total: Number(repairDashboard?.TotalIncidents) || 0,
+        open: Number(repairDashboard?.OpenCount) || 0,
+        inProgress: Number(repairDashboard?.InProgressCount) || 0,
+        completed: Number(repairDashboard?.CompletedCount) || 0,
+      };
+
+      if (storeUser) {
+        setStats(repairIncidentCounts);
+        setRecentIncidents([]);
+        return;
+      }
 
       const incidents = Array.isArray(incidentsResponse?.Data) ? incidentsResponse.Data : [];
       const preventive = Array.isArray(serviceSchedulersResponse?.Data)
@@ -626,10 +603,10 @@ const DashboardScreen = ({ navigation }) => {
       }).length;
 
       setStats({
-        total: allIncidents.length,
-        open: openCount,
-        inProgress: inProgressCount,
-        completed: completedCount,
+        total: allIncidents.length + repairIncidentCounts.total,
+        open: openCount + repairIncidentCounts.open,
+        inProgress: inProgressCount + repairIncidentCounts.inProgress,
+        completed: completedCount + repairIncidentCounts.completed,
       });
       
       // Fetch recent incidents (complaints + breakdowns)
@@ -782,7 +759,7 @@ const DashboardScreen = ({ navigation }) => {
                   {showMechanicDashboard ? 'Faults Overview' : 'Performance Overview'}
                 </Text>
                 <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
-                  {showMechanicDashboard ? 'Real-time fault tracking' : 'Real-time incident tracking'}
+                  {teamLeaderUser ? 'Team job card status' : showMechanicDashboard ? 'Real-time fault tracking' : 'Real-time incident tracking'}
                 </Text>
               </View>
               
@@ -791,6 +768,10 @@ const DashboardScreen = ({ navigation }) => {
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
+                    if (teamLeaderUser) {
+                      navigation.navigate('TeamApprovals', { initialStatus: 'ALL' });
+                      return;
+                    }
                     if (showMechanicDashboard) {
                       navigation.navigate('MechanicDashboard');
                       return;
@@ -806,7 +787,7 @@ const DashboardScreen = ({ navigation }) => {
                   </View>
                   <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.total}</Text>
                   <Text style={[styles.kpiLabel, { color: colors.gray }]}>
-                    {showMechanicDashboard ? 'Total Faults' : 'Total Incidents'}
+                    {teamLeaderUser ? 'Total Job Cards' : showMechanicDashboard ? 'Total Faults' : 'Total Incidents'}
                   </Text>
                 </TouchableOpacity>
 
@@ -814,6 +795,10 @@ const DashboardScreen = ({ navigation }) => {
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
+                    if (teamLeaderUser) {
+                      navigation.navigate('TeamApprovals', { initialStatus: 'PENDING' });
+                      return;
+                    }
                     if (showMechanicDashboard) {
                       navigation.navigate('MechanicDashboard', { initialTab: 'TO_ACCEPT' });
                       return;
@@ -828,13 +813,17 @@ const DashboardScreen = ({ navigation }) => {
                     </View>
                   </View>
                   <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.open}</Text>
-                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>Open</Text>
+                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>{teamLeaderUser ? 'Pending' : 'Open'}</Text>
                 </TouchableOpacity>
 
                 {/* In Progress */}
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
+                    if (teamLeaderUser) {
+                      navigation.navigate('TeamApprovals', { initialStatus: 'ACCEPTED' });
+                      return;
+                    }
                     if (showMechanicDashboard) {
                       navigation.navigate('MechanicDashboard', { initialTab: 'IN_PROGRESS' });
                       return;
@@ -845,17 +834,21 @@ const DashboardScreen = ({ navigation }) => {
                 >
                   <View style={styles.kpiHeader}>
                     <View style={[styles.kpiIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
-                      <MaterialIcons name="sync" size={26} color={colors.primary} />
+                      <MaterialIcons name={teamLeaderUser ? 'check-circle' : 'sync'} size={26} color={colors.primary} />
                     </View>
                   </View>
                   <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.inProgress}</Text>
-                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>In Progress</Text>
+                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>{teamLeaderUser ? 'Accepted' : 'In Progress'}</Text>
                 </TouchableOpacity>
 
                 {/* Completed */}
                 <TouchableOpacity
                   style={[styles.kpiCard, { backgroundColor: colors.white }]}
                   onPress={() => {
+                    if (teamLeaderUser) {
+                      navigation.navigate('TeamApprovals', { initialStatus: 'REJECTED' });
+                      return;
+                    }
                     if (showMechanicDashboard) {
                       navigation.navigate('MechanicDashboard', { initialTab: 'COMPLETED' });
                       return;
@@ -866,11 +859,11 @@ const DashboardScreen = ({ navigation }) => {
                 >
                   <View style={styles.kpiHeader}>
                     <View style={[styles.kpiIconContainer, { backgroundColor: alpha(colors.primary, '14') }]}>
-                      <MaterialIcons name="check-circle" size={26} color={colors.primary} />
+                      <MaterialIcons name={teamLeaderUser ? 'cancel' : 'check-circle'} size={26} color={colors.primary} />
                     </View>
                   </View>
                   <Text style={[styles.kpiValue, { color: colors.dark }]}>{stats.completed}</Text>
-                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>Completed</Text>
+                  <Text style={[styles.kpiLabel, { color: colors.gray }]}>{teamLeaderUser ? 'Rejected' : 'Completed'}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -881,7 +874,7 @@ const DashboardScreen = ({ navigation }) => {
                 <View style={styles.sectionHeader}>
                   <Text style={[styles.sectionTitle, { color: colors.dark }]}>Team Approvals</Text>
                   <Text style={[styles.sectionSubtitle, { color: colors.gray }]}>
-                    Job cards awaiting your accept/reject decision
+                    Pending job cards: {pendingApprovals}
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -899,7 +892,7 @@ const DashboardScreen = ({ navigation }) => {
                         {pendingApprovals > 0 ? `${pendingApprovals} job card(s) pending` : 'No pending job cards'}
                       </Text>
                       <Text style={[styles.overdueSub, { color: colors.gray }]}>
-                        Tap to accept, reject, or assign your team
+                        Tap to review pending job cards
                       </Text>
                     </View>
                   </View>
@@ -972,7 +965,7 @@ const DashboardScreen = ({ navigation }) => {
             )}
 
             {/* ── Parts & Tools Requests (Supervisor) ── */}
-            {(supervisorUser || storeUser) && (
+            {supervisorUser && (
               <View style={styles.actionsSection}>
                 <View style={styles.sectionHeader}>
                   <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts & Tools Requests</Text>
@@ -1142,7 +1135,7 @@ const DashboardScreen = ({ navigation }) => {
                   </TouchableOpacity>
                 )}
 
-                {!driverUser && (
+                {!driverUser && !storeUser && (
                 <TouchableOpacity
                   style={styles.actionCardWrapper}
                   onPress={() => navigation.navigate('JobCards')}

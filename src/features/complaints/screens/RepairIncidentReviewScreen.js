@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
-import { Button, Text, TextInput } from 'react-native-paper';
+import { Button, Divider, Text, TextInput } from 'react-native-paper';
 import { useSelector } from 'react-redux';
 import Toast from 'react-native-toast-message';
+import MaterialIcons from '../../../shared/components/AppIcon.js';
 
-import { repairService, workEntryService } from '../../../api/services';
+import { repairService } from '../../../api/services';
 import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { getUserDepot } from '../../../utils/roleAccess';
+import { formatDate } from '../../../utils/helpers';
 
 const getRows = (response) => {
   const data = response?.Data ?? response?.data ?? response;
@@ -21,6 +23,80 @@ const getValue = (item, keys) => {
     if (item?.[key] !== undefined && item?.[key] !== null && String(item[key]).trim()) return item[key];
   }
   return '';
+};
+
+const formatIncidentDateTime = (dateValue, timeValue) => {
+  const dateText = String(dateValue || '').trim();
+  const timeText = String(timeValue || '').trim();
+  let dateParts;
+
+  const isoDate = dateText.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  const compactDate = dateText.match(/^(\d{4})(\d{2})(\d{2})$/);
+  const localDate = dateText.match(/^(\d{1,2})[/. -](\d{1,2})[/. -](\d{4})$/);
+  if (isoDate) dateParts = [isoDate[3], isoDate[2], isoDate[1]];
+  else if (compactDate) dateParts = [compactDate[3], compactDate[2], compactDate[1]];
+  else if (localDate) dateParts = [localDate[1], localDate[2], localDate[3]];
+  else if (dateText) {
+    const parsedDate = formatDate(dateText);
+    const parsedParts = parsedDate.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (parsedParts) dateParts = [parsedParts[1], parsedParts[2], parsedParts[3]];
+  }
+
+  let formattedTime = '';
+  const digitalTime = timeText.match(/^(\d{3,6})$/);
+  const normalizedTime = digitalTime
+    ? digitalTime[1].slice(0, 4).padStart(4, '0')
+    : timeText;
+  const timeMatch = normalizedTime.match(/^(\d{1,2}):?(\d{2})(?::\d{2})?\s*(AM|PM)?$/i);
+  if (timeMatch) {
+    let hours = Number(timeMatch[1]);
+    const minutes = Number(timeMatch[2]);
+    const meridiem = timeMatch[3]?.toLowerCase();
+    if (hours <= 23 && minutes <= 59) {
+      const suffix = meridiem || (hours >= 12 ? 'pm' : 'am');
+      if (!meridiem) hours %= 12;
+      else if (suffix === 'pm' && hours < 12) hours += 12;
+      else if (suffix === 'am' && hours === 12) hours = 0;
+      formattedTime = `${String(hours % 12 || 12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${suffix}`;
+    }
+  }
+
+  const formattedDate = dateParts
+    ? `${String(dateParts[0]).padStart(2, '0')}/${String(dateParts[1]).padStart(2, '0')}/${dateParts[2]}`
+    : '';
+  return [formattedDate, formattedTime].filter(Boolean).join(' ') || '-';
+};
+
+const getIncidentStatusBadge = (value) => {
+  const status = String(value || '').trim().toUpperCase();
+  if (['A', 'ACCEPT', 'ACCEPTED', 'APPROVED'].includes(status)) {
+    return { label: 'Accepted', background: '#DCFCE7', color: '#166534' };
+  }
+  if (['R', 'D', 'REJECT', 'REJECTED', 'DECLINED'].includes(status)) {
+    return { label: 'Rejected', background: '#FEE2E2', color: '#991B1B' };
+  }
+  if (['J', 'JOB CARD CREATED'].includes(status)) {
+    return { label: 'Job Card Created', background: '#E0F2FE', color: '#075985' };
+  }
+  if (['I', 'IP', 'IN PROGRESS'].includes(status)) {
+    return { label: 'In Progress', background: '#E0F2FE', color: '#075985' };
+  }
+  if (['C', 'CM', 'CL', 'COMPLETED', 'CLOSED'].includes(status)) {
+    return { label: 'Completed', background: '#DCFCE7', color: '#166534' };
+  }
+  if (['O', 'P', 'PENDING', ''].includes(status)) {
+    return { label: 'Pending', background: '#FEF3C7', color: '#92400E' };
+  }
+  return { label: String(value), background: '#EEF2F6', color: '#475569' };
+};
+
+const IncidentStatusBadge = ({ value }) => {
+  const badge = getIncidentStatusBadge(value);
+  return (
+    <View style={[styles.incidentStatus, { backgroundColor: badge.background }]}>
+      <Text style={[styles.incidentStatusText, { color: badge.color }]}>{badge.label}</Text>
+    </View>
+  );
 };
 
 const getDocEntry = (response) => {
@@ -65,6 +141,7 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
   const isDarkMode = useSelector(state => state.theme.isDarkMode);
   const colors = isDarkMode ? DARK_COLORS : COLORS;
   const docEntry = String(route.params?.docEntry || route.params?.DocEntry || '').trim();
+  const readOnlyDetail = route.params?.readOnlyDetail === true;
   const userDepot = getUserDepot(user) || '';
   const [incident, setIncident] = useState(null);
   const [jobCardEntry, setJobCardEntry] = useState(() => String(
@@ -72,7 +149,6 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
   ).trim());
   const [mechanics, setMechanics] = useState([]);
   const [selectedMechanics, setSelectedMechanics] = useState([]);
-  const [images, setImages] = useState([]);
   const [remarks, setRemarks] = useState('');
   const [jobCardRemarks, setJobCardRemarks] = useState('');
   const [loading, setLoading] = useState(true);
@@ -169,7 +245,13 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
             const existingJobCardEntry = await findExistingJobCard();
             if (existingJobCardEntry) {
               setJobCardEntry(existingJobCardEntry);
-              setIncident(current => ({ ...(current || {}), Status: 'A', JobCardEntry: existingJobCardEntry }));
+              setIncident(current => ({
+                ...(current || {}),
+                Status: 'A',
+                SupervisorResponse: 'A',
+                SpvResp: 'A',
+                JobCardEntry: existingJobCardEntry,
+              }));
               Toast.show({ type: 'info', text1: 'Job card already created', text2: 'Continue by assigning a mechanic.' });
               return;
             }
@@ -181,7 +263,12 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
         throw new Error(response?.Message || 'The incident response was not accepted.');
       }
       Toast.show({ type: 'success', text1: decision === 'A' ? 'Repair incident accepted' : 'Repair incident rejected' });
-      setIncident(current => ({ ...(current || {}), Status: decision }));
+      setIncident(current => ({
+        ...(current || {}),
+        Status: decision,
+        SupervisorResponse: decision,
+        SpvResp: decision,
+      }));
       if (decision === 'R') navigation.goBack();
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Unable to update incident', text2: error?.message || 'Please try again.' });
@@ -191,6 +278,10 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
   };
 
   const isAccepted = Boolean(jobCardEntry) || ['A', 'ACCEPTED', 'APPROVED'].includes(String(getValue(incident, ['Status', 'Decision', 'ApprovalStatus'])).trim().toUpperCase());
+  const incidentDateTime = formatIncidentDateTime(
+    getValue(incident, ['IncidentDate', 'ComplaintDate', 'CreateDate', 'CreateDt', 'CreatedDate', 'DocDate', 'Date']),
+    getValue(incident, ['IncidentTime', 'ComplaintTime', 'CreateTime', 'CreateTm', 'CreatedTime', 'DocTime', 'Time']),
+  );
 
   const loadMechanics = async () => {
     const depot = String(getValue(incident, ['Depot', 'DepotCode']) || userDepot).trim();
@@ -238,19 +329,11 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
     }
     try {
       setUpdatingJobCard(true);
-      let uploadedImages = [];
-      if (images.length > 0) {
-        const uploadResponse = await workEntryService.uploadImages(images);
-        uploadedImages = (uploadResponse?.FileNames || []).map((fileName, index) => ({
-          ImgType: 'Supervisor', ImgNo: index + 1, ImgPath: fileName, Remarks: 'Assembly condition before repair.',
-        }));
-      }
       const updatePayload = {
         CompanyDB: dbName,
         JobCardEntry: Number(jobCardEntry) || jobCardEntry,
         Remarks: jobCardRemarks.trim(),
         Mechanics: selectedMechanics.map(mechanic => ({ EmpID: mechanic?.EmpID || mechanic?.EmployeeID || mechanic?.ID || mechanic?.Code })),
-        Images: uploadedImages,
       };
       console.log('[RepairIncidentReview] UpdateRepairJobCard API:', 'UpdateRepairJobCard');
       console.log('[RepairIncidentReview] UpdateRepairJobCard payload:', JSON.stringify(updatePayload));
@@ -258,7 +341,7 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
       if (!(response?.Success === true || response?.Status === true || response?.success === true)) {
         throw new Error(response?.Message || 'Repair job card update failed.');
       }
-      Toast.show({ type: 'success', text1: 'Mechanic assigned and images updated' });
+      Toast.show({ type: 'success', text1: 'Mechanic assigned' });
       navigation.goBack();
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Unable to update job card', text2: error?.message || 'Please try again.' });
@@ -267,57 +350,120 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
     }
   };
 
-  const pickImages = async () => {
-    try {
-      const ImagePicker = require('expo-image-picker');
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) return;
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsMultipleSelection: true,
-        quality: 0.7,
-      });
-      if (!result.canceled) setImages(result.assets || []);
-    } catch (error) {
-      Toast.show({ type: 'error', text1: 'Unable to select images', text2: error?.message || 'Please try again.' });
-    }
-  };
-
-  const captureImage = async () => {
-    try {
-      const ImagePicker = require('expo-image-picker');
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        Toast.show({ type: 'error', text1: 'Camera permission required', text2: 'Allow camera access to capture an assembly image.' });
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
-      if (!result.canceled && result.assets?.[0]) {
-        setImages(current => [...current, result.assets[0]]);
-      }
-    } catch (error) {
-      Toast.show({ type: 'error', text1: 'Unable to capture image', text2: error?.message || 'Please try again.' });
-    }
-  };
-
   if (loading) return <Loader />;
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.light }]} contentContainerStyle={styles.content}>
-      <Text style={[styles.title, { color: colors.dark }]}>Repair Incident Review</Text>
+      <Text style={[styles.title, { color: colors.dark }]}>{readOnlyDetail ? 'Assembly Incident Details' : 'Repair Incident Accept'}</Text>
       {!incident ? (
         <Text style={[styles.empty, { color: colors.gray }]}>Repair incident details are unavailable.</Text>
+      ) : readOnlyDetail ? (
+        <>
+          <View style={[styles.listDetailCard, { backgroundColor: colors.white }]}>
+            <View style={styles.listDetailHeader}>
+              <View style={styles.listDetailHeading}>
+                <Text style={[styles.incidentNumber, { color: colors.dark }]}>Incident #{getValue(incident, ['DocEntry', 'IncidentEntry']) || docEntry}</Text>
+                <Text style={[styles.assemblySubtitle, { color: colors.primary }]}>
+                  <MaterialIcons name="build" size={18} color={colors.primary} /> Assembly {getValue(incident, ['AssemblyName', 'Assembly']) || '-'}
+                </Text>
+              </View>
+              <IncidentStatusBadge value={getValue(incident, ['Status', 'Decision', 'ApprovalStatus'])} />
+            </View>
+            <Divider style={styles.listDetailDivider} />
+            <View style={styles.infoRow}>
+              <MaterialIcons name="category" size={20} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Assembly code:</Text>
+              <Text style={[styles.infoValue, { color: colors.dark }]}>{getValue(incident, ['Assembly', 'AssemblyCode']) || '-'}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <MaterialIcons name="event" size={20} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Date & time:</Text>
+              <Text style={[styles.infoValue, { color: colors.dark }]}>
+                {incidentDateTime}
+              </Text>
+            </View>
+            <View style={styles.infoRow}>
+              <MaterialIcons name="location-city" size={20} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Depot:</Text>
+              <Text style={[styles.infoValue, { color: colors.dark }]}>{getValue(incident, ['Depot', 'DepotName']) || '-'}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <MaterialIcons name="person" size={20} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Store person:</Text>
+              <Text style={[styles.infoValue, { color: colors.dark }]}>{getValue(incident, ['StorePerson', 'StorePersonID']) || '-'}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <MaterialIcons name="supervisor-account" size={20} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Supervisor:</Text>
+              <Text style={[styles.infoValue, { color: colors.dark }]}>{getValue(incident, ['SupervisorName', 'SupName', 'LastSupervisorName']) || '-'}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <MaterialIcons name="assignment-turned-in" size={20} color={colors.gray} />
+              <Text style={[styles.infoLabel, { color: colors.gray }]}>Response:</Text>
+              {getValue(incident, ['SupervisorResponse', 'SpvResp'])
+                ? <IncidentStatusBadge value={getValue(incident, ['SupervisorResponse', 'SpvResp'])} />
+                : <Text style={[styles.infoValue, { color: colors.dark }]}>-</Text>}
+            </View>
+            {jobCardEntry ? (
+              <View style={styles.infoRow}>
+                <MaterialIcons name="assignment" size={20} color={colors.gray} />
+                <Text style={[styles.infoLabel, { color: colors.gray }]}>Job card no:</Text>
+                <Text style={[styles.infoValue, { color: colors.dark, fontWeight: '700' }]}>{jobCardEntry}</Text>
+              </View>
+            ) : null}
+          </View>
+          <View style={[styles.listDetailCard, { backgroundColor: colors.white }]}>
+            <Text style={[styles.listDetailSectionTitle, { color: colors.dark }]}>
+              <MaterialIcons name="description" size={20} color={colors.dark} /> Incident Remarks
+            </Text>
+            <Text style={[styles.remarksText, { color: colors.dark }]}>{getValue(incident, ['Remarks', 'Description', 'IncidentDescription']) || '-'}</Text>
+            {getValue(incident, ['RejectRemarks', 'RejectRmk']) ? (
+              <Text style={[styles.remarksText, { color: colors.gray, marginTop: SPACING.sm }]}>Response remarks: {getValue(incident, ['RejectRemarks', 'RejectRmk'])}</Text>
+            ) : null}
+          </View>
+          {jobCardEntry ? (
+            <View style={[styles.listDetailCard, { backgroundColor: colors.white }]}>
+              <Text style={[styles.listDetailSectionTitle, { color: colors.dark }]}>
+                <MaterialIcons name="assignment" size={20} color={colors.dark} /> Job Card
+              </Text>
+              <Text style={[styles.remarksText, { color: colors.dark, marginBottom: SPACING.sm }]}>Job Card #{jobCardEntry}</Text>
+              <Button
+                mode="contained"
+                icon="open-in-new"
+                onPress={() => navigation.navigate('RepairJobCardDetails', {
+                  jobCardEntry,
+                  dbName,
+                })}
+              >
+                Open Job Card
+              </Button>
+            </View>
+          ) : null}
+        </>
       ) : (
         <View style={[styles.details, { backgroundColor: colors.card || colors.white }]}>
           <Text style={[styles.detail, { color: colors.dark }]}>Incident: A-{getValue(incident, ['DocEntry', 'IncidentEntry']) || docEntry}</Text>
           <Text style={[styles.detail, { color: colors.dark }]}>Assembly: {getValue(incident, ['AssemblyName', 'Assembly']) || '-'}</Text>
           <Text style={[styles.detail, { color: colors.dark }]}>Assembly code: {getValue(incident, ['Assembly', 'AssemblyCode']) || '-'}</Text>
+          <Text style={[styles.detail, { color: colors.dark }]}>Date & time: {incidentDateTime}</Text>
+          <Text style={[styles.detail, { color: colors.dark }]}>Depot: {getValue(incident, ['Depot', 'DepotName']) || '-'}</Text>
           <Text style={[styles.detail, { color: colors.dark }]}>Store person: {getValue(incident, ['StorePerson', 'StorePersonID']) || '-'}</Text>
-          <Text style={[styles.detail, { color: colors.dark }]}>Status: {getValue(incident, ['Status', 'Decision']) || 'Pending'}</Text>
+          <View style={styles.statusInfoRow}>
+            <Text style={[styles.detail, { color: colors.dark }]}>Status:</Text>
+            <IncidentStatusBadge value={getValue(incident, ['Status', 'Decision', 'ApprovalStatus'])} />
+          </View>
+          <Text style={[styles.detail, { color: colors.dark }]}>Supervisor: {getValue(incident, ['SupervisorName', 'SupName', 'LastSupervisorName']) || '-'}</Text>
+          <View style={styles.statusInfoRow}>
+            <Text style={[styles.detail, { color: colors.dark }]}>Supervisor response:</Text>
+            {getValue(incident, ['SupervisorResponse', 'SpvResp'])
+              ? <IncidentStatusBadge value={getValue(incident, ['SupervisorResponse', 'SpvResp'])} />
+              : <Text style={[styles.detail, { color: colors.dark }]}>-</Text>}
+          </View>
           <Text style={[styles.detail, { color: colors.dark }]}>Remarks: {getValue(incident, ['Remarks', 'Description', 'IncidentDescription']) || '-'}</Text>
+          {jobCardEntry ? <Text style={[styles.detail, { color: colors.dark }]}>Job card: {jobCardEntry}</Text> : null}
         </View>
       )}
-      {!jobCardEntry && (
+      {!readOnlyDetail && !jobCardEntry && (
         <TextInput
           mode="outlined"
           label="Response remarks"
@@ -328,14 +474,14 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
           style={styles.input}
         />
       )}
-      {isAccepted && !jobCardEntry && (
+      {!readOnlyDetail && isAccepted && !jobCardEntry && (
         <View style={[styles.workflowSection, { borderColor: colors.border || COLORS.border }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>Repair job card</Text>
           <TextInput mode="outlined" label="Job card remarks" value={jobCardRemarks} onChangeText={setJobCardRemarks} multiline style={styles.input} />
           <Button mode="contained" onPress={createJobCard} loading={creatingJobCard} disabled={creatingJobCard}>Create Job Card</Button>
         </View>
       )}
-      {!!jobCardEntry && (
+      {!readOnlyDetail && !!jobCardEntry && (
         <View style={[styles.workflowSection, { borderColor: colors.border || COLORS.border }]}>
           <Text style={[styles.sectionTitle, { color: colors.dark }]}>Job Card #{jobCardEntry}</Text>
           <ModalSelector
@@ -351,18 +497,10 @@ const RepairIncidentReviewScreen = ({ route, navigation }) => {
           <TouchableOpacity activeOpacity={0.8} onPress={loadMechanics} style={styles.mechanicSelector}>
             <TextInput mode="outlined" editable={false} pointerEvents="none" value={selectedMechanics.map(item => item?.EmpName || item?.EmployeeName || item?.Name || item?.EmpID).join(', ')} placeholder="Select mechanic" right={<TextInput.Icon icon="chevron-down" />} style={styles.input} />
           </TouchableOpacity>
-          <View style={styles.imageActions}>
-            <Button mode="outlined" onPress={pickImages} icon="image-multiple" style={styles.imageButton}>
-              {images.length ? `${images.length} image(s) selected` : 'Add assembly images'}
-            </Button>
-            <Button mode="outlined" onPress={captureImage} icon="camera" style={styles.captureButton}>
-              Capture
-            </Button>
-          </View>
           <Button mode="contained" onPress={updateJobCard} loading={updatingJobCard} disabled={updatingJobCard} style={styles.button}>Assign Mechanic and Update</Button>
         </View>
       )}
-      {!isAccepted && (
+      {!readOnlyDetail && !isAccepted && (
         <View style={styles.actions}>
           <Button mode="outlined" onPress={() => handleResponse('R')} loading={responding} disabled={responding || !incident} textColor={colors.danger || COLORS.danger}>
             Reject
@@ -381,14 +519,25 @@ const styles = StyleSheet.create({
   content: { padding: SPACING.lg },
   title: { fontSize: 24, fontWeight: '700', marginBottom: SPACING.lg },
   details: { padding: SPACING.md, borderRadius: 8, marginBottom: SPACING.lg },
+  listDetailCard: { marginBottom: SPACING.md, padding: SPACING.md, borderRadius: 8, elevation: 2 },
+  listDetailHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: SPACING.sm },
+  listDetailHeading: { flex: 1, marginRight: SPACING.sm },
+  incidentNumber: { fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  assemblySubtitle: { fontSize: 15, fontWeight: '600' },
+  incidentStatus: { paddingHorizontal: SPACING.sm, paddingVertical: 4, borderRadius: 12, alignSelf: 'flex-start' },
+  incidentStatusText: { fontSize: 12, fontWeight: '700' },
+  statusInfoRow: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
+  listDetailDivider: { marginVertical: SPACING.sm },
+  infoRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.sm },
+  infoLabel: { fontSize: 13, marginLeft: SPACING.sm, width: 102 },
+  infoValue: { flex: 1, flexShrink: 1, fontSize: 14, fontWeight: '600' },
+  listDetailSectionTitle: { fontSize: 17, fontWeight: '700', marginBottom: SPACING.sm },
+  remarksText: { fontSize: 15, lineHeight: 22 },
   detail: { fontSize: 15, marginBottom: SPACING.sm },
   empty: { marginBottom: SPACING.lg },
   input: { marginBottom: SPACING.lg, backgroundColor: 'transparent' },
   actions: { flexDirection: 'row', justifyContent: 'space-between', gap: SPACING.md },
   mechanicSelector: { marginBottom: SPACING.md },
-  imageActions: { flexDirection: 'row', alignItems: 'center', marginTop: SPACING.xs, marginBottom: SPACING.sm },
-  imageButton: { flex: 1, marginRight: SPACING.sm },
-  captureButton: { flex: 0 },
   workflowSection: { borderWidth: 1, borderRadius: 8, padding: SPACING.md, marginBottom: SPACING.lg },
   sectionTitle: { fontSize: 17, fontWeight: '700', marginBottom: SPACING.md },
 });

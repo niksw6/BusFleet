@@ -8,6 +8,7 @@ import {
   Modal,
   ScrollView,
   Clipboard,
+  Linking,
 } from 'react-native';
 import { Text, IconButton, ActivityIndicator } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
@@ -20,7 +21,7 @@ import { setNotifications, setUnreadCount, markAsRead, markAllAsRead } from '../
 import { dashboardService, complaintService, workEntryService, jobCardService, mechanicService, repairService } from '../../../api/services';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDateTime } from '../../../utils/helpers';
-import { isTeamLeaderUser, isMechanicUser, isFieldStaffUser, isSupervisorUser, isStoreUser } from '../../../utils/roleAccess';
+import { getLoginUserCode, isTeamLeaderUser, isMechanicUser, isFieldStaffUser, isSupervisorUser, isStoreUser } from '../../../utils/roleAccess';
 import { normalizeNotificationItem, ensureUniqueNotificationKeys } from '../../../utils/notificationUtils';
 
 const NotificationsScreen = ({ navigation }) => {
@@ -56,12 +57,22 @@ const NotificationsScreen = ({ navigation }) => {
     const isDiagnostic = /\[(?:WARN|ERROR)\]|\b(?:WARN(?:ING)?|ERROR)\b/i.test(entry);
     const isPostWithPayload = /\bPOST\s*\|\s*(?:SUCCESS|ERROR)\b/i.test(entry)
       && /\bPayload:\s*\S/i.test(entry);
-    return isDiagnostic || isPostWithPayload;
+    const isGetWithUrl = /\bGET\s*\|\s*(?:SUCCESS|ERROR)\b/i.test(entry)
+      && /^URL:\s*https?:\/\/\S+/mi.test(entry);
+    return isDiagnostic || isPostWithPayload || isGetWithUrl;
   });
 
   const copyLogEntry = (entry) => {
     Clipboard.setString(entry);
     Toast.show({ type: 'success', text1: 'Log entry copied' });
+  };
+
+  const openGetApiUrl = async (url) => {
+    try {
+      await Linking.openURL(url);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to open API link', text2: error?.message || 'Please try again.' });
+    }
   };
 
   useFocusEffect(
@@ -391,6 +402,9 @@ const NotificationsScreen = ({ navigation }) => {
       || notificationText.includes('receive assembly');
     const notificationTypeFields = [item?.NotificationType, item?.notificationType, item?.NotificationCode, item?.notificationCode]
       .map(value => String(value || '').trim().toUpperCase());
+    const isRepairJobCardDetailsNotification = rawNotificationType === 'JR'
+      || type === 'JR'
+      || notificationTypeFields.includes('JR');
     const isRepairAssemblyIssue = ['IR', 'IRA'].includes(rawNotificationType)
       || ['IR', 'IRA'].includes(type)
       || notificationTypeFields.some(value => ['IR', 'IRA'].includes(value))
@@ -419,6 +433,27 @@ const NotificationsScreen = ({ navigation }) => {
         && notificationText.includes('repair'))
       || isAssemblyWorkEntryRequest;
     const isTowNotification = rawNotificationType === 'TOW' || type === 'TOW';
+
+    if (isRepairJobCardDetailsNotification) {
+      const repairJobCardEntry = String(
+        item?.JobCardEntry
+        || item?.jobCardEntry
+        || item?.JobCardDocEntry
+        || item?.jobCardDocEntry
+        || item?.JobCardNo
+        || item?.jobCardNo
+        || jobCardReference
+        || docEntry
+        || '',
+      ).trim();
+      if (repairJobCardEntry) {
+        navigation.navigate('RepairJobCardDetails', {
+          jobCardEntry: repairJobCardEntry,
+          dbName: dbName || 'MUTSPL_TEST',
+        });
+      }
+      return;
+    }
 
     if (supervisorUser && isSpecialToolRequest) {
       navigation.navigate('RepairPartsRequests', {
@@ -1032,7 +1067,7 @@ const NotificationsScreen = ({ navigation }) => {
       const towResponse = await mechanicService.completeTow({
         CompanyDB: dbName || 'MUTSPL_TEST',
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        UserCode: user?.User || user?.user || user?.username || user?.Code || user?.code || '',
+          UserCode: getLoginUserCode(user),
         Remarks: 'Tow completed by supervisor after image capture.',
       });
 
@@ -1271,11 +1306,34 @@ const NotificationsScreen = ({ navigation }) => {
             {visibleDebugLogs.map((entry, i) => {
               const isError = /\[(?:ERROR)\]|\bERROR\b/i.test(entry);
               const isWarning = /\[(?:WARN)\]|\bWARN(?:ING)?\b/i.test(entry);
+              const isGetRequest = /\bGET\s*\|\s*(?:SUCCESS|ERROR)\b/i.test(entry);
+              const urlMatch = isGetRequest ? entry.match(/^URL:\s*(https?:\/\/\S+)/mi) : null;
+              const url = urlMatch?.[1] || '';
+              const urlLine = url ? `URL: ${url}` : '';
+              const urlIndex = url ? entry.indexOf(urlLine) : -1;
               return (
                 <View key={`${i}-${entry.slice(0, 32)}`} style={{ flexDirection: 'row', alignItems: 'flex-start', borderBottomWidth: 1, borderBottomColor: '#333', paddingVertical: 8 }}>
-                  <Text selectable style={{ flex: 1, color: isError ? '#ff6b6b' : isWarning ? '#ffd93d' : '#aaffaa', fontSize: 11, fontFamily: 'monospace', marginRight: 8 }}>
-                    {entry}
-                  </Text>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    {urlIndex >= 0 ? (
+                      <>
+                        <Text selectable style={{ color: isError ? '#ff6b6b' : isWarning ? '#ffd93d' : '#aaffaa', fontSize: 11, fontFamily: 'monospace' }}>
+                          {entry.slice(0, urlIndex)}
+                        </Text>
+                        <TouchableOpacity onPress={() => openGetApiUrl(url)} accessibilityRole="link" accessibilityLabel={`Open GET response for ${url}`}>
+                          <Text selectable style={{ color: '#61dafb', fontSize: 11, fontFamily: 'monospace', textDecorationLine: 'underline' }}>{urlLine}</Text>
+                        </TouchableOpacity>
+                        {entry.slice(urlIndex + urlLine.length) ? (
+                          <Text selectable style={{ color: isError ? '#ff6b6b' : isWarning ? '#ffd93d' : '#aaffaa', fontSize: 11, fontFamily: 'monospace' }}>
+                            {entry.slice(urlIndex + urlLine.length)}
+                          </Text>
+                        ) : null}
+                      </>
+                    ) : (
+                      <Text selectable style={{ color: isError ? '#ff6b6b' : isWarning ? '#ffd93d' : '#aaffaa', fontSize: 11, fontFamily: 'monospace' }}>
+                        {entry}
+                      </Text>
+                    )}
+                  </View>
                   <TouchableOpacity
                     onPress={() => copyLogEntry(entry)}
                     accessibilityRole="button"

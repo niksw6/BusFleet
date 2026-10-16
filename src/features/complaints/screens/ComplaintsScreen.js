@@ -104,23 +104,21 @@ const matchesDriverIncident = (incident, driverIdentity, driverDisplayName) => {
   return Boolean(codeMatch || nameMatch);
 };
 
-// Store users must only see repair incidents assigned to their own StorePerson
-// identity. Unlike driver rows, an absent store identity is not considered a
-// match: showing the depot-wide fallback would expose other store users' work.
+// Store users only see repair incidents created by their own StorePerson identity.
 const matchesStoreIncident = (incident, storeIdentity, storeDisplayName) => {
   const codeCandidates = [
     incident?.StorePersonID,
     incident?.StorePerson,
-    incident?.StoreCode,
     incident?.StoreUserCode,
-    incident?.AssignedStoreCode,
-    incident?.StoreManagerCode,
+    incident?.CreatedByCode,
+    incident?.CreatedBy,
+    incident?.UserCode,
+    incident?.User,
   ].map(normalizeIdentity).filter(Boolean);
   const nameCandidates = [
     incident?.StorePersonName,
-    incident?.StoreManager,
-    incident?.StoreName,
-    incident?.AssignedStoreName,
+    incident?.CreatedByName,
+    incident?.UserName,
   ].map(normalizeIdentity).filter(Boolean);
 
   return Boolean(
@@ -193,7 +191,9 @@ const ComplaintsScreen = ({ navigation, route }) => {
   const [dataType, setDataType] = useState(normalizeDataType(route.params?.type));
   const [typeMenuVisible, setTypeMenuVisible] = useState(false);
 
-  const typeOptions = [
+  const typeOptions = storeUser ? [
+    { key: 'assembly', label: 'Assembly' },
+  ] : [
     { key: 'all', label: 'All Incidents' },
     { key: 'complaints', label: 'Driver Complaints' },
     { key: 'breakdowns', label: 'Breakdown' },
@@ -201,7 +201,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
     { key: 'preventive', label: 'Preventive Maintenance' },
   ];
 
-  const selectedTypeLabel = typeOptions.find(option => option.key === dataType)?.label || 'All Incidents';
+  const selectedTypeLabel = storeUser ? 'Assembly' : typeOptions.find(option => option.key === dataType)?.label || 'All Incidents';
 
   useEffect(() => {
     fetchComplaints();
@@ -235,15 +235,10 @@ const ComplaintsScreen = ({ navigation, route }) => {
       const shouldFetchSchedulers = !driverUser && !storeUser;
 
       const [incidentsResponse, repairIncidentsResponse, serviceSchedulersResponse] = await Promise.all([
-        complaintService.getIncidents(
-          companyDb,
-          null,
-          null,
-          depot,
-        ),
-        // GetRepairIncident is detail-based. The Assembly filter is backed by
-        // the repair incident supplied for DocEntry 2.
-        repairService.getRepairIncident(companyDb, 2).catch((repairError) => {
+        storeUser
+          ? Promise.resolve({ Success: true, Data: [] })
+          : complaintService.getIncidents(companyDb, null, null, depot),
+        repairService.getRepairIncidents(companyDb).catch((repairError) => {
           console.warn('Unable to load repair incidents:', repairError?.message || repairError);
           return { Success: false, Data: [] };
         }),
@@ -273,15 +268,15 @@ const ComplaintsScreen = ({ navigation, route }) => {
 
       const normalizedRepairIncidents = extractRows(repairIncidentsResponse)
         .map((item) => {
-          const repairDocEntry = item?.DocEntry || item?.RepairIncidentDocEntry || item?.IncidentDocEntry || item?.DocNum || '';
+          const repairDocEntry = item?.DocEntry || item?.RepairIncidentDocEntry || item?.IncidentDocEntry || item?.IncidentNo || item?.IncidentNum || item?.DocNum || '';
           return {
             ...item,
             DocEntry: repairDocEntry,
             ComplaintNo: repairDocEntry,
             ComplaintType: 'Assembly',
-            ComplaintDate: item?.IncidentDate || item?.CreateDate || item?.CreateDt || item?.DocDate || item?.Date || '-',
-            ComplaintTime: item?.IncidentTime || item?.CreateTime || item?.CreateTm || item?.DocTime || item?.Time || '',
-            CreatedDate: item?.CreateDate || item?.CreateDt || item?.DocDate || item?.Date || '',
+            ComplaintDate: item?.IncidentDate || item?.CreateDate || item?.CreatedDate || item?.CreateDt || item?.DocDate || item?.Date || '-',
+            ComplaintTime: item?.IncidentTime || item?.CreateTime || item?.CreatedTime || item?.CreateTm || item?.DocTime || item?.Time || '',
+            CreatedDate: item?.CreateDate || item?.CreatedDate || item?.CreateDt || item?.DocDate || item?.Date || '',
             BusNo: item?.BusNo || item?.Vehicle || item?.AssemblyName || item?.Assembly || '-',
             Priority: item?.Priority || 'Medium',
             Status: item?.Status || item?.IncidentStatus || 'O',
@@ -337,26 +332,27 @@ const ComplaintsScreen = ({ navigation, route }) => {
       filtered = [...complaints];
       filtered = filtered.filter((c) => matchesDriverIncident(c, driverIdentity, driverDisplayName));
     } else if (storeUser) {
-      const source = dataType === 'assembly' ? repairIncidents : complaints;
-      filtered = [...source].filter((c) => matchesStoreIncident(c, storeIdentity, storeDisplayName));
+      filtered = [...repairIncidents]
+        .filter(isAssemblyIncident)
+        .filter((c) => matchesStoreIncident(c, storeIdentity, storeDisplayName));
     } else {
       filtered = dataType === 'assembly'
         ? [...repairIncidents]
         : dataType === 'preventive'
         ? [...preventiveMaintenances]
-        : [...complaints, ...preventiveMaintenances];
+        : [...complaints, ...preventiveMaintenances, ...repairIncidents];
     }
 
-    if (dataType === 'breakdowns') {
+    if (!storeUser && dataType === 'breakdowns') {
       filtered = filtered.filter(c => String(c.ComplaintType || '').toLowerCase().includes('breakdown'));
-    } else if (dataType === 'preventive') {
+    } else if (!storeUser && dataType === 'preventive') {
       filtered = filtered.filter(c => String(c.ComplaintType || '').toLowerCase().includes('preventive'));
-    } else if (dataType === 'complaints') {
+    } else if (!storeUser && dataType === 'complaints') {
       filtered = filtered.filter(c => {
         const complaintType = String(c.ComplaintType || '').toLowerCase();
         return complaintType === 'driver complaints' || complaintType.includes('driver complaint');
       });
-    } else if (dataType === 'assembly') {
+    } else if (!storeUser && dataType === 'assembly') {
       filtered = filtered.filter(isAssemblyIncident);
     }
 
@@ -406,6 +402,7 @@ const ComplaintsScreen = ({ navigation, route }) => {
             navigation.navigate('RepairIncidentReview', {
               docEntry: item.DocEntry,
               dbName: dbName || 'MUTSPL_TEST',
+              readOnlyDetail: true,
             });
             return;
           }
@@ -475,10 +472,11 @@ const ComplaintsScreen = ({ navigation, route }) => {
       <ScreenHeader
         title={driverUser || storeUser ? 'My Incidents' : 'Incidents'}
         subtitle={`${filteredComplaints.length} ${
-          dataType === 'breakdowns' ? 'Breakdown' : 
+          storeUser ? 'Assembly' :
+          dataType === 'breakdowns' ? 'Breakdown' :
           dataType === 'preventive' ? 'Preventive Maintenance' :
           dataType === 'assembly' ? 'Assembly' :
-          dataType === 'complaints' ? 'Complaint' : 
+          dataType === 'complaints' ? 'Complaint' :
           'Incident'
         }${filteredComplaints.length !== 1 ? 's' : ''}`}
         onMenuPress={() => navigation.openDrawer()}

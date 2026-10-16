@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Image, Modal, ScrollView, StyleSheet, TextInput as RNTextInput, TouchableOpacity, View } from 'react-native';
-import { Button, Card, RadioButton, Text, TextInput } from 'react-native-paper';
+import { Image, Modal, RefreshControl, ScrollView, StyleSheet, TextInput as RNTextInput, TouchableOpacity, View } from 'react-native';
+import { Button, Card, Divider, RadioButton, Text, TextInput } from 'react-native-paper';
 import { useSelector } from 'react-redux';
 import Toast from 'react-native-toast-message';
 import MaterialIcons from '../../../components/AppIcon.js';
@@ -10,6 +10,7 @@ import { masterService, repairService, storeService, workEntryService } from '..
 import ModalSelector from '../../../shared/components/ModalSelector';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
 import { API_BASE_URL } from '../../../constants/config';
+import { getLoginUserCode } from '../../../utils/roleAccess';
 
 const isSuccess = (response) => (
   !Object.prototype.hasOwnProperty.call(response || {}, 'Success')
@@ -41,12 +42,31 @@ const extractRows = (response) => {
   return [];
 };
 
+const getRepairJobCardRecord = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data[0] || null;
+  if (!data || typeof data !== 'object') return null;
+  for (const key of ['Data', 'data', 'JobCard', 'JobCardDetails', 'RepairJobCard', 'Result']) {
+    if (data[key]) return getRepairJobCardRecord(data[key]);
+  }
+  return data;
+};
+
+const getRepairJobCardValue = (jobCard, keys) => {
+  for (const key of keys) {
+    const value = jobCard?.[key];
+    if (value !== undefined && value !== null && String(value).trim()) return value;
+  }
+  return '';
+};
+
 const normalizePart = (part) => ({
   ...part,
   ItemCode: String(part?.ItemCode || part?.Itemcode || part?.ComponentCode || part?.PartCode || part?.Code || part?.Item || part?.ItemNo || ''),
   ItemName: String(part?.ItemName || part?.Itemname || part?.ComponentName || part?.PartName || part?.Name || part?.Dscription || part?.Description || part?.ItemDescription || ''),
   ReceivedQty: Math.max(Number(part?.ReceivedQty ?? 0) || 0, Number(part?.RecQty ?? 0) || 0),
   ReturnedQty: Math.max(Number(part?.ReturnedQty ?? 0) || 0, Number(part?.ReturnQty ?? part?.RetQty ?? 0) || 0),
+  isNew: part?.isNew === true,
 });
 
 const normalizeWorkImage = (image) => {
@@ -77,7 +97,7 @@ const RepairWorkScreen = ({ route }) => {
   const jobCardNo = route.params?.jobCardNo || route.params?.JobCardNo || jobCardEntry;
   const assemblyCode = route.params?.assemblyCode || route.params?.AssemblyCode || route.params?.Assembly || '';
   const configuredAssemblyCode = assemblyCode || '100306470';
-  const userCode = user?.User || user?.UserCode || user?.Code || user?.code || '';
+  const userCode = getLoginUserCode(user);
   const empId = Number(
     user?.EmpID
     || user?.EmployeeID
@@ -92,10 +112,13 @@ const RepairWorkScreen = ({ route }) => {
   const [displayJobCard, setDisplayJobCard] = useState(String(jobCardEntry || ''));
   const [displayWorkEntry, setDisplayWorkEntry] = useState(String(route.params?.workEntryDocEntry || ''));
   const [displayJobCardStatus, setDisplayJobCardStatus] = useState('');
+  const [jobCardDetails, setJobCardDetails] = useState(null);
   const [entryLoading, setEntryLoading] = useState(!route.params?.workEntryDocEntry);
+  const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState('W');
   const [remarks, setRemarks] = useState('');
+  const [savedRemarks, setSavedRemarks] = useState('');
   const [workDetails, setWorkDetails] = useState([]);
   const [images, setImages] = useState([]);
   const [beforeImageDrafts, setBeforeImageDrafts] = useState([]);
@@ -127,6 +150,26 @@ const RepairWorkScreen = ({ route }) => {
   const hasBeforeImage = images.some(image => image?.Phase === 'BF');
   const hasAfterImage = images.some(image => image?.Phase === 'AF');
   const canCompleteRepair = Boolean(workEntryDocEntry) && Boolean(remarks.trim()) && hasBeforeImage && hasAfterImage;
+  const hasUnsavedChanges = workDetails.some(detail => detail.isNew)
+    || parts.some(part => part.isNew)
+    || images.some(image => image.isDraft)
+    || remarks !== savedRemarks;
+
+  const loadRepairJobCard = useCallback(async () => {
+    if (!jobCardEntry) return;
+    try {
+      const response = await repairService.getRepairJobCard(dbName, jobCardEntry);
+      const record = getRepairJobCardRecord(response);
+      if (!record) return;
+      setJobCardDetails(record);
+      setDisplayJobCard(String(getRepairJobCardValue(record, ['DocNum', 'JobCardNo', 'JobCardNumber', 'DocEntry', 'JobCardEntry']) || jobCardEntry));
+      setDisplayJobCardStatus(String(getRepairJobCardValue(record, ['JobCardStatus', 'Status', 'AssemblyStatus']) || ''));
+    } catch (error) {
+      console.warn('[RepairWork] Repair job card details unavailable:', error?.message || error);
+    }
+  }, [dbName, jobCardEntry]);
+
+  useEffect(() => { loadRepairJobCard(); }, [loadRepairJobCard]);
 
   const getPartStatus = (part) => String(
     part?.Status || part?.PartStatus || part?.RequestStatus || part?.IssueStatus || '',
@@ -218,10 +261,25 @@ const RepairWorkScreen = ({ route }) => {
 
   const handleStartWork = async () => {
     if (workEntryLocked) return;
+    if (!jobCardEntry || !userCode) {
+      Toast.show({ type: 'error', text1: 'Unable to start repair work', text2: 'Job card or mechanic user code is missing.' });
+      return;
+    }
     setSubmitting(true);
-    const entry = await createWorkEntry();
-    setSubmitting(false);
-    if (entry) Toast.show({ type: 'success', text1: 'Repair work started', text2: 'Add work details and a before image to save progress.' });
+    try {
+      const response = await repairService.startRepairWork({
+        CompanyDB: dbName,
+        JobCardEntry: Number(jobCardEntry) || jobCardEntry,
+        UserCode: userCode,
+      });
+      if (!isSuccess(response)) throw new Error(response?.Message || 'Start repair work request failed.');
+      const entry = await createWorkEntry();
+      if (entry) Toast.show({ type: 'success', text1: 'Repair work started', text2: 'Add work details and a before image to save progress.' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to start repair work', text2: error?.message || 'Please try again.' });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const loadRepairPartStatuses = useCallback(async () => {
@@ -298,18 +356,47 @@ const RepairWorkScreen = ({ route }) => {
     setActiveModal('detail');
   };
 
-  const saveDetailDraft = () => {
+  const saveDetailDraft = async () => {
     if (!detailDraft.WorkType?.trim() || !detailDraft.Description?.trim() || !detailDraft.Remarks?.trim()) {
       Toast.show({ type: 'error', text1: 'Complete all work detail fields' });
       return;
     }
-    setWorkDetails(previous => {
-      const exists = previous.some(detail => detail.LineId === detailDraft.LineId);
-      return exists
-        ? previous.map(detail => detail.LineId === detailDraft.LineId ? detailDraft : detail)
-        : [...previous, detailDraft];
-    });
-    setActiveModal(null);
+    if (!workEntryDocEntry) {
+      Toast.show({ type: 'info', text1: 'Start repair work first', text2: 'Create the work entry before saving work details.' });
+      return;
+    }
+    if (!hasSavedWork && !images.some(image => image?.Phase === 'BF')) {
+      Toast.show({ type: 'info', text1: 'Before image required', text2: 'Add a before repair image before the first save.' });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const detailExists = workDetails.some(detail => detail.LineId === detailDraft.LineId);
+      const detailToSave = {
+        ...detailDraft,
+        LineId: 0,
+      };
+      const response = await repairService.updateRepairWorkEntry({
+        CompanyDB: dbName,
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: userCode,
+        Status: status,
+        WorkDetails: [detailToSave],
+      });
+      if (!isSuccess(response)) throw new Error(response?.Message || 'Work detail could not be saved.');
+
+      setWorkDetails(previous => detailExists
+        ? previous.map(detail => detail.LineId === detailDraft.LineId ? { ...detailDraft, isNew: false } : detail)
+        : [...previous, { ...detailDraft, isNew: false }]);
+      setHasSavedWork(true);
+      setActiveModal(null);
+      Toast.show({ type: 'success', text1: 'Work detail saved' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to save work detail', text2: error?.message || 'Please try again.' });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const resolveLoggedInMechanicId = async () => {
@@ -362,11 +449,13 @@ const RepairWorkScreen = ({ route }) => {
       if (existingEntryId) setWorkEntryDocEntry(existingEntryId);
       setDisplayJobCard(String(jobCardNo || matchingEntry?.JobCard || '-'));
       setDisplayWorkEntry(String(matchingEntry?.DocNum ?? existingEntryId ?? '-'));
-      setDisplayJobCardStatus(String(matchingEntry?.JobCardStatus || matchingEntry?.Status || '').trim());
       setStatus(matchingEntry?.Status || 'W');
       setRemarks(matchingEntry?.Remarks || '');
+      setSavedRemarks(matchingEntry?.Remarks || '');
       setHasSavedWork(true);
-      if (Array.isArray(matchingEntry?.WorkDetails)) setWorkDetails(matchingEntry.WorkDetails);
+      if (Array.isArray(matchingEntry?.WorkDetails)) {
+        setWorkDetails(matchingEntry.WorkDetails.map(detail => ({ ...detail, isNew: false })));
+      }
       if (Array.isArray(matchingEntry?.Parts)) setParts(matchingEntry.Parts.map(normalizePart));
       const dashboardImages = [
         ...(Array.isArray(matchingEntry?.Images) ? matchingEntry.Images : []),
@@ -393,6 +482,19 @@ const RepairWorkScreen = ({ route }) => {
   }, [dbName, empId, jobCardEntry, jobCardNo, route.params?.existingWorkEntry, userCode, workEntryDocEntry]);
 
   useEffect(() => { loadExistingWorkEntry(); }, [loadExistingWorkEntry]);
+
+  const refreshWorkEntry = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const refreshTasks = [loadRepairJobCard(), loadRepairPartStatuses()];
+      if (!hasUnsavedChanges) refreshTasks.push(loadExistingWorkEntry());
+      await Promise.all(refreshTasks);
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to refresh repair work', text2: error?.message || 'Please try again.' });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [hasUnsavedChanges, loadExistingWorkEntry, loadRepairJobCard, loadRepairPartStatuses]);
 
   useEffect(() => {
     let active = true;
@@ -432,7 +534,10 @@ const RepairWorkScreen = ({ route }) => {
         base64: false,
       });
       if (!result.canceled) {
-        setImages(previous => [...previous, ...(result.assets || []).slice(0, MAX_IMAGES_PER_PHASE - currentCount).map(image => ({ ...image, Phase: phase, isDraft: true }))]);
+        const selectedImages = (result.assets || []).slice(0, MAX_IMAGES_PER_PHASE - currentCount)
+          .map(image => ({ ...image, Phase: phase, isDraft: true }));
+        if (phase === 'BF') await persistBeforeRepairImages(selectedImages);
+        else setImages(previous => [...previous, ...selectedImages]);
         setActiveModal(null);
       }
     } catch (error) {
@@ -463,7 +568,10 @@ const RepairWorkScreen = ({ route }) => {
         base64: false,
       });
       if (!result.canceled) {
-        setImages(previous => [...previous, ...(result.assets || []).slice(0, MAX_IMAGES_PER_PHASE - currentCount).map(image => ({ ...image, Phase: phase, isDraft: true }))]);
+        const capturedImages = (result.assets || []).slice(0, MAX_IMAGES_PER_PHASE - currentCount)
+          .map(image => ({ ...image, Phase: phase, isDraft: true }));
+        if (phase === 'BF') await persistBeforeRepairImages(capturedImages);
+        else setImages(previous => [...previous, ...capturedImages]);
         setActiveModal(null);
       }
     } catch (error) {
@@ -476,12 +584,44 @@ const RepairWorkScreen = ({ route }) => {
       Toast.show({ type: 'error', text1: 'Select a configured component first' });
       return;
     }
-    setParts(previous => [...previous, { ...componentDraft, ReqQty: Number(componentDraft.ReqQty) || 1 }]);
+    setParts(previous => [...previous, { ...componentDraft, ReqQty: Number(componentDraft.ReqQty) || 1, isNew: true }]);
     setComponentDraft({ ItemCode: '', ItemName: '', ReqQty: '1', Remarks: '' });
   };
 
-  const uploadRepairImages = async (entryDocEntry) => {
-    const drafts = images.filter(image => image?.isDraft && image?.uri);
+  const requestSelectedParts = async () => {
+    const selectedParts = parts.filter(part => part.isNew);
+    if (!workEntryDocEntry || selectedParts.length === 0) {
+      Toast.show({ type: 'info', text1: 'Select parts first', text2: 'Add at least one configured part before requesting.' });
+      return;
+    }
+    try {
+      setSubmitting(true);
+      const response = await repairService.updateRepairWorkEntry({
+        CompanyDB: dbName,
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: userCode,
+        Status: status || 'W',
+        PauseRmk: '',
+        Remarks: remarks || 'Repair work in progress',
+        Parts: selectedParts.map(({ isNew, ...part }) => ({
+          ...part,
+          ReqQty: Number(part.ReqQty) || 1,
+        })),
+      });
+      if (!isSuccess(response)) throw new Error(response?.Message || 'Selected parts could not be requested.');
+      setParts(previous => previous.map(part => part.isNew
+        ? { ...part, isNew: false, Status: 'RQ', RequestStatus: 'RQ' }
+        : part));
+      Toast.show({ type: 'success', text1: 'Selected parts requested', text2: 'Awaiting approval.' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to request selected parts', text2: error?.message || 'Please try again.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const uploadRepairImages = async (entryDocEntry, sourceImages = images) => {
+    const drafts = sourceImages.filter(image => image?.isDraft && image?.uri);
     let uploadedNames = [];
     if (drafts.length > 0) {
       const response = await workEntryService.uploadImages(drafts.map(image => ({
@@ -497,7 +637,7 @@ const RepairWorkScreen = ({ route }) => {
       }
     }
 
-    const persistedImages = images.filter(image => !image?.isDraft).map((image, index) => ({
+    const persistedImages = sourceImages.filter(image => !image?.isDraft).map((image, index) => ({
       ...image,
       LineId: image?.LineId ?? index,
       WorkEntryEntry: Number(entryDocEntry) || entryDocEntry,
@@ -510,7 +650,7 @@ const RepairWorkScreen = ({ route }) => {
       WorkEntryEntry: Number(entryDocEntry) || entryDocEntry,
       ImgType: image?.Phase === 'AF' ? 'After Repair' : 'Before Repair',
       Phase: image?.Phase,
-      ImgNo: images.filter(saved => !saved?.isDraft && saved?.Phase === image?.Phase).length + index + 1,
+      ImgNo: sourceImages.filter(saved => !saved?.isDraft && saved?.Phase === image?.Phase).length + index + 1,
       ImgPath: uploadedNames[index],
       FileName: uploadedNames[index],
       Remarks: image?.Phase === 'AF' ? 'Assembly after repair.' : 'Assembly before repair.',
@@ -518,6 +658,46 @@ const RepairWorkScreen = ({ route }) => {
       isDraft: false,
     }));
     return [...persistedImages, ...newImages];
+  };
+
+  const persistBeforeRepairImages = async (newDrafts) => {
+    if (!workEntryDocEntry || newDrafts.length === 0) return;
+    const nextImages = [...images, ...newDrafts];
+    const beforeDraftUris = new Set(nextImages
+      .filter(image => image?.isDraft && image?.Phase === 'BF' && image?.uri)
+      .map(image => image.uri));
+    setImages(nextImages);
+    setSubmitting(true);
+    try {
+      const uploadSource = nextImages.filter(image => !image?.isDraft || image?.Phase === 'BF');
+      const uploadedImages = await uploadRepairImages(workEntryDocEntry, uploadSource);
+      const beforeImagesToSave = uploadedImages.filter(image => beforeDraftUris.has(image?.uri));
+      const response = await repairService.updateRepairWorkEntry({
+        CompanyDB: dbName,
+        WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+        UserCode: userCode,
+        Status: status,
+        Images: beforeImagesToSave,
+      });
+      if (!isSuccess(response)) throw new Error(response?.Message || 'Before repair images could not be saved.');
+
+      const savedBeforeImages = beforeImagesToSave.map(normalizeWorkImage);
+      setImages(previous => previous.map(image => (
+        beforeDraftUris.has(image?.uri)
+          ? savedBeforeImages.find(saved => saved.uri === image.uri) || image
+          : image
+      )));
+      setSavedImages(previous => [
+        ...previous.filter(image => !beforeDraftUris.has(image?.uri)),
+        ...savedBeforeImages,
+      ]);
+      setHasSavedWork(true);
+      Toast.show({ type: 'success', text1: 'Before repair image saved' });
+    } catch (error) {
+      Toast.show({ type: 'error', text1: 'Unable to save before repair image', text2: error?.message || 'Please try again.' });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const saveWork = async (nextStatus = status) => {
@@ -541,20 +721,27 @@ const RepairWorkScreen = ({ route }) => {
       if (nextStatus === 'C' && (!images.some(image => image?.Phase === 'BF') || !images.some(image => image?.Phase === 'AF'))) {
         throw new Error('Add both a before repair image and an after repair image before completing.');
       }
-      const uploadedImages = await uploadRepairImages(entryDocEntry);
+      const draftImageUris = new Set(images.filter(image => image?.isDraft && image?.uri).map(image => image.uri));
+      const uploadedImages = draftImageUris.size > 0
+        ? await uploadRepairImages(entryDocEntry)
+        : images;
+      const changedImages = uploadedImages.filter(image => draftImageUris.has(image?.uri));
+      const changedWorkDetails = workDetails
+        .filter(detail => detail.isNew && detail.Description?.trim())
+        .map(({ isNew, ...detail }) => ({ ...detail, LineId: 0 }));
+      const changedParts = parts
+        .filter(part => part.isNew)
+        .map(({ isNew, ...part }) => part);
       const payload = {
         CompanyDB: dbName,
         WorkEntryDocEntry: Number(entryDocEntry) || entryDocEntry,
         UserCode: userCode,
         Status: nextStatus,
-        Remarks: remarks,
-        // The repair API treats every submitted work detail as a new row and
-        // requires LineId zero for each one; local IDs remain distinct only
-        // for rendering and editing in this screen.
-        WorkDetails: workDetails.filter(detail => detail.Description.trim()).map(detail => ({ ...detail, LineId: 0 })),
-        Images: uploadedImages,
-        Parts: parts,
       };
+      if (remarks !== savedRemarks) payload.Remarks = remarks;
+      if (changedWorkDetails.length > 0) payload.WorkDetails = changedWorkDetails;
+      if (changedImages.length > 0) payload.Images = changedImages;
+      if (changedParts.length > 0) payload.Parts = changedParts;
       console.log('[RepairWork] POST UpdateRepairWorkEntry payload:', JSON.stringify(payload));
       const response = await repairService.updateRepairWorkEntry(payload);
       console.log('[RepairWork] UpdateRepairWorkEntry response:', JSON.stringify(response));
@@ -562,7 +749,11 @@ const RepairWorkScreen = ({ route }) => {
       setStatus(nextStatus);
       setImages(uploadedImages.map(normalizeWorkImage));
       setSavedImages(uploadedImages.map(normalizeWorkImage));
+      setWorkDetails(previous => previous.map(detail => detail.isNew ? { ...detail, isNew: false } : detail));
+      setParts(previous => previous.map(part => part.isNew ? { ...part, isNew: false } : part));
+      setSavedRemarks(remarks);
       setHasSavedWork(true);
+      if (nextStatus === 'C') await loadRepairJobCard();
       Toast.show({ type: 'success', text1: nextStatus === 'C' ? 'Repair submitted for review' : nextStatus === 'P' ? 'Repair work paused' : 'Repair work saved' });
     } catch (error) {
       console.error('[RepairWork] Save repair work failed:', error?.message || error);
@@ -729,11 +920,11 @@ const RepairWorkScreen = ({ route }) => {
     if (!workEntryDocEntry || !lineId) return;
     try {
       setSubmitting(true);
-      const response = await storeService.receiveSpecialTool({
+      const response = await repairService.receiveRepairSpecialTools({
         CompanyDB: dbName,
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        MechanicCode: userCode,
-        Tools: [{ LineId: lineId, ToolCode: tool?.ToolCode || tool?.Code }],
+        UserCode: userCode,
+        Tools: [{ LineId: lineId, Remarks: 'Received tool in good condition' }],
       });
       if (!isSuccess(response)) throw new Error(response?.Message || 'Unable to receive tool.');
       setTools(previous => previous.map(item => item === tool ? { ...item, Status: 'RC' } : item));
@@ -750,11 +941,13 @@ const RepairWorkScreen = ({ route }) => {
     if (!workEntryDocEntry || !lineId) return;
     try {
       setSubmitting(true);
-      const response = await storeService.returnSpecialTool({
+      const response = await repairService.updateRepairWorkEntry({
         CompanyDB: dbName,
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
-        MechanicCode: userCode,
-        Tools: [{ LineId: lineId, Remarks: tool?.Remarks || 'Returned in good condition' }],
+        UserCode: userCode,
+        Status: 'W',
+        Remarks: remarks || 'Repair work in progress',
+        SpecialToolReturns: [{ LineId: lineId, Remarks: tool?.Remarks || 'Tool returned in good condition' }],
       });
       if (!isSuccess(response)) throw new Error(response?.Message || 'Unable to return tool.');
       setTools(previous => previous.map(item => item === tool ? { ...item, Status: 'RT' } : item));
@@ -774,7 +967,13 @@ const RepairWorkScreen = ({ route }) => {
     }
     try {
       setSubmitting(true);
-      const receiveQty = Number(part?.ReceiveQty ?? part?.ReceivedQty ?? part?.Qty ?? part?.ReqQty ?? 1) || 1;
+      const issuedQty = Number(part?.IssuedQty ?? part?.IssueQty ?? part?.IssQty ?? part?.ReceiveQty ?? part?.Qty ?? part?.ReqQty ?? 1) || 1;
+      const receivedQty = Number(part?.ReceivedQty ?? part?.RecQty ?? 0) || 0;
+      const receiveQty = Math.max(issuedQty - receivedQty, 0);
+      if (receiveQty <= 0) {
+        Toast.show({ type: 'info', text1: 'Part already received' });
+        return;
+      }
       const response = await repairService.receiveRepairPart({
         CompanyDB: dbName,
         JobCardEntry: Number(jobCardEntry) || jobCardEntry,
@@ -825,13 +1024,22 @@ const RepairWorkScreen = ({ route }) => {
 
   if (!workEntryDocEntry) {
     return (
-      <ScrollView style={[styles.container, { backgroundColor: colors.light }]} contentContainerStyle={styles.content}>
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.light }]}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshWorkEntry} />}
+      >
         <Text style={[styles.title, { color: colors.dark }]}>Repair Work Entry</Text>
         <Card style={styles.summary}>
           <Card.Content>
             <Text style={{ color: colors.dark }}>Job card: {displayJobCard || jobCardEntry || '-'}</Text>
             <Text style={{ color: colors.gray }}>Job card status: {displayJobCardStatus || '-'}</Text>
-            <Text style={{ color: colors.dark }}>Assembly: {route.params?.assemblyName || 'Assembly'}</Text>
+            <Text style={{ color: colors.dark }}>Assembly: {getRepairJobCardValue(jobCardDetails, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || route.params?.assemblyName || 'Assembly'}</Text>
+            <Text style={{ color: colors.gray }}>Assembly code: {getRepairJobCardValue(jobCardDetails, ['AssemblyCode', 'AssemblyNo', 'RepairAssemblyCode']) || assemblyCode || '-'}</Text>
+            <Text style={{ color: colors.gray }}>Incident: {getRepairJobCardValue(jobCardDetails, ['IncidentNum', 'IncidentEntry', 'IncidentDocEntry']) || route.params?.incidentEntry || '-'}</Text>
+            <Text style={{ color: colors.gray }}>Store person: {getRepairJobCardValue(jobCardDetails, ['StorePersonName', 'StorePerson', 'StorePersonID']) || route.params?.storePersonID || '-'}</Text>
+            <Text style={{ color: colors.gray }}>Supervisor: {getRepairJobCardValue(jobCardDetails, ['SupName', 'SupervisorName', 'Supervisor']) || '-'}</Text>
+            <Text style={{ color: colors.gray }}>Job card remarks: {getRepairJobCardValue(jobCardDetails, ['Remarks', 'Description']) || '-'}</Text>
             <Text style={{ color: colors.gray }}>Work entry: Not started</Text>
           </Card.Content>
         </Card>
@@ -841,7 +1049,7 @@ const RepairWorkScreen = ({ route }) => {
             <Text style={{ color: colors.gray, marginTop: SPACING.sm }}>
               Start the accepted repair job to create your work entry. You can then add work details, images, parts, and tools.
             </Text>
-            <Button mode="contained" icon="play" onPress={handleStartWork} loading={submitting} disabled={submitting} style={{ marginTop: SPACING.md }}>
+            <Button mode="contained" icon="play" onPress={handleStartWork} loading={submitting} disabled={submitting || workEntryLocked} style={{ marginTop: SPACING.md }}>
               Start Work
             </Button>
           </Card.Content>
@@ -851,37 +1059,52 @@ const RepairWorkScreen = ({ route }) => {
   }
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.light }]} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.light }]}
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshWorkEntry} />}
+    >
       <Text style={[styles.title, { color: colors.dark }]}>Repair Work Entry</Text>
       <Card style={styles.summary}>
         <Card.Content>
           <Text style={{ color: colors.dark }}>Job card: {displayJobCard || '-'}</Text>
           <Text style={{ color: colors.gray }}>Job card status: {displayJobCardStatus || '-'}</Text>
-          <Text style={{ color: colors.dark }}>Assembly: {route.params?.assemblyName || 'Assembly'}</Text>
+          <Text style={{ color: colors.dark }}>Assembly: {getRepairJobCardValue(jobCardDetails, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || route.params?.assemblyName || 'Assembly'}</Text>
+          <Text style={{ color: colors.gray }}>Assembly code: {getRepairJobCardValue(jobCardDetails, ['AssemblyCode', 'AssemblyNo', 'RepairAssemblyCode']) || assemblyCode || '-'}</Text>
+          <Text style={{ color: colors.gray }}>Incident: {getRepairJobCardValue(jobCardDetails, ['IncidentNum', 'IncidentEntry', 'IncidentDocEntry']) || route.params?.incidentEntry || '-'}</Text>
+          <Text style={{ color: colors.gray }}>Store person: {getRepairJobCardValue(jobCardDetails, ['StorePersonName', 'StorePerson', 'StorePersonID']) || route.params?.storePersonID || '-'}</Text>
+          <Text style={{ color: colors.gray }}>Supervisor: {getRepairJobCardValue(jobCardDetails, ['SupName', 'SupervisorName', 'Supervisor']) || '-'}</Text>
+          <Text style={{ color: colors.gray }}>Assigned mechanic: {(Array.isArray(jobCardDetails?.Mechanics) ? jobCardDetails.Mechanics : []).map(mechanic => mechanic?.EmpName || mechanic?.MechanicName || mechanic?.UserCode || mechanic?.EmpCode).filter(Boolean).join(', ') || '-'}</Text>
+          <Text style={{ color: colors.gray }}>Job card remarks: {getRepairJobCardValue(jobCardDetails, ['Remarks', 'Description']) || '-'}</Text>
           <Text style={{ color: colors.gray }}>Work entry: {displayWorkEntry || 'Opening...'}</Text>
+          <Text style={{ color: colors.gray }}>Work entry status: {status === 'C' ? 'Completed, awaiting supervisor verification' : status === 'SV' ? 'Supervisor verified' : status || 'In progress'}</Text>
         </Card.Content>
       </Card>
 
       <Text style={[styles.sectionTitle, { color: colors.dark }]}>Work details</Text>
       {workDetails.map((detail, index) => (
-        <TouchableOpacity key={detail.LineId} activeOpacity={0.8} onPress={() => editWorkDetail(detail)}>
-          <Card style={styles.section}>
+        <TouchableOpacity key={detail.LineId} activeOpacity={0.8} onPress={() => editWorkDetail(detail)} disabled={workEntryLocked || !detail.isNew}>
+          <Card style={[styles.section, detail.isNew && { borderWidth: 1, borderColor: colors.primary }]}>
           <Card.Content>
-            <Text style={{ color: colors.dark, fontWeight: '700' }}>{detail.WorkType || 'Work detail'}</Text>
+            <View style={styles.workDetailHeader}>
+              <Text style={{ color: colors.dark, fontWeight: '700' }}>{detail.WorkType || 'Work detail'}</Text>
+              {detail.isNew ? <Text style={[styles.newDetailLabel, { color: colors.primary }]}>NEW - NOT SAVED</Text> : null}
+            </View>
             <Text style={{ color: colors.gray }}>{detail.Description || 'No description entered'}</Text>
             <Text style={{ color: colors.gray }}>{detail.Remarks || 'No remarks entered'}</Text>
           </Card.Content>
           </Card>
         </TouchableOpacity>
       ))}
-      <Button mode="outlined" onPress={addWorkDetail} disabled={submitting}>Add work detail</Button>
+      <Button mode="outlined" onPress={addWorkDetail} disabled={submitting || workEntryLocked}>Add work detail</Button>
 
       <Text style={[styles.sectionTitle, { color: colors.dark }]}>Before repair image (BF)</Text>
-      <Button mode="outlined" icon="camera" onPress={() => { setImagePhase('BF'); setActiveModal('images'); }} disabled={submitting}>Add before image</Button>
+      <Button mode="outlined" icon="camera" onPress={() => { setImagePhase('BF'); setActiveModal('images'); }} disabled={submitting || workEntryLocked}>Add before image</Button>
       <View style={styles.imageNameList}>{images.filter(image => image?.Phase === 'BF').map((image, index) => <TouchableOpacity key={`${image?.ImgPath || image?.name || index}`} onPress={() => showImage(image, 'Before repair image')}><Text style={[styles.imageName, { color: colors.primary }]}>{getImageName(image, 'Before repair image')}</Text></TouchableOpacity>)}</View>
 
-      <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts</Text>
-      <Button mode="outlined" icon="playlist-plus" onPress={() => setActiveModal('parts')} disabled={partsLoading || submitting}>Add or request part</Button>
+      <View style={[styles.sectionBox, { backgroundColor: colors.white, borderColor: colors.border || '#D7DEE5' }]}>
+        <Text style={[styles.sectionTitle, { color: colors.dark, marginTop: 0 }]}>Parts</Text>
+        <Button mode="outlined" icon="playlist-plus" onPress={() => setActiveModal('parts')} disabled={partsLoading || submitting || workEntryLocked}>Add or request part</Button>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.partsTableScroll}>
         <View style={styles.partsTable}>
           <View style={[styles.partsTableRow, styles.partsTableHeader, { borderColor: colors.border || '#E0E0E0' }]}>
@@ -908,8 +1131,8 @@ const RepairWorkScreen = ({ route }) => {
                 <Text style={[styles.partsTableCell, { color: colors.dark }]}>{returned}</Text>
                 <Text style={[styles.partsTableCell, { color: colors.gray }]}>{label}</Text>
                 <View style={styles.partsTableAction}>
-                  {canReceive ? <Button compact mode="outlined" onPress={() => receivePart(part)} disabled={submitting}>Receive</Button> : null}
-                  {canReturn ? <Button compact mode="outlined" onPress={() => openReturnPart(part)} disabled={submitting}>Return</Button> : null}
+                  {canReceive ? <Button compact mode="outlined" onPress={() => receivePart(part)} disabled={submitting || workEntryLocked}>Receive</Button> : null}
+                  {canReturn ? <Button compact mode="outlined" onPress={() => openReturnPart(part)} disabled={submitting || workEntryLocked}>Return</Button> : null}
                   {!canReceive && !canReturn ? <Text style={{ color: colors.gray }}>-</Text> : null}
                 </View>
               </View>
@@ -917,16 +1140,27 @@ const RepairWorkScreen = ({ route }) => {
           })}
         </View>
       </ScrollView>
+        <Button
+          mode="contained"
+          icon="playlist-check"
+          onPress={requestSelectedParts}
+          disabled={submitting || workEntryLocked || !workEntryDocEntry || !parts.some(part => part.isNew)}
+          style={{ marginTop: SPACING.sm }}
+        >
+          Request selected parts
+        </Button>
+      </View>
 
-      <Text style={[styles.sectionTitle, { color: colors.dark }]}>Special tools</Text>
-      <Button mode="outlined" icon="hammer-wrench" onPress={() => setShowToolsModal(true)} disabled={submitting}>Select special tool</Button>
+      <View style={[styles.sectionBox, { backgroundColor: colors.white, borderColor: colors.border || '#D7DEE5' }]}>
+      <Text style={[styles.sectionTitle, { color: colors.dark, marginTop: 0 }]}>Special tools</Text>
+      <Button mode="outlined" icon="hammer-wrench" onPress={() => setShowToolsModal(true)} disabled={submitting || workEntryLocked}>Select special tool</Button>
       {toolDrafts.length > 0 && (
         <View style={styles.toolDraftList}>
           {toolDrafts.map((tool, index) => (
             <View key={`${tool.ToolCode || tool.Code || 'tool'}-${index}`} style={[styles.toolDraftCard, { borderColor: colors.border || '#E0E0E0' }]}>
               <View style={styles.toolDraftHeader}>
                 <Text style={{ color: colors.dark, fontWeight: '700' }}>{tool.ToolName || tool.ToolCode || 'Tool'}</Text>
-                <TouchableOpacity onPress={() => setToolDrafts(previous => previous.filter((_, itemIndex) => itemIndex !== index))}>
+                <TouchableOpacity onPress={() => setToolDrafts(previous => previous.filter((_, itemIndex) => itemIndex !== index))} disabled={workEntryLocked}>
                   <MaterialIcons name="close" size={18} color="#BB0000" />
                 </TouchableOpacity>
               </View>
@@ -935,12 +1169,13 @@ const RepairWorkScreen = ({ route }) => {
                 label="Tool remarks"
                 value={tool.Remarks || ''}
                 onChangeText={value => setToolDrafts(previous => previous.map((item, itemIndex) => itemIndex === index ? { ...item, Remarks: value } : item))}
+                editable={!workEntryLocked}
                 multiline
                 style={styles.input}
               />
             </View>
           ))}
-          <Button mode="contained" onPress={requestTools} disabled={submitting}>Request selected tools</Button>
+          <Button mode="contained" onPress={requestTools} disabled={submitting || workEntryLocked}>Request selected tools</Button>
         </View>
       )}
       {tools.length > 0 && (
@@ -963,8 +1198,8 @@ const RepairWorkScreen = ({ route }) => {
                 <Text style={[styles.partsTableCell, { color: colors.dark }]}>{tool?.ToolCode || tool?.Code || '-'}</Text>
                 <Text style={[styles.partsTableCell, { color: colors.gray }]}>{statusLabel}</Text>
                 <View style={styles.toolTableAction}>
-                  {isIssued && !isReceived && !isReturned ? <Button compact mode="outlined" onPress={() => receiveTool(tool)} disabled={submitting}>Receive</Button> : null}
-                  {isReceived && !isReturned ? <Button compact mode="outlined" onPress={() => returnTool(tool)} disabled={submitting}>Return</Button> : null}
+                  {isIssued && !isReceived && !isReturned ? <Button compact mode="outlined" onPress={() => receiveTool(tool)} disabled={submitting || workEntryLocked}>Receive</Button> : null}
+                  {isReceived && !isReturned ? <Button compact mode="outlined" onPress={() => returnTool(tool)} disabled={submitting || workEntryLocked}>Return</Button> : null}
                   {!isIssued && !isReceived ? <Text style={{ color: colors.gray }}>-</Text> : null}
                 </View>
               </View>
@@ -973,21 +1208,17 @@ const RepairWorkScreen = ({ route }) => {
           </View>
         </ScrollView>
       )}
-
-      <View style={styles.buttonRow}>
-        <Button mode="contained" onPress={() => saveWork('W')} loading={submitting} disabled={submitting || !workEntryDocEntry} style={styles.workActionButton} contentStyle={styles.workActionContent}>
-          {workEntryDocEntry ? 'Update Repair work entry' : 'Create Repair Work Entry'}
-        </Button>
       </View>
 
+      <Divider style={[styles.remarksDivider, { backgroundColor: colors.border || '#D7DEE5' }]} />
       <Text style={[styles.sectionTitle, { color: colors.dark }]}>Repair remarks</Text>
-      <Button mode="outlined" icon="note-edit" onPress={() => setActiveModal('remarks')} disabled={submitting}>
+      <Button mode="outlined" icon="note-edit" onPress={() => setActiveModal('remarks')} disabled={submitting || workEntryLocked}>
         {remarks.trim() ? 'Edit repair remarks' : 'Add repair remarks'}
       </Button>
       {remarks.trim() ? <Text style={[styles.summaryText, { color: colors.gray }]}>{remarks}</Text> : null}
 
       <Text style={[styles.sectionTitle, { color: colors.dark }]}>After repair image (AF)</Text>
-      <Button mode="outlined" icon="camera" onPress={() => { if (!workEntryDocEntry) { Toast.show({ type: 'info', text1: 'Start repair work first', text2: 'Create the work entry before adding the after image.' }); return; } setImagePhase('AF'); setActiveModal('images'); }} disabled={submitting}>Add after image</Button>
+      <Button mode="outlined" icon="camera" onPress={() => { if (!workEntryDocEntry) { Toast.show({ type: 'info', text1: 'Start repair work first', text2: 'Create the work entry before adding the after image.' }); return; } setImagePhase('AF'); setActiveModal('images'); }} disabled={submitting || workEntryLocked}>Add after image</Button>
       <View style={styles.imageNameList}>{images.filter(image => image?.Phase === 'AF').map((image, index) => <TouchableOpacity key={`${image?.ImgPath || image?.name || index}`} onPress={() => showImage(image, 'After repair image')}><Text style={[styles.imageName, { color: colors.primary }]}>{getImageName(image, 'After repair image')}</Text></TouchableOpacity>)}</View>
 
       <Button
@@ -995,7 +1226,7 @@ const RepairWorkScreen = ({ route }) => {
         buttonColor={COLORS.success || '#007A5A'}
         onPress={() => saveWork('C')}
         loading={submitting}
-        disabled={submitting || !workEntryDocEntry || !remarks.trim() || !hasBeforeImage || !hasAfterImage}
+        disabled={submitting || workEntryLocked || !workEntryDocEntry || !remarks.trim() || !hasBeforeImage || !hasAfterImage}
         style={[styles.workActionButton, { marginTop: SPACING.md }]}
         contentStyle={styles.workActionContent}
       >
@@ -1007,12 +1238,12 @@ const RepairWorkScreen = ({ route }) => {
           <Card style={styles.modalCard}>
             <Card.Title title={detailDraft.LineId <= workDetails.length ? 'Edit work detail' : 'Add work detail'} />
             <Card.Content>
-              <TextInput mode="outlined" label="Work type" value={detailDraft.WorkType || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, WorkType: value }))} style={styles.input} />
-              <TextInput mode="outlined" label="Description" value={detailDraft.Description || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, Description: value }))} multiline style={styles.input} />
-              <TextInput mode="outlined" label="Remarks" value={detailDraft.Remarks || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, Remarks: value }))} multiline style={styles.input} />
+              <TextInput mode="outlined" label="Work type" value={detailDraft.WorkType || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, WorkType: value }))} editable={!workEntryLocked} style={styles.input} />
+              <TextInput mode="outlined" label="Description" value={detailDraft.Description || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, Description: value }))} editable={!workEntryLocked} multiline style={styles.input} />
+              <TextInput mode="outlined" label="Remarks" value={detailDraft.Remarks || ''} onChangeText={value => setDetailDraft(previous => ({ ...previous, Remarks: value }))} editable={!workEntryLocked} multiline style={styles.input} />
               <View style={styles.buttonRow}>
-                <Button onPress={() => setActiveModal(null)}>Cancel</Button>
-                <Button mode="contained" onPress={saveDetailDraft}>Save detail</Button>
+                <Button onPress={() => setActiveModal(null)} disabled={workEntryLocked}>Cancel</Button>
+                <Button mode="contained" onPress={saveDetailDraft} loading={submitting} disabled={submitting || workEntryLocked}>Save detail</Button>
               </View>
             </Card.Content>
           </Card>
@@ -1025,9 +1256,9 @@ const RepairWorkScreen = ({ route }) => {
             <Card.Title title="Add repair image" />
             <Card.Content>
               <Text style={{ color: colors.gray, marginBottom: SPACING.md }}>Choose how to add an image.</Text>
-              <Button mode="contained" icon="camera" onPress={() => captureImage(imagePhase)} disabled={submitting} style={styles.modalButton}>Capture {imagePhase === 'AF' ? 'after' : 'before'} image</Button>
-              <Button mode="outlined" icon="image-multiple" onPress={() => pickImages(imagePhase)} disabled={submitting} style={styles.modalButton}>Choose {imagePhase === 'AF' ? 'after' : 'before'} image</Button>
-              <Button onPress={() => setActiveModal(null)}>Cancel</Button>
+              <Button mode="contained" icon="camera" onPress={() => captureImage(imagePhase)} disabled={submitting || workEntryLocked} style={styles.modalButton}>Capture {imagePhase === 'AF' ? 'after' : 'before'} image</Button>
+              <Button mode="outlined" icon="image-multiple" onPress={() => pickImages(imagePhase)} disabled={submitting || workEntryLocked} style={styles.modalButton}>Choose {imagePhase === 'AF' ? 'after' : 'before'} image</Button>
+              <Button onPress={() => setActiveModal(null)} disabled={workEntryLocked}>Cancel</Button>
             </Card.Content>
           </Card>
         </View>
@@ -1038,7 +1269,7 @@ const RepairWorkScreen = ({ route }) => {
           <View style={styles.imagePreviewCard}>
             <Text style={[styles.imagePreviewTitle, { color: colors.dark }]}>{selectedImage?.name || 'Repair image'}</Text>
             {selectedImage?.uri ? <Image source={{ uri: selectedImage.uri }} style={styles.imagePreview} resizeMode="contain" /> : <Text style={{ color: colors.gray }}>Image preview unavailable.</Text>}
-            <Button onPress={() => setSelectedImage(null)}>Close</Button>
+              <Button onPress={() => setSelectedImage(null)}>Close</Button>
           </View>
         </TouchableOpacity>
       </Modal>
@@ -1048,35 +1279,35 @@ const RepairWorkScreen = ({ route }) => {
           <Card style={styles.modalCard}>
             <Card.Title title="Add or request part" />
             <Card.Content>
-              <RadioButton.Group onValueChange={value => setPartMode(value)} value={partMode}>
+              <RadioButton.Group onValueChange={value => { if (!workEntryLocked) setPartMode(value); }} value={partMode}>
                 <View style={styles.radioRow}>
-                  <View style={styles.radioOption}><RadioButton value="configured" /><Text>Configured component</Text></View>
-                  <View style={styles.radioOption}><RadioButton value="additional" /><Text>Additional item</Text></View>
+                  <View style={styles.radioOption}><RadioButton value="configured" disabled={workEntryLocked} /><Text>Configured component</Text></View>
+                  <View style={styles.radioOption}><RadioButton value="additional" disabled={workEntryLocked} /><Text>Additional item</Text></View>
                 </View>
               </RadioButton.Group>
               {partMode === 'configured' ? <>
-                <TouchableOpacity onPress={() => setShowComponentsModal(true)} disabled={partsLoading || submitting}>
+                <TouchableOpacity onPress={() => setShowComponentsModal(true)} disabled={partsLoading || submitting || workEntryLocked}>
                   <TextInput mode="outlined" label="Select configured component" value={componentDraft.ItemName ? `${componentDraft.ItemCode} - ${componentDraft.ItemName}` : ''} placeholder="Tap to select" editable={false} pointerEvents="none" right={<TextInput.Icon icon="chevron-down" />} style={styles.input} />
                 </TouchableOpacity>
-                <TextInput mode="outlined" label="Quantity" keyboardType="numeric" value={String(componentDraft.ReqQty)} onChangeText={value => setComponentDraft(previous => ({ ...previous, ReqQty: value }))} style={styles.input} />
-                <TextInput mode="outlined" label="Remarks" value={componentDraft.Remarks} onChangeText={value => setComponentDraft(previous => ({ ...previous, Remarks: value }))} multiline style={styles.input} />
-                <Button mode="contained" onPress={() => { addConfiguredComponent(); setActiveModal(null); }} disabled={partsLoading || submitting}>Add configured component</Button>
+                <TextInput mode="outlined" label="Quantity" keyboardType="numeric" value={String(componentDraft.ReqQty)} onChangeText={value => setComponentDraft(previous => ({ ...previous, ReqQty: value }))} editable={!workEntryLocked} style={styles.input} />
+                <TextInput mode="outlined" label="Remarks" value={componentDraft.Remarks} onChangeText={value => setComponentDraft(previous => ({ ...previous, Remarks: value }))} editable={!workEntryLocked} multiline style={styles.input} />
+                <Button mode="contained" onPress={() => { addConfiguredComponent(); setActiveModal(null); }} disabled={partsLoading || submitting || workEntryLocked}>Add configured component</Button>
               </> : <>
-                <TouchableOpacity onPress={() => setShowAdditionalPartsModal(true)} disabled={partsLoading || submitting}>
+                <TouchableOpacity onPress={() => setShowAdditionalPartsModal(true)} disabled={partsLoading || submitting || workEntryLocked}>
                   <TextInput mode="outlined" label="Select additional spare part" value={partDraft.ItemName ? `${partDraft.ItemCode} - ${partDraft.ItemName}` : ''} placeholder="Tap to select" editable={false} pointerEvents="none" right={<TextInput.Icon icon="chevron-down" />} style={styles.input} />
                 </TouchableOpacity>
-                <TextInput mode="outlined" label="Quantity" keyboardType="numeric" value={String(partDraft.ReqQty)} onChangeText={value => setPartDraft(previous => ({ ...previous, ReqQty: value }))} style={styles.input} />
-                <TextInput mode="outlined" label="Remarks" value={partDraft.Remarks} onChangeText={value => setPartDraft(previous => ({ ...previous, Remarks: value }))} multiline style={styles.input} />
-                <Button mode="contained" onPress={requestAdditionalPart} disabled={submitting}>Request additional part</Button>
+                <TextInput mode="outlined" label="Quantity" keyboardType="numeric" value={String(partDraft.ReqQty)} onChangeText={value => setPartDraft(previous => ({ ...previous, ReqQty: value }))} editable={!workEntryLocked} style={styles.input} />
+                <TextInput mode="outlined" label="Remarks" value={partDraft.Remarks} onChangeText={value => setPartDraft(previous => ({ ...previous, Remarks: value }))} editable={!workEntryLocked} multiline style={styles.input} />
+                <Button mode="contained" onPress={requestAdditionalPart} disabled={submitting || workEntryLocked}>Request additional part</Button>
               </>}
-              <Button onPress={() => setActiveModal(null)}>Cancel</Button>
+              <Button onPress={() => setActiveModal(null)} disabled={workEntryLocked}>Cancel</Button>
             </Card.Content>
           </Card>
         </View>
       </Modal>
 
       <ModalSelector
-        visible={showComponentsModal}
+        visible={showComponentsModal && !workEntryLocked}
         onClose={() => setShowComponentsModal(false)}
         onSelect={(value, item) => { const selectedPart = normalizePart(item || { ItemCode: value }); setComponentDraft(previous => ({ ...previous, ItemCode: selectedPart.ItemCode, ItemName: selectedPart.ItemName })); setShowComponentsModal(false); }}
         title="Select Configured Component"
@@ -1093,7 +1324,7 @@ const RepairWorkScreen = ({ route }) => {
         searchPlaceholder="Search configured components..."
       />
       <ModalSelector
-        visible={showAdditionalPartsModal}
+        visible={showAdditionalPartsModal && !workEntryLocked}
         onClose={() => setShowAdditionalPartsModal(false)}
         onSelect={(value, item) => { const selectedPart = normalizePart(item || { ItemCode: value }); setPartDraft(previous => ({ ...previous, ItemCode: selectedPart.ItemCode, ItemName: selectedPart.ItemName })); setShowAdditionalPartsModal(false); }}
         title="Select Additional Spare Part"
@@ -1114,7 +1345,7 @@ const RepairWorkScreen = ({ route }) => {
         }}
       />
       <ModalSelector
-        visible={showToolsModal}
+        visible={showToolsModal && !workEntryLocked}
         onClose={() => setShowToolsModal(false)}
         onSelect={(value, item) => {
           const selectedTool = { ...item, ToolCode: String(item?.ToolCode || item?.Code || value || '').trim(), ToolName: String(item?.ToolName || item?.Name || item?.Description || '').trim() };
@@ -1144,10 +1375,10 @@ const RepairWorkScreen = ({ route }) => {
           <Card style={styles.modalCard}>
             <Card.Title title="Repair remarks" />
             <Card.Content>
-              <TextInput mode="outlined" label="Remarks" value={remarks} onChangeText={setRemarks} multiline style={styles.input} />
+              <TextInput mode="outlined" label="Remarks" value={remarks} onChangeText={setRemarks} editable={!workEntryLocked} multiline style={styles.input} />
               <View style={styles.buttonRow}>
-                <Button onPress={() => setActiveModal(null)}>Cancel</Button>
-                <Button mode="contained" onPress={() => setActiveModal(null)}>Save remarks</Button>
+                <Button onPress={() => setActiveModal(null)} disabled={workEntryLocked}>Cancel</Button>
+                <Button mode="contained" onPress={() => setActiveModal(null)} disabled={workEntryLocked}>Save remarks</Button>
               </View>
             </Card.Content>
           </Card>
@@ -1165,6 +1396,7 @@ const RepairWorkScreen = ({ route }) => {
                 keyboardType="numeric"
                 value={returnPartsDraft?.ReturnQty || ''}
                 onChangeText={value => setReturnPartsDraft(previous => ({ ...previous, ReturnQty: value.replace(/[^0-9]/g, '') }))}
+                editable={!workEntryLocked}
                 style={styles.input}
               />
               <TextInput
@@ -1172,12 +1404,13 @@ const RepairWorkScreen = ({ route }) => {
                 label="Remarks"
                 value={returnPartsDraft?.Remarks || ''}
                 onChangeText={value => setReturnPartsDraft(previous => ({ ...previous, Remarks: value }))}
+                editable={!workEntryLocked}
                 multiline
                 style={styles.input}
               />
               <View style={styles.buttonRow}>
-                <Button onPress={() => setShowReturnPartsModal(false)} disabled={submitting}>Cancel</Button>
-                <Button mode="contained" onPress={submitPartReturn} loading={submitting} disabled={submitting}>Submit return</Button>
+                <Button onPress={() => setShowReturnPartsModal(false)} disabled={submitting || workEntryLocked}>Cancel</Button>
+                <Button mode="contained" onPress={submitPartReturn} loading={submitting} disabled={submitting || workEntryLocked}>Submit return</Button>
               </View>
             </Card.Content>
           </Card>
@@ -1193,9 +1426,13 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '700', marginBottom: SPACING.md },
   summary: { marginBottom: SPACING.md },
   sectionTitle: { fontSize: 18, fontWeight: '700', marginTop: SPACING.md, marginBottom: SPACING.sm },
+  sectionBox: { borderWidth: 1, borderRadius: 8, padding: SPACING.md, marginTop: SPACING.md, marginBottom: SPACING.sm },
   section: { marginBottom: SPACING.sm },
+  workDetailHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  newDetailLabel: { fontSize: 11, fontWeight: '700' },
   input: { marginBottom: SPACING.sm, backgroundColor: 'transparent' },
   buttonRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.sm },
+  remarksDivider: { height: 1, marginTop: SPACING.lg, marginBottom: SPACING.md },
   workActionButton: { flex: 1, marginHorizontal: 0 },
   workActionContent: { minHeight: 48, paddingHorizontal: 4 },
   imageRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginTop: SPACING.sm },
