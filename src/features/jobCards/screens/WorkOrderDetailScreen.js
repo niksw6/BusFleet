@@ -378,13 +378,22 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
   const renderWorkEntryResponseValue = (value, key = '', depth = 0) => {
+    const hasResponseValue = (candidate) => {
+      if (candidate === null || candidate === undefined) return false;
+      if (typeof candidate === 'string') return !['', '-', '0'].includes(candidate.trim());
+      if (Array.isArray(candidate)) return candidate.some(hasResponseValue);
+      if (typeof candidate === 'object') return Object.values(candidate).some(hasResponseValue);
+      return true;
+    };
+
     if (Array.isArray(value)) {
-      if (value.length === 0) {
+      const items = value.filter(hasResponseValue);
+      if (items.length === 0) {
         return <Text style={[styles.workEntryResponseValue, { color: colors.gray }]}>None</Text>;
       }
       return (
         <View style={styles.workEntryResponseGrid}>
-          {value.map((item, index) => (
+          {items.map((item, index) => (
             <View key={`${key || 'item'}-${index}`} style={styles.workEntryResponseItemCard}>
               <Text style={[styles.workEntryResponseItemTitle, { color: colors.gray }]}>Item {index + 1}</Text>
               {renderWorkEntryResponseValue(item, `${key || 'item'}-${index}`, depth + 1)}
@@ -395,9 +404,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     }
 
     if (value && typeof value === 'object') {
+      const fields = Object.entries(value).filter(([, childValue]) => hasResponseValue(childValue));
+      if (fields.length === 0) return null;
       return (
         <View style={styles.workEntryResponseGrid}>
-          {Object.entries(value).map(([childKey, childValue]) => (
+          {fields.map(([childKey, childValue]) => (
             <View key={`${key || 'object'}-${childKey}`} style={styles.workEntryResponseCell}>
               <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>
                 {formatWorkEntryResponseLabel(childKey)}
@@ -409,7 +420,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       );
     }
 
-    const displayValue = value === null || value === undefined || value === '' ? '-' : String(value);
+    const normalizedKey = String(key || '').replace(/[^a-z]/gi, '').toLowerCase();
+    const displayValue = normalizedKey === 'towstatus' && String(value ?? '').trim().toUpperCase() === 'CL'
+      ? 'Completed'
+      : (value === null || value === undefined || value === '' ? '-' : String(value));
     const isBadge = /status|type/i.test(key);
     return isBadge ? (
       <View style={[styles.workEntryResponseBadge, { backgroundColor: colors.primary + '18', borderColor: colors.primary + '45' }]}>
@@ -447,7 +461,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     );
     const renderRows = (rows, prefix) => (
       <View style={styles.workEntryResponseGrid}>
-        {rows.map((row) => (
+        {rows.filter(({ value }) => (
+          value !== null
+          && value !== undefined
+          && typeof value !== 'object'
+          && !['', '-', '0'].includes(String(value).trim())
+        )).map((row) => (
           <View key={`${prefix}-${row.label}`} style={styles.workEntryResponseCell}>
             <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>{row.label}</Text>
             {renderWorkEntryResponseValue(row.value, row.label, 1)}
@@ -455,14 +474,6 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         ))}
       </View>
     );
-    const knownKeys = new Set([
-      'AcceptDate', 'AcceptTime', 'CompleteDate', 'CompleteTime', 'Depot', 'DocEntry', 'DocNum',
-      'FaultCode', 'FaultLine', 'FaultName', 'FinalRemarks', 'Images', 'JobCardDocEntry',
-      'LabourHours', 'MechanicCode', 'MechanicName', 'Parts', 'SpecialTools', 'StartDate',
-      'StartTime', 'Status', 'Vehicle', 'VerifyBy', 'VerifyDate', 'VerifyRemarks', 'VerifyTime',
-      'WorkDone',
-    ]);
-    const additionalFields = Object.entries(response).filter(([key]) => !knownKeys.has(key));
     const workDetails = getWorkEntryDetails(response);
     const images = Array.isArray(response.Images) ? response.Images : [];
     const parts = Array.isArray(response.Parts) ? response.Parts : [];
@@ -474,16 +485,17 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       { label: 'Depot', value: response.Depot },
       { label: 'Job Card', value: response.JobCardDocEntry },
       { label: 'Work Entry No', value: response.DocNum || response.DocEntry },
-      { label: 'StartDate', value: overviewSource.StartDate || overviewSource.StartDt },
-      { label: 'StartTime', value: overviewSource.StartTime || overviewSource.StartTm },
-      { label: 'CompleteDate', value: overviewSource.CompleteDate },
-      { label: 'CompleteTime', value: overviewSource.CompleteTime },
-      { label: 'TotalHrs', value: overviewSource.LabourHours ?? overviewSource.TotalHrs },
-      ...additionalFields.map(([key, value]) => ({
-        label: formatWorkEntryResponseLabel(key),
-        value,
-      })),
-    ];
+      { label: 'Start Date', value: overviewSource.StartDate || overviewSource.StartDt },
+      { label: 'Start Time', value: overviewSource.StartTime || overviewSource.StartTm },
+      { label: 'Complete Date', value: overviewSource.CompleteDate },
+      { label: 'Complete Time', value: overviewSource.CompleteTime },
+      { label: 'Total Hours', value: overviewSource.LabourHours ?? overviewSource.TotalHrs },
+    ].filter(({ value }) => (
+      value !== null
+      && value !== undefined
+      && typeof value !== 'object'
+      && !['', '-', '0'].includes(String(value).trim())
+    ));
     const verificationRows = [
       { label: 'Status', value: response.Status },
       { label: 'Verified By', value: response.VerifyBy },
@@ -595,26 +607,12 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
           </View>
         )), specialTools.length)}
 
-        {additionalFields.length > 0 && renderCard('Additional Details', additionalFields.map(([key, value]) => (
-          <View key={key} style={[styles.workEntryResponseItemCard, { borderColor: colors.border || '#E5E7EB' }]}>
-            <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>{formatWorkEntryResponseLabel(key)}</Text>
-            {renderWorkEntryResponseValue(value, key)}
-          </View>
-        )))}
       </View>
     );
   };
 
   const mapWorkEntryForView = (entry, index = 0) => {
     const breakdownRepair = getBreakdownRepairInfo(entry) || getBreakdownRepairInfo(entry?.WorkEntries) || getBreakdownRepairInfo(entry?.BreakDownRepair);
-    const rawRepairMode = String(
-      breakdownRepair?.RepairMode
-      || entry?.RepairMode
-      || entry?.RepairType
-      || entry?.BreakdownRepairMode
-      || entry?.CanRepairOnSite
-      || ''
-    ).trim().toUpperCase();
     const towStatus = String(
       entry?.TowStatus
       || entry?.TowRequestStatus
@@ -631,11 +629,26 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       entry?.TowRequestDocEntry,
     ].some((value) => value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase()));
     const hasTowImage = Boolean(String(breakdownRepair?.TowImage1 || entry?.TowImage1 || '').trim() || String(breakdownRepair?.TowImage2 || entry?.TowImage2 || '').trim());
+    // GetJobCardDetail can return RepairMode="R" in BreakDownRepair even
+    // after the tow workflow has finished. A tow lifecycle status is the
+    // authoritative signal that this entry used tow, including backend code
+    // "CL" (closed).
+    const hasTowLifecycle = /^(rq|ip|cl|requested|in progress|pending pickup|pickup requested|completed|complete|done|finished|closed)$/.test(towStatusNormalized);
+    const rawRepairMode = hasTowLifecycle || explicitTowRequest || hasTowImage
+      ? 'T'
+      : String(
+        breakdownRepair?.RepairMode
+        || entry?.RepairMode
+        || entry?.RepairType
+        || entry?.BreakdownRepairMode
+        || entry?.CanRepairOnSite
+        || ''
+      ).trim().toUpperCase();
     const towCompleted = Boolean(
       entry?.TowCompleted
       || entry?.TowDone
       || entry?.TowComplete
-      || /^(completed|complete|done|finished|closed|c)$/.test(towStatusNormalized)
+      || /^(completed|complete|done|finished|closed|c|cl)$/.test(towStatusNormalized)
       || /^(completed|complete|done|finished|closed|c)$/.test(String(entry?.Status || '').trim().toUpperCase())
       || (rawRepairMode === 'T' && hasTowImage)
       || (rawRepairMode === 'T' && String(entry?.TowStatus || '').trim().toUpperCase() === 'COMPLETED')
@@ -645,7 +658,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       explicitTowRequest
       || rawRepairMode === 'T'
       || towCompleted
-      || /^(requested|in progress|pending pickup|pickup requested)$/.test(towStatusNormalized)
+      || hasTowLifecycle
       || /^(requested|in progress|pending pickup|pickup requested)$/.test(String(entry?.Status || '').trim().toUpperCase())
     );
     const repairOnSite = String(
@@ -676,9 +689,11 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         : (Array.isArray(entry?.SpecialTools) ? entry.SpecialTools : []),
       TowRequested: towRequested,
       TowCompleted: towCompleted,
-      TowStatus: towCompleted ? 'Completed' : (towStatus || String(entry?.TowRequestStatus || entry?.TowRequestState || '').trim() || 'Not requested'),
-      TowDepot: String(breakdownRepair?.Depot || breakdownRepair?.DepotName || entry?.TowDepot || entry?.TowDestination || entry?.TowDestinationType || entry?.Depot || '').trim(),
-      TowDestinationType: String(breakdownRepair?.DepotName || breakdownRepair?.Depot || entry?.TowDestinationType || entry?.TowDepotType || entry?.TowMode || '').trim(),
+      TowStatus: towStatusNormalized === 'CL'
+        ? 'Completed'
+        : (towCompleted ? 'Completed' : (towStatus || String(entry?.TowRequestStatus || entry?.TowRequestState || '').trim() || 'Not requested')),
+      TowDepot: String(breakdownRepair?.DepotName || breakdownRepair?.Depot || entry?.TowDepot || entry?.TowDestination || '').trim(),
+      TowDestinationType: String(entry?.TowDestinationType || entry?.TowDepotType || entry?.TowMode || '').trim(),
       RepairMode: rawRepairMode || String(breakdownRepair?.RepairMode || '').trim().toUpperCase() || '-',
       RepairOnSite: repairOnSite,
       CanRepairOnSite: entry?.CanRepairOnSite === true || String(repairOnSite || '').trim().toLowerCase() === 'true' || String(entry?.CanRepairOnSite || '').trim().toLowerCase() === 'true',
@@ -696,21 +711,33 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
   const isApiSuccess = (response) => response?.Success !== false && response?.Status !== false;
   const getEntryStatus = (entry) => {
-    const raw = entry?.WorkEntryStatus
-      ?? entry?.EntryStatus
-      ?? entry?.WorkStatus
-      ?? entry?.FaultStatus
-      ?? entry?.WorkEntry?.Status
-      ?? entry?.Data?.Status
-      ?? entry?.Status
-      ?? '';
-    if (raw === null || raw === undefined || typeof raw === 'boolean' || raw === '') return '';
-    return String(raw).trim().toUpperCase();
+    const candidates = [
+      entry?.WorkEntryStatus,
+      entry?.EntryStatus,
+      entry?.WorkStatus,
+      entry?.FaultStatus,
+      entry?.WorkEntry?.Status,
+      entry?.Data?.Status,
+      entry?.Status,
+      entry?.TowStatus,
+    ];
+    const statuses = candidates.filter((value) => (
+      value !== null
+      && value !== undefined
+      && typeof value !== 'boolean'
+      && String(value).trim() !== ''
+    )).map((value) => String(value).trim().toUpperCase());
+    const terminalStatus = statuses.find((status) => (
+      ['CL', 'L', 'C', 'CM', 'COMPLETED', 'COMPLETE', 'CLOSED'].includes(status)
+    ));
+    const raw = terminalStatus || statuses[0];
+    return raw === undefined ? '' : String(raw).trim().toUpperCase();
   };
   const isAwaitingSupervisorVerification = (entry) => ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(getEntryStatus(entry));
-  const isSupervisorVerified = (entry) => ['SV', 'C', 'CM', 'COMPLETED', 'COMPLETE'].includes(getEntryStatus(entry));
+  const isSupervisorVerified = (entry) => ['SV', 'C', 'CM', 'L', 'COMPLETED', 'COMPLETE'].includes(getEntryStatus(entry));
   const getWorkEntryStatusLabel = (entry) => {
     const status = getEntryStatus(entry);
+    if (status === 'CL' || status === 'L') return 'Completed';
     if (isSupervisorVerified(entry)) return 'Approved by Supervisor';
     if (isAwaitingSupervisorVerification(entry)) return 'Awaiting Verification';
     if (status === 'I' || status === 'IP' || status === 'IN PROGRESS') return 'In Progress';
@@ -1061,9 +1088,23 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       })
       .filter(Boolean)
   ).values());
-  const mechanicsForDisplay = Array.isArray(workOrder?.Mechanics) && workOrder.Mechanics.length > 0
+  const mechanicsFromSources = Array.isArray(workOrder?.Mechanics) && workOrder.Mechanics.length > 0
     ? (transferAccepted && availableMechanics.length > 0 ? availableMechanics : workOrder.Mechanics)
     : (availableMechanics.length > 0 ? availableMechanics : derivedMechanics);
+  const isTransferredJobCard = isTransferFlagSet(workOrder?.IsTransfer);
+  const workEntryMechanicCodes = new Set((Array.isArray(workOrderEntries) ? workOrderEntries : [])
+    .map((entry) => String(entry?.MechanicCode || entry?.MechCode || entry?.UserCode || '').trim().toLowerCase())
+    .filter(Boolean));
+  const workEntryMechanicNames = new Set((Array.isArray(workOrderEntries) ? workOrderEntries : [])
+    .map((entry) => String(entry?.MechanicName || entry?.MechName || entry?.AssignedMechanics || entry?.UserName || '').trim().toLowerCase())
+    .filter(Boolean));
+  const mechanicsForDisplay = isTransferredJobCard
+    ? mechanicsFromSources.filter((mechanic) => {
+      const code = String(mechanic?.MechanicCode || mechanic?.MechCode || mechanic?.Code || mechanic?.UserCode || '').trim().toLowerCase();
+      const name = String(mechanic?.MechanicName || mechanic?.MechName || mechanic?.EmployeeName || mechanic?.UserName || mechanic?.Name || '').trim().toLowerCase();
+      return (code && workEntryMechanicCodes.has(code)) || (name && workEntryMechanicNames.has(name));
+    })
+    : mechanicsFromSources;
   const mechanicCount = mechanicsForDisplay.length;
   const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
 
@@ -2878,34 +2919,33 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                       </Text>
                     </View>
 
-                    {isBreakdownJobCard() && !isDriverComplaintJobCard() && entry?.RepairMode && entry.RepairMode !== '-' && (
+                    {isBreakdownJobCard() && !isDriverComplaintJobCard() && (entry?.TowRequested || (entry?.RepairMode && entry.RepairMode !== '-')) && (
                       <>
-                        {entry?.TowRequested && (
+                        {entry?.TowRequested ? (
                           <>
                             <View style={styles.workOrderEntryRow}>
                               <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow:</Text>
-                              <Text style={[styles.workOrderEntryValue, { color: '#C2410C', fontWeight: '700' }]}>{entry?.TowCompleted ? 'Completed' : (entry?.TowStatus || 'Requested')}</Text>
+                              <Text style={[styles.workOrderEntryValue, { color: '#C2410C', fontWeight: '700' }]}>{entry?.TowStatus || (entry?.TowCompleted ? 'Completed' : 'Requested')}</Text>
                             </View>
-                            <View style={styles.workOrderEntryRow}>
-                              <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Depot:</Text>
-                              <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.TowDepot || entry?.TowDestinationType || 'DEFAULT'}</Text>
-                            </View>
+                            {entry?.TowDepot && (
+                              <View style={styles.workOrderEntryRow}>
+                                <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Depot:</Text>
+                                <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry.TowDepot}</Text>
+                              </View>
+                            )}
                           </>
+                        ) : (
+                          <View style={styles.workOrderEntryRow}>
+                            <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair Mode:</Text>
+                            <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{String(entry?.RepairMode || '').trim().toUpperCase() === 'R' ? 'Repair on Site' : 'Tow to Depot'}</Text>
+                          </View>
                         )}
-                        <View style={styles.workOrderEntryRow}>
-                          <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair Mode:</Text>
-                          <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{String(entry?.RepairMode || '').trim().toUpperCase() === 'R' ? 'Repair on Site' : 'Tow to Depot'}</Text>
-                        </View>
-                        {String(entry?.RepairMode || '').trim().toUpperCase() === 'R' && (
+                        {!entry?.TowRequested
+                          && String(entry?.RepairMode || '').trim().toUpperCase() === 'R'
+                          && ['T', 'P'].includes(String(entry?.RepairOnSite || '').trim().toUpperCase()) && (
                           <View style={styles.workOrderEntryRow}>
                             <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Repair On Site:</Text>
                             <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{String(entry?.RepairOnSite || '').trim().toUpperCase() === 'T' ? 'Temporary Repair' : String(entry?.RepairOnSite || '').trim().toUpperCase() === 'P' ? 'Permanent Repair' : '-'}</Text>
-                          </View>
-                        )}
-                        {entry?.TowRequested && (entry?.TowImage1 || entry?.TowImage2) && (
-                          <View style={styles.workOrderEntryRow}>
-                            <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Tow Images:</Text>
-                            <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{[entry?.TowImage1, entry?.TowImage2].filter(Boolean).join(' | ')}</Text>
                           </View>
                         )}
                       </>
@@ -3026,8 +3066,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     return n > 0 ? String(n) : '0';
   };
 
-  const jobCardIsClosed = ['C', 'CM', 'CL', 'CLOSED', 'COMPLETED'].includes(String(workOrder?.Status || '').trim().toUpperCase());
-  const incidentIsClosed = ['C', 'CM', 'CLOSED', 'COMPLETED'].includes(String(
+  const jobCardIsClosed = ['C', 'CM', 'L', 'CL', 'CLOSED', 'COMPLETED'].includes(String(workOrder?.Status || '').trim().toUpperCase());
+  const incidentIsClosed = ['C', 'CM', 'L', 'CLOSED', 'COMPLETED'].includes(String(
     workOrder?.ComplaintStatus || workOrder?.IncidentStatus || workOrder?.CmplaintStatus || '',
   ).trim().toUpperCase());
   const jobCardDisplayNo = String(workOrder?.JobCardNo || jobCardNo || '').trim();

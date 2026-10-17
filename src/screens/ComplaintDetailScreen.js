@@ -143,7 +143,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const isClosedStatus = (statusValue) => {
     const status = normalizeStatus(statusValue);
-    return ['C', 'CM', 'CL', 'SV', 'COMPLETE', 'COMPLETED', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(status);
+    return ['C', 'CM', 'L', 'CL', 'SV', 'COMPLETE', 'COMPLETED', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(status);
   };
 
   const hasMeaningfulFaultRows = (faultRows) => {
@@ -162,7 +162,7 @@ const ComplaintDetailScreen = ({ route, navigation }) => {
 
   const isWorkEntryCompletionStatus = (statusValue) => {
     const status = normalizeStatus(statusValue);
-    return status === 'C' || status === 'CM' || status === 'COMPLETE' || status === 'COMPLETED' || status === 'WC' || status === 'WORK COMPLETED' || status === 'SV';
+    return status === 'C' || status === 'CM' || status === 'L' || status === 'COMPLETE' || status === 'COMPLETED' || status === 'WC' || status === 'WORK COMPLETED' || status === 'SV';
   };
 
   // Work Entries are the operational history for a Job Card.  Work Orders are

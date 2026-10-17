@@ -85,7 +85,7 @@ const normalizeWorkImage = (image) => {
   };
 };
 
-const isVerifiedRepairStatus = (value) => ['SV', 'CL', 'CM', 'C', 'COMPLETED', 'COMPLETE', 'CLOSED', 'SUPERVISOR VERIFIED']
+const isVerifiedRepairStatus = (value) => ['SV', 'CL', 'CM', 'C', 'L', 'COMPLETED', 'COMPLETE', 'CLOSED', 'SUPERVISOR VERIFIED']
   .includes(String(value || '').trim().toUpperCase());
 
 const RepairWorkScreen = ({ route }) => {
@@ -318,7 +318,7 @@ const RepairWorkScreen = ({ route }) => {
     const dashboardEntry = cardEntries.find(entry => (
       [entry?.WorkEntryDocEntry, entry?.WorkEntryEntry, entry?.DocEntry]
         .some(value => value !== undefined && normalizeReference(value) === normalizeReference(workEntryDocEntry))
-    )) || cardEntries.find(entry => !['C', 'CM', 'SV', 'CL', 'COMPLETED', 'CLOSED'].includes(String(entry?.Status || '').toUpperCase()))
+    )) || cardEntries.find(entry => !['C', 'CM', 'L', 'SV', 'CL', 'COMPLETED', 'CLOSED'].includes(String(entry?.Status || '').toUpperCase()))
       || cardEntries[0];
     const dashboardParts = Array.isArray(dashboardEntry?.Parts)
       ? dashboardEntry.Parts.map(part => normalizePart({
@@ -441,7 +441,7 @@ const RepairWorkScreen = ({ route }) => {
           || String(entry?.JobCard ?? entry?.JobCardNo ?? entry?.JobCardDocNum) === String(jobCardNo)
         ))
         || cardEntries.find(entryMatchesRoute)
-        || cardEntries.find(entry => !['C', 'CM', 'SV', 'CL', 'COMPLETED', 'CLOSED'].includes(String(entry?.Status || '').toUpperCase()))
+        || cardEntries.find(entry => !['C', 'CM', 'L', 'SV', 'CL', 'COMPLETED', 'CLOSED'].includes(String(entry?.Status || '').toUpperCase()))
         || cardEntries[0];
       if (!matchingEntry) return;
 

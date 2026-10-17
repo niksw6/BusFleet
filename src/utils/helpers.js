@@ -336,6 +336,7 @@ export const getStatusColor = (status, isDark = false) => {
     'I': isDark ? '#29B6F6' : '#17A2B8', // In Progress
     'CM': isDark ? '#4CAF50' : '#28A745', // Completed
     'C': isDark ? '#4CAF50' : '#28A745', // Completed
+    'L': isDark ? '#4CAF50' : '#28A745', // Completed
     'CL': isDark ? '#4CAF50' : '#28A745', // Completed
     'D': isDark ? '#F44336' : '#DC3545', // Declined
     // Old status names (for backward compatibility)
@@ -355,6 +356,7 @@ export const getStatusName = (status) => {
     'I': 'In Progress',
     'CM': 'Completed',
     'C': 'Completed',
+    'L': 'Completed',
     'CL': 'Completed',
     'D': 'Declined',
   };
@@ -428,7 +430,7 @@ export const formatJobCardDisplayNo = (jobCard) => {
   }
 
   const jobNoString = String(primaryNo).trim();
-  if (/^[BD][-\s]?\d+$/i.test(jobNoString)) {
+  if (/^[ABD][-\s]?\d+$/i.test(jobNoString)) {
     return jobNoString.toUpperCase().replace(/\s+/, '-');
   }
 

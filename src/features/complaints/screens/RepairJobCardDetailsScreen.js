@@ -79,6 +79,7 @@ const getStatusLabel = (value) => {
     J: 'Job Card Created',
     C: 'Completed',
     CM: 'Completed',
+    L: 'Completed',
     CL: 'Closed',
     SV: 'Supervisor Verified',
     RQ: 'Requested',
@@ -121,7 +122,7 @@ const formatRepairClock = (hours, minutes, period) => {
 
 const getStatusColors = (value) => {
   const status = String(value || '').trim().toUpperCase();
-  if (['C', 'CM', 'CL', 'SV', 'RC', 'RT', 'RETURNED', 'COMPLETED', 'CLOSED'].includes(status)) {
+  if (['C', 'CM', 'L', 'CL', 'SV', 'RC', 'RT', 'RETURNED', 'COMPLETED', 'CLOSED'].includes(status)) {
     return { text: '#166534', background: '#DCFCE7' };
   }
   if (['RJ', 'D', 'REJECTED', 'DENIED'].includes(status)) {

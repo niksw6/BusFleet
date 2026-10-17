@@ -81,7 +81,7 @@ const getIncidentStatusBadge = (value) => {
   if (['I', 'IP', 'IN PROGRESS'].includes(status)) {
     return { label: 'In Progress', background: '#E0F2FE', color: '#075985' };
   }
-  if (['C', 'CM', 'CL', 'COMPLETED', 'CLOSED'].includes(status)) {
+  if (['C', 'CM', 'L', 'CL', 'COMPLETED', 'CLOSED'].includes(status)) {
     return { label: 'Completed', background: '#DCFCE7', color: '#166534' };
   }
   if (['O', 'P', 'PENDING', ''].includes(status)) {

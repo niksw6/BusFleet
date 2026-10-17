@@ -41,12 +41,12 @@ const TABS = [
 
 const REPAIR_STATUS_FILTERS = [
   { label: 'All statuses', value: 'ALL' },
-  { label: 'Pending', value: 'Pending' },
-  { label: 'Accepted', value: 'Accepted' },
+  { label: 'Open', value: 'Open' },
+  { label: 'Assigned', value: 'Assigned' },
   { label: 'In Progress', value: 'In Progress' },
+  { label: 'Received Assembly', value: 'Received Assembly' },
   { label: 'Completed', value: 'Completed' },
-  { label: 'Verified', value: 'Verified' },
-  { label: 'Rejected', value: 'Rejected' },
+  { label: 'Cancelled', value: 'Cancelled' },
 ];
 
 const getEffectiveStatus = (item) => {
@@ -66,7 +66,7 @@ const getEffectiveStatus = (item) => {
 
 const deriveBucket = (item) => {
   const raw = getEffectiveStatus(item);
-  if (['COMPLETED', 'COMPLETE', 'C', 'CM', 'SV', 'CL', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(raw)) return BUCKET.COMPLETED;
+  if (['COMPLETED', 'COMPLETE', 'C', 'CM', 'L', 'SV', 'CL', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(raw)) return BUCKET.COMPLETED;
   // WC is the backend's mechanic-complete state: work is finished but must
   // remain in progress until the Supervisor verifies/closes the job card.
   // RW is a supervisor/team-leader rework decision. The mechanic must resume
@@ -108,6 +108,7 @@ const getMechanicStatusLabel = (item, bucket, awaitingVerification) => {
 
   if (bucket === BUCKET.COMPLETED) {
     if (raw === 'SV' || raw === 'SUPERVISOR VERIFIED') return 'Supervisor Verified';
+    if (raw === 'L') return 'Completed';
     if (raw === 'CL' || raw === 'CLOSED') return 'Closed';
     return 'Completed';
   }
@@ -124,22 +125,43 @@ const getMechanicStatusLabel = (item, bucket, awaitingVerification) => {
 
 const getRepairJobCardStatusBadge = (value) => {
   const status = String(value || '').trim().toUpperCase();
-  if (['A', 'ACCEPTED', 'APPROVED'].includes(status)) {
-    return { label: 'Accepted', color: '#166534', background: '#DCFCE7' };
-  }
-  if (['R', 'D', 'RJ', 'REJECTED', 'DECLINED'].includes(status)) {
-    return { label: 'Rejected', color: '#991B1B', background: '#FEE2E2' };
+  if (['A', 'ASSIGNED'].includes(status)) {
+    return { label: 'Assigned', color: '#166534', background: '#DCFCE7' };
   }
   if (['I', 'IP', 'W', 'IN PROGRESS', 'INPROGRESS', 'STARTED'].includes(status)) {
     return { label: 'In Progress', color: '#075985', background: '#E0F2FE' };
   }
-  if (['C', 'CM', 'CL', 'SV', 'COMPLETED', 'CLOSED', 'SUPERVISOR VERIFIED'].includes(status)) {
-    return { label: status === 'SV' || status === 'SUPERVISOR VERIFIED' ? 'Verified' : 'Completed', color: '#166534', background: '#DCFCE7' };
+  if (['R', 'RECEIVED', 'RECEIVED ASSEMBLY'].includes(status)) {
+    return { label: 'Received Assembly', color: '#075985', background: '#E0F2FE' };
   }
-  if (['', 'O', 'P', 'PENDING', 'OPEN', 'NEW'].includes(status)) {
-    return { label: 'Pending', color: '#92400E', background: '#FEF3C7' };
+  if (['C', 'CM', 'L', 'COMPLETED', 'COMPLETE'].includes(status)) {
+    return { label: 'Completed', color: '#166534', background: '#DCFCE7' };
+  }
+  if (['CL', 'CLOSED'].includes(status)) {
+    return { label: 'Closed', color: '#475569', background: '#EEF2F6' };
+  }
+  if (['X', 'CANCELLED', 'CANCELED'].includes(status)) {
+    return { label: 'Cancelled', color: '#991B1B', background: '#FEE2E2' };
+  }
+  if (['', 'O', 'OPEN', 'P', 'PENDING', 'NEW'].includes(status)) {
+    return { label: 'Open', color: '#92400E', background: '#FEF3C7' };
   }
   return { label: String(value), color: '#475569', background: '#EEF2F6' };
+};
+
+const getRepairJobCardStatusValue = (item) => {
+  const statuses = [
+    item?.MechanicStatus,
+    item?.Status,
+    item?.AssemblyStatus,
+    item?.AssignmentStatus,
+    item?.RepairJobCardStatus,
+    item?.JobCardStatus,
+    item?.RepairStatus,
+  ].map(value => String(value || '').trim()).filter(Boolean);
+  return statuses.find(value => !['P', 'PENDING'].includes(value.toUpperCase()))
+    || statuses[0]
+    || 'O';
 };
 
 const extractItems = (data) => {
@@ -166,6 +188,9 @@ const extractRepairJobCardRecord = (response) => {
 };
 
 const getAssemblyStatus = (jobCard) => String(jobCard?.AssemblyStatus || '').trim().toUpperCase();
+const isRepairAssignmentInProgress = (jobCard) => ['I', 'IN PROGRESS', 'INPROGRESS'].includes(String(
+  jobCard?.Status || jobCard?.JobCardStatus || jobCard?.AssignmentStatus || '',
+).trim().toUpperCase());
 const getMechanicAssemblyStatus = (jobCard, user) => {
   const userCode = String(user?.User || user?.user || user?.UserCode || user?.Code || '').trim().toLowerCase();
   const mechanic = (Array.isArray(jobCard?.Mechanics) ? jobCard.Mechanics : []).find((item) => [item?.UserCode, item?.User, item?.Code, item?.EmpCode]
@@ -300,7 +325,7 @@ const hasRepairWorkEntry = (item) => Boolean(
 );
 const getActiveWorkEntry = (item) => {
   const entries = Array.isArray(item?.WorkEntries) ? item.WorkEntries : [];
-  return entries.find(entry => !['C', 'CM', 'SV', 'CL', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase()))
+  return entries.find(entry => !['C', 'CM', 'L', 'SV', 'CL', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase()))
     || entries[0]
     || null;
 };
@@ -458,6 +483,29 @@ const getRepairAssemblyName = (item) => String(
 
 const getRepairWorkQueueItems = (response) => {
   const data = response?.Data ?? response?.data ?? response;
+  const jobCards = Array.isArray(data?.JobCards) ? data.JobCards : [];
+  if (jobCards.length) {
+    return jobCards.map((jobCard) => {
+      const jobCardEntry = jobCard?.DocEntry ?? jobCard?.IncidentEntry ?? getRepairJobCardEntry(jobCard);
+      const mechanicStatus = jobCard?.MechanicStatus || jobCard?.AssignmentStatus || jobCard?.Status || '';
+      return {
+        ...jobCard,
+        Type: 'JR',
+        JobType: 'Repair',
+        ComplaintType: 'Repair Incident',
+        DocEntry: jobCardEntry,
+        JobCardEntry: jobCardEntry,
+        JobCardDocEntry: jobCardEntry,
+        JobCardNo: jobCard?.DocNum ?? jobCard?.IncidentNum ?? jobCardEntry,
+        RepairJobCardStatus: mechanicStatus,
+        Status: mechanicStatus,
+        FaultName: jobCard?.AssemblyName || 'Assembly',
+        Fault: jobCard?.AssemblyName || 'Assembly',
+      };
+    }).filter((item) => getDocEntry(item));
+  }
+
+  // Older responses contain only work entries; retain support for that shape.
   const workEntries = Array.isArray(data)
     ? data
     : (Array.isArray(data?.WorkEntries) ? data.WorkEntries : []);
@@ -474,8 +522,8 @@ const getRepairWorkQueueItems = (response) => {
       JobCardNo: jobCardEntry,
       WorkEntries: [entry],
       HasRepairWorkEntry: true,
-      FaultName: 'Assembly',
-      Fault: 'Assembly',
+      FaultName: entry?.AssemblyName || 'Assembly',
+      Fault: entry?.AssemblyName || 'Assembly',
       Status: entry?.Status || entry?.WorkStatus || 'W',
     };
   }).filter((item) => getDocEntry(item));
@@ -769,8 +817,10 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       const resolvedItem = jobCard && typeof jobCard === 'object' ? { ...item, ...jobCard } : item;
       const assemblyStatus = getAssemblyStatus(resolvedItem);
       const mechanicAssemblyStatus = getMechanicAssemblyStatus(resolvedItem, user);
-      if (assemblyStatus === 'I' || (assemblyStatus === 'P' && mechanicAssemblyStatus === 'I')) {
+      const assignmentInProgress = isRepairAssignmentInProgress(resolvedItem);
+      if (assemblyStatus === 'I' || (assemblyStatus === 'P' && (mechanicAssemblyStatus === 'I' || assignmentInProgress))) {
         resolvedItem.receiveDisabled = assemblyStatus === 'P' && mechanicAssemblyStatus === 'I';
+        if (assemblyStatus === 'P' && assignmentInProgress) resolvedItem.receiveDisabled = true;
         openRepairAssemblyReceive(resolvedItem);
       } else if (assemblyStatus === 'R') {
         openRepairWork(resolvedItem);
@@ -807,7 +857,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
       : colors.primary;
     const awaitingVerification = isAwaitingVerification(item);
     const repairStatus = repairAssignment
-      ? getRepairJobCardStatusBadge(item?.RepairJobCardStatus || item?.JobCardStatus || item?.AssemblyStatus || item?.Status || item?.AssignmentStatus)
+      ? getRepairJobCardStatusBadge(getRepairJobCardStatusValue(item))
       : null;
     const statusLabel = repairAssignment
       ? ''
@@ -914,7 +964,7 @@ const MechanicDashboardScreen = ({ navigation, route }) => {
   const currentList = activeTab === BUCKET.REPAIR
     ? grouped[BUCKET.REPAIR].filter(item => (
         repairStatusFilter === 'ALL'
-        || getRepairJobCardStatusBadge(item?.RepairJobCardStatus || item?.JobCardStatus || item?.AssemblyStatus || item?.Status || item?.AssignmentStatus).label === repairStatusFilter
+        || getRepairJobCardStatusBadge(getRepairJobCardStatusValue(item)).label === repairStatusFilter
       ))
     : grouped[activeTab] || [];
   const currentGroups = currentList.reduce((groups, item) => {

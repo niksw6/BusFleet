@@ -14,7 +14,7 @@ import MaterialIcons from '../../../components/AppIcon.js';
 import ScreenHeader from '../../../components/ScreenHeader';
 import StandardListCard from '../../../shared/components/StandardListCard';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
-import { jobCardService } from '../../../api/services';
+import { jobCardService, repairService } from '../../../api/services';
 import { getStatusName, formatDateTime, getDateTimeTimestamp, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
 
 const normalizeJobCardFilter = (filter) => {
@@ -26,6 +26,40 @@ const normalizeJobCardFilter = (filter) => {
 const isAwaitingVerification = (card) => {
   const status = String(card?.Status ?? card?.WorkStatus ?? card?.FaultStatus ?? '').trim().toUpperCase();
   return ['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(status);
+};
+
+const extractRepairJobCards = (response) => {
+  const data = response?.Data ?? response?.data ?? response;
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+  for (const key of ['JobCards', 'Items', 'List', 'Data', 'Result']) {
+    if (Array.isArray(data[key])) return data[key];
+    if (data[key] && typeof data[key] === 'object') {
+      const nested = extractRepairJobCards(data[key]);
+      if (nested.length) return nested;
+    }
+  }
+  return [];
+};
+
+const normalizeRepairJobCard = (card) => {
+  const jobCardEntry = card?.DocEntry ?? card?.JobCardEntry ?? card?.JobCardDocEntry ?? card?.IncidentEntry;
+  const jobCardNo = card?.DocNum ?? card?.JobCardNo ?? jobCardEntry;
+  const incidentNo = card?.IncidentNum ?? card?.IncidentNo ?? card?.IncidentEntry ?? '';
+  return {
+    ...card,
+    Type: 'JR',
+    JobType: 'Repair',
+    ComplaintType: 'Assembly Incident',
+    DocEntry: jobCardEntry,
+    JobCardNo: jobCardNo,
+    ComplaintNo: incidentNo,
+    Description: card?.AssemblyName || card?.AssemblyDescription || 'Assembly repair',
+    Status: card?.Status || card?.JobCardStatus || card?.MechanicStatus || card?.AssemblyStatus || '',
+    RegDate: card?.RegDate || card?.CreateDate || card?.DocDate || card?.IncidentDate || '',
+    RegTime: card?.RegTime || card?.CreateTime || card?.DocTime || card?.IncidentTime || '',
+    IsRepairJobCard: true,
+  };
 };
 
 const JobCardsScreen = ({ navigation, route }) => {
@@ -72,13 +106,24 @@ const JobCardsScreen = ({ navigation, route }) => {
   const fetchJobCards = async () => {
     try {
       const depot = user?.Depot || user?.depot || '';
-      const response = await jobCardService.getJobCards(dbName || 'MUTSPL_TEST', null, depot);
+      const companyDb = dbName || 'MUTSPL_TEST';
+      const [jobCardResult, repairJobCardResult] = await Promise.allSettled([
+        jobCardService.getJobCards(companyDb, null, depot),
+        repairService.getRepairJobCards(companyDb, depot),
+      ]);
       console.log('📋 Job cards response:', response);
-      if (response.Success && response.Data) {
-        setJobCards(response.Data);
-      } else {
-        setJobCards([]);
-      }
+      const response = jobCardResult.status === 'fulfilled' ? jobCardResult.value : null;
+      const regularCards = jobCardResult.status === 'fulfilled'
+        && jobCardResult.value?.Success
+        && Array.isArray(jobCardResult.value?.Data)
+        ? jobCardResult.value.Data
+        : [];
+      const repairCards = repairJobCardResult.status === 'fulfilled'
+        ? extractRepairJobCards(repairJobCardResult.value).map(normalizeRepairJobCard).filter(card => card.DocEntry !== undefined && card.DocEntry !== null)
+        : [];
+      if (jobCardResult.status === 'rejected') throw jobCardResult.reason;
+      console.log('Job cards loaded:', { regular: regularCards.length, repair: repairCards.length });
+      setJobCards([...regularCards, ...repairCards]);
     } catch (error) {
       console.error('Error fetching job cards:', error);
       setJobCards([]);
@@ -108,7 +153,7 @@ const JobCardsScreen = ({ navigation, route }) => {
       } else if (selectedFilter === 'CM') {
         filtered = filtered.filter((card) => {
           const status = String(card?.Status || '').trim().toUpperCase();
-          return status === 'CM' || status === 'C' || status === 'COMPLETED';
+          return status === 'CM' || status === 'C' || status === 'L' || status === 'COMPLETED';
         });
       } else {
         filtered = filtered.filter((card) => String(card?.Status || '').trim().toUpperCase() === selectedFilter);
@@ -128,7 +173,9 @@ const JobCardsScreen = ({ navigation, route }) => {
         String(card.DocEntry || '').toLowerCase().includes(query) ||
         String(card.BusNo || '').toLowerCase().includes(query) ||
         String(card.ComplaintNo || '').toLowerCase().includes(query) ||
-        String(card.ComplaintType || '').toLowerCase().includes(query)
+        String(card.ComplaintType || '').toLowerCase().includes(query) ||
+        String(card.Assembly || '').toLowerCase().includes(query) ||
+        String(card.AssemblyName || '').toLowerCase().includes(query)
     );
     setFilteredJobCards(filtered);
   };
@@ -140,7 +187,7 @@ const JobCardsScreen = ({ navigation, route }) => {
     verify: jobCards.filter(isAwaitingVerification).length,
     completed: jobCards.filter((card) => {
       const status = String(card?.Status || '').trim().toUpperCase();
-      return status === 'CM' || status === 'C' || status === 'COMPLETED';
+      return status === 'CM' || status === 'C' || status === 'L' || status === 'COMPLETED';
     }).length,
   };
 
@@ -165,7 +212,7 @@ const JobCardsScreen = ({ navigation, route }) => {
     if (s === 'O') return COLORS.statusOpen;
     if (s === 'I') return COLORS.statusInProgress;
     if (['WC', 'WORK COMPLETED', 'AWAITING VERIFICATION'].includes(s)) return '#6D28D9';
-    if (s === 'CM' || s === 'C') return COLORS.statusCompleted;
+    if (s === 'CM' || s === 'C' || s === 'L') return COLORS.statusCompleted;
     if (s === 'D') return COLORS.statusDeclined;
     return colors.primary;
   };
@@ -183,7 +230,12 @@ const JobCardsScreen = ({ navigation, route }) => {
     <StandardListCard
       accentColor={colors.primary}
       onPress={() =>
-        navigation.navigate('JobCardDetail', {
+        item.IsRepairJobCard
+          ? navigation.navigate('RepairJobCardDetails', {
+              jobCardEntry: item.DocEntry,
+              dbName: dbName || 'MUTSPL_TEST',
+            })
+          : navigation.navigate('JobCardDetail', {
           docEntry: item.DocEntry || item.JobCardNo,
           jobCardNo: item.JobCardNo,
           jobType: item.JobType || item.FormType || getJobTypeCode(item),

@@ -77,6 +77,7 @@ const STATUS_PALETTE = {
   O:  { bg: '#FFF3CD', fg: '#856404', label: 'Open' },
   I:  { bg: '#D1ECF1', fg: '#0C5460', label: 'In Progress' },
   CM: { bg: '#D4EDDA', fg: '#155724', label: 'Completed' },
+  L:  { bg: '#D4EDDA', fg: '#155724', label: 'Completed' },
   C:  { bg: '#D4EDDA', fg: '#155724', label: 'Closed' },
   D:  { bg: '#F8D7DA', fg: '#721C24', label: 'Declined' },
   R:  { bg: '#F8D7DA', fg: '#721C24', label: 'Rejected' },

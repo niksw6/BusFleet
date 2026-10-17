@@ -45,6 +45,9 @@ const getUserCodes = (user) => [...new Set([
 ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean))];
 
 const getAssemblyStatus = (jobCard) => String(jobCard?.AssemblyStatus || '').trim().toUpperCase();
+const isRepairAssignmentInProgress = (jobCard) => ['I', 'IN PROGRESS', 'INPROGRESS'].includes(String(
+  jobCard?.Status || jobCard?.JobCardStatus || jobCard?.AssignmentStatus || '',
+).trim().toUpperCase());
 const getMechanicAssemblyStatus = (jobCard, user) => {
   const userCode = String(user?.User || user?.user || user?.UserCode || user?.Code || '').trim().toLowerCase();
   const mechanic = (Array.isArray(jobCard?.Mechanics) ? jobCard.Mechanics : []).find((item) => [item?.UserCode, item?.User, item?.Code, item?.EmpCode]
@@ -75,17 +78,18 @@ const RepairJobCardAssignmentScreen = ({ route, navigation }) => {
       setJobCard(fetchedJobCard);
       const assemblyStatus = getAssemblyStatus(fetchedJobCard);
       const mechanicAssemblyStatus = getMechanicAssemblyStatus(fetchedJobCard, user);
+      const assignmentInProgress = isRepairAssignmentInProgress(fetchedJobCard);
       if (readOnlyDetail) {
         return;
       }
-      if (assemblyStatus === 'I' || (assemblyStatus === 'P' && mechanicAssemblyStatus === 'I')) {
+      if (assemblyStatus === 'I' || (assemblyStatus === 'P' && (mechanicAssemblyStatus === 'I' || assignmentInProgress))) {
         navigation.replace('RepairAssemblyReceive', {
           jobCardEntry,
           dbName,
           incidentEntry: getValue(fetchedJobCard, ['IncidentEntry', 'IncidentDocEntry']),
           assemblyCode: getValue(fetchedJobCard, ['AssemblyCode', 'Assembly', 'AssemblyNo', 'RepairAssemblyCode']),
           assemblyName: getValue(fetchedJobCard, ['AssemblyName', 'AssemblyDescription', 'Assembly']) || 'Assembly',
-          receiveDisabled: assemblyStatus === 'P' && mechanicAssemblyStatus === 'I',
+          receiveDisabled: assemblyStatus === 'P' && (mechanicAssemblyStatus === 'I' || assignmentInProgress),
         });
       } else if (assemblyStatus === 'R') {
         navigation.replace('RepairWork', {

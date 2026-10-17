@@ -29,7 +29,7 @@ const isAwaitingVerificationStatus = (value) => {
 
 const isWorkEntryCompleted = (entry) => {
   const status = String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase();
-  if (['C', 'CM', 'COMPLETE', 'COMPLETED', 'WC', 'WORK COMPLETED', 'AWAITING VERIFICATION', 'V', 'VERIFY'].includes(status)) {
+  if (['C', 'CM', 'L', 'COMPLETE', 'COMPLETED', 'WC', 'WORK COMPLETED', 'AWAITING VERIFICATION', 'V', 'VERIFY'].includes(status)) {
     return true;
   }
   return Boolean(String(entry?.CompleteDate || entry?.CompletedDate || '').trim());
@@ -256,6 +256,7 @@ const getStatusLabel = (statusValue) => {
   if (status === 'WC') return 'Awaiting Verification';
   if (status === 'RW') return 'Rework';
   if (status === 'SV') return 'Supervisor Verified';
+  if (status === 'L') return 'Completed';
   if (status === 'CL') return 'Closed';
   if (status === 'CM') return 'Completed';
   if (status === 'DENIED') return 'Denied';
@@ -277,7 +278,7 @@ const getSpecialToolStatusLabel = (statusValue) => {
 
 const getStatusTone = (statusValue) => {
   const status = String(statusValue || '').trim().toUpperCase();
-  if (['SV', 'CL', 'CM', 'C', 'COMPLETE', 'COMPLETED', 'RT', 'RETURNED'].includes(status)) {
+  if (['SV', 'L', 'CL', 'CM', 'C', 'COMPLETE', 'COMPLETED', 'RT', 'RETURNED'].includes(status)) {
     return { fg: '#166534', bg: '#DCFCE7' };
   }
   if (['RW', 'DENIED', 'R', 'REJECTED'].includes(status)) {
@@ -540,7 +541,7 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '', dedupeAssemblyD
     finalRemarks: entry?.FinalRemarks || entry?.Remarks || '-',
     workDetails,
     status: entry?.Status || entry?.WorkStatus || fallbackItem?.Status || fallbackItem?.WorkStatus || '',
-    completed: isWorkEntryCompleted(entry) || (dedupeAssemblyDetails && ['CL', 'SV'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase())),
+    completed: isWorkEntryCompleted(entry) || (dedupeAssemblyDetails && ['L', 'CL', 'SV'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase())),
     date: entry?.CreateDate || entry?.Date || entry?.DocDate || fallbackItem?.UpdateDate || fallbackItem?.AssignDt || '',
     time: entry?.CreateTime || entry?.Time || entry?.DocTime || fallbackItem?.UpdateTime || '',
     images,
@@ -1793,8 +1794,13 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
             {selectedWorkEntry ? (() => {
               const entry = selectedWorkEntry.entry || {};
-              const entryStatus = String(entry?.status || '').trim().toUpperCase();
-              const workEntryAlreadyVerified = ['SV', 'CL', 'CM', 'C', 'COMPLETED', 'CLOSED', 'SUPERVISOR VERIFIED'].includes(entryStatus);
+              const jobCardStatus = String(
+                selectedWorkEntry?.parentItem?.status
+                || selectedWorkEntry?.parentItem?.Status
+                || selectedWorkEntry?.parentItem?.JobCardStatus
+                || '',
+              ).trim().toUpperCase();
+              const jobCardClosed = ['C', 'L', 'CL', 'CLOSED'].includes(jobCardStatus);
               const statusTone = getStatusTone(entry?.status);
               const overviewRows = [
                 { label: 'Mechanic', value: entry?.mechanicName || '-' },
@@ -2090,11 +2096,11 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       styles.actionBtn,
                       {
                         backgroundColor: '#2B7D2B',
-                        opacity: workEntryAlreadyVerified ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
+                        opacity: jobCardClosed ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
                       },
                     ]}
                     onPress={handleApproveWorkEntry}
-                    disabled={!!actioningWorkEntry || workEntryAlreadyVerified || entryStatus === 'RW'}
+                    disabled={!!actioningWorkEntry || jobCardClosed}
                     activeOpacity={0.85}
                   >
                     <MaterialIcons name="check-circle" size={16} color="#FFFFFF" />
@@ -2106,11 +2112,11 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       styles.actionBtn,
                       {
                         backgroundColor: '#B91C1C',
-                        opacity: workEntryAlreadyVerified ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
+                        opacity: jobCardClosed ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
                       },
                     ]}
                     onPress={openDenyFlow}
-                    disabled={!!actioningWorkEntry || workEntryAlreadyVerified}
+                    disabled={!!actioningWorkEntry || jobCardClosed}
                     activeOpacity={0.85}
                   >
                     <MaterialIcons name="cancel" size={16} color="#FFFFFF" />

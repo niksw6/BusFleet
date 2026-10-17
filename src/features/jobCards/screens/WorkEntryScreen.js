@@ -10,7 +10,7 @@
  *
  * Route params: { workOrderDocEntry, dbName, jobCardNo }
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -203,6 +203,11 @@ const WorkEntryScreen = ({ route, navigation }) => {
   const [breakdownWorkStarted, setBreakdownWorkStarted] = useState(!breakdownStartGateRequired);
   const initialRepairOnSite = routeRepairMode === 'T' ? false : (routeRepairMode === 'R' ? true : !routeIndicatesTow);
   const [canRepairOnSite, setCanRepairOnSite] = useState(initialRepairOnSite);
+  const repairOnSiteSelectionRef = useRef(null);
+  const selectRepairMode = (repairOnSite) => {
+    repairOnSiteSelectionRef.current = Boolean(repairOnSite);
+    setCanRepairOnSite(Boolean(repairOnSite));
+  };
   const towWorkflowLocked = routeRepairMode === 'T' || Boolean(routeTowRequested) || towRequestEntryId; 
 
   // Parts Form (per work entry)
@@ -464,7 +469,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
           if (persistedBreakdownRepair) {
             const repairMode = String(persistedBreakdownRepair.RepairMode || '').trim().toUpperCase();
             const repairOnSite = String(persistedBreakdownRepair.RepairOnSite || '').trim().toUpperCase();
-            setCanRepairOnSite(repairMode === 'R');
+            if (repairOnSiteSelectionRef.current === null) setCanRepairOnSite(repairMode === 'R');
             setRepairType(repairOnSite === 'T' ? 'T' : 'P');
             const depotType = String(persistedBreakdownRepair.Depot || persistedBreakdownRepair.DepotName || '').trim().toUpperCase();
             if (depotType === 'OTHER') setTowDepotMode('other');
@@ -591,7 +596,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
       if (liveBreakdownRepair) {
         const repairMode = String(liveBreakdownRepair.RepairMode || '').trim().toUpperCase();
         const repairOnSite = String(liveBreakdownRepair.RepairOnSite || '').trim().toUpperCase();
-        setCanRepairOnSite(repairMode === 'R');
+        if (repairOnSiteSelectionRef.current === null) setCanRepairOnSite(repairMode === 'R');
         setRepairType(repairOnSite === 'T' ? 'T' : 'P');
         if (repairMode === 'T') setCanRepairOnSite(false);
         const depotType = String(liveBreakdownRepair.Depot || liveBreakdownRepair.DepotName || '').trim().toUpperCase();
@@ -959,7 +964,12 @@ const WorkEntryScreen = ({ route, navigation }) => {
           JobCardDocEntry: Number(resolvedJobCardDocEntry) || resolvedJobCardDocEntry,
           FaultLine: Number(routeFaultLine) || 1,
           UserCode: mechanicCode,
-          CanRepairOnSite: canRepairOnSite,
+          CanRepairOnSite: Boolean(
+            (repairOnSiteSelectionRef.current ?? canRepairOnSite)
+            && !routeIndicatesTow
+            && !routeTowRequested
+            && !towRequestEntryId,
+          ),
           FinalRemarks: entryRemarks || '',
           Details: [detail],
         };
@@ -1140,6 +1150,7 @@ const WorkEntryScreen = ({ route, navigation }) => {
       return;
     }
 
+    selectRepairMode(false);
     try {
       setSubmitting(true);
       const breakdownPayload = {
@@ -1183,12 +1194,29 @@ const WorkEntryScreen = ({ route, navigation }) => {
           throw new Error('Breakdown work entry was created without a work-entry number.');
         }
         setLineBreakdownWorkEntryId(workEntryDocEntry);
+      } else {
+        const existingEntry = storeEntries.find((entry) => String(
+          entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code || '',
+        ) === String(workEntryDocEntry)) || existingWorkEntry || {};
+        const existingDetails = getWorkEntryDetails(existingEntry);
+        const modeUpdate = await mechanicService.updateWorkEntry({
+          CompanyDB: dbName || 'MUTSPL_TEST',
+          WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
+          UserCode: mechanicCode,
+          FinalRemarks: entryRemarks || existingEntry?.FinalRemarks || 'Tow requested',
+          ...(existingDetails.length > 0 ? { Details: existingDetails } : {}),
+          CanRepairOnSite: false,
+        });
+        if (!isApiSuccess(modeUpdate)) {
+          throw new Error(modeUpdate?.Message || 'Unable to update the work entry to tow mode.');
+        }
       }
 
       const towResponse = await mechanicService.requestTow({
         CompanyDB: dbName || 'MUTSPL_TEST',
         WorkEntryDocEntry: Number(workEntryDocEntry) || workEntryDocEntry,
         UserCode: mechanicCode,
+        CanRepairOnSite: false,
         TowDestinationType: towDepotMode === 'other' ? 'OTHER' : 'DEFAULT',
         TowDepot: towDepotMode === 'other' ? selectedTowDepot : '',
         Remarks: entryRemarks || 'Bus cannot be repaired at breakdown location.',
@@ -1199,7 +1227,15 @@ const WorkEntryScreen = ({ route, navigation }) => {
       await persistWorkEntryImages('BF', towBeforeImageDrafts, workEntryDocEntry, 'TOW_BF');
       if (created) {
         dispatch(addWorkEntryAction({ docEntry: workOrderDocEntry, entry: { ...created, WorkEntryDocEntry: workEntryDocEntry, TowRequested: true } }));
+      } else {
+        const updatedEntries = storeEntries.map((entry) => String(
+          entry?.WorkEntryDocEntry || entry?.DocEntry || entry?.Code || '',
+        ) === String(workEntryDocEntry)
+          ? { ...entry, CanRepairOnSite: false, TowRequested: true }
+          : entry);
+        dispatch(setWorkEntries({ docEntry: workOrderDocEntry, entries: updatedEntries }));
       }
+      selectRepairMode(false);
       setTowRequestEntryId(workEntryDocEntry);
       Toast.show({ type: 'success', text1: 'Tow requested', text2: 'Tap Complete Tow once the bus has been picked up.' });
     } catch (err) {
@@ -1700,10 +1736,10 @@ const WorkEntryScreen = ({ route, navigation }) => {
             <View style={styles.breakdownSection}>
               <Text style={[styles.sectionTitle, { color: colors.dark, marginLeft: 0, marginBottom: 6 }]}>Can Repair on Site?</Text>
               <View style={styles.breakdownToggleRow}>
-                <Button mode={canRepairOnSite ? 'contained' : 'outlined'} onPress={() => { if (!towWorkflowLocked) setCanRepairOnSite(true); }} icon="build" buttonColor={canRepairOnSite ? '#167A45' : undefined} style={[styles.breakdownToggleButton, styles.decisionButton]} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent} disabled={towWorkflowLocked}>
+                <Button mode={canRepairOnSite ? 'contained' : 'outlined'} onPress={() => { if (!towWorkflowLocked) selectRepairMode(true); }} icon="build" buttonColor={canRepairOnSite ? '#167A45' : undefined} style={[styles.breakdownToggleButton, styles.decisionButton]} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent} disabled={towWorkflowLocked}>
                   Repair on Site
                 </Button>
-                <Button mode={!canRepairOnSite ? 'contained' : 'outlined'} onPress={() => setCanRepairOnSite(false)} icon="local-shipping" buttonColor={!canRepairOnSite ? '#C2410C' : undefined} style={[styles.breakdownToggleButton, styles.decisionButton]} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>
+                <Button mode={!canRepairOnSite ? 'contained' : 'outlined'} onPress={() => selectRepairMode(false)} icon="local-shipping" buttonColor={!canRepairOnSite ? '#C2410C' : undefined} style={[styles.breakdownToggleButton, styles.decisionButton]} labelStyle={styles.decisionButtonLabel} contentStyle={styles.decisionButtonContent}>
                   Tow to Depot
                 </Button>
               </View>

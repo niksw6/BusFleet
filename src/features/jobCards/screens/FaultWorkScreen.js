@@ -194,7 +194,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
     || isAwaitingVerificationStatus(fault?.WorkStatus)
     || isAwaitingVerificationStatus(fault?.FaultStatus)
   );
-  const isSupervisorVerified = supervisorVerified || ['SV', 'CL', 'CM', 'C', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].some((status) => (
+  const isSupervisorVerified = supervisorVerified || ['SV', 'CL', 'CM', 'C', 'L', 'COMPLETED', 'COMPLETE', 'SUPERVISOR VERIFIED', 'CLOSED'].some((status) => (
     [existingWorkEntry?.Status, existingWorkEntry?.WorkStatus, fault?.Status, fault?.WorkStatus]
       .some(value => String(value || '').trim().toUpperCase() === status)
   ));
@@ -280,6 +280,20 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const faultReference = String(fault?.FaultCode || fault?.Fault || fault?.FaultName || fault?.Code || '').trim();
+  const getPartFaultLine = (part) => (
+    part?.FaultLine ?? part?.FaultLineNo ?? part?.JCLine ?? part?.Line ?? part?.LineNum
+  );
+  const belongsToCurrentFaultLine = (part) => {
+    const currentFaultLine = faultLine ?? fault?.FaultLine ?? fault?.Line ?? fault?.LineNum;
+    const partFaultLine = getPartFaultLine(part);
+    return currentFaultLine !== undefined
+      && currentFaultLine !== null
+      && String(currentFaultLine).trim() !== ''
+      && partFaultLine !== undefined
+      && partFaultLine !== null
+      && String(partFaultLine) === String(currentFaultLine);
+  };
+  const selectPartsForFault = (parts) => parts.filter(belongsToCurrentFaultLine);
   const partIdentityCandidates = userCode ? [userCode] : [];
 
   const loadData = useCallback(async () => {
@@ -502,19 +516,6 @@ const FaultWorkScreen = ({ route, navigation }) => {
             : []
         )) : []),
       ];
-      const getPartFaultLine = (part) => {
-        return part?.FaultLine ?? part?.FaultLineNo ?? part?.JCLine ?? part?.Line ?? part?.LineNum;
-      };
-      const selectPartsForFault = (parts) => {
-        const unscoped = parts.filter(part => getPartFaultLine(part) === undefined || getPartFaultLine(part) === null);
-        const exact = parts.filter(part => String(getPartFaultLine(part)) === String(faultLine));
-        if (exact.length > 0) return [...exact, ...unscoped];
-
-        // Existing Job Cards created before the updated API contract used
-        // one-based lines. Use that only when no exact current-format match exists.
-        const legacy = parts.filter(part => Number(getPartFaultLine(part)) === Number(faultLine) + 1);
-        return [...legacy, ...unscoped];
-      };
       const belongsToThisJobCard = (part) => {
         const partJobCard = part?.JobCardDocEntry ?? part?.JobCardNo ?? part?.DocEntry;
         return String(partJobCard ?? '') === String(docEntry);
@@ -526,7 +527,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
       const approved = [
         ...selectPartsForFault(approvedFromQueue.filter(belongsToThisJobCard)),
         ...selectPartsForFault(detailParts).map(p => ({ ...p, SupervisorProvided: true })),
-        ...dashboardPartsForJobCard.map(part => ({
+        ...selectPartsForFault(dashboardPartsForJobCard).map(part => ({
           ...part,
           ItemCode: part?.ItemCode || part?.Code || '',
           ItemName: part?.ItemName || part?.Name || part?.Dscription || part?.Description || part?.ItemCode || part?.Code || '',
@@ -535,11 +536,11 @@ const FaultWorkScreen = ({ route, navigation }) => {
         })),
         // GetMechanicDashboard is the authoritative assigned-fault response.
         // Its Parts collection must travel with the mechanic into Fault Work.
-        ...(Array.isArray(fault?.Parts) ? fault.Parts.map(part => ({
+        ...(Array.isArray(fault?.Parts) ? selectPartsForFault(fault.Parts.map(part => ({
           ...part,
           FaultLine: part?.FaultLine ?? faultLine,
           SupervisorProvided: true,
-        })) : []),
+        }))) : []),
       ];
       const uniqueParts = new Map();
       approved.forEach((part, index) => {
@@ -624,8 +625,9 @@ const FaultWorkScreen = ({ route, navigation }) => {
   const faultName = fault?.Fault || fault?.FaultName || fault?.Description || 'Fault';
   const busNo = fault?.BusNo || '';
   const jobCardNumber = fault?.JobCardNo || fault?.DocNum || fault?.JobCardDocEntry || docEntry;
-  const approvedForCollection = approvedParts.filter(isPartApproved);
-  const pendingSupervisorParts = approvedParts.filter(part => !isPartApproved(part));
+  const approvedPartsForFaultLine = approvedParts.filter(belongsToCurrentFaultLine);
+  const approvedForCollection = approvedPartsForFaultLine.filter(isPartApproved);
+  const pendingSupervisorParts = approvedPartsForFaultLine.filter(part => !isPartApproved(part));
   const awaitingApprovalParts = [...pendingSupervisorParts, ...pendingRequestedParts].filter((part, index, list) => {
     const key = getPendingPartDisplayKey(part);
     return key !== '-' && list.findIndex(candidate => getPendingPartDisplayKey(candidate) === key) === index;
@@ -1395,7 +1397,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
   };
 
   const openReturnParts = () => {
-    const returnable = approvedParts.filter(p => getIssuedQty(p) > 0 && getReceiveLineId(p) !== null);
+    const returnable = approvedPartsForFaultLine.filter(p => getIssuedQty(p) > 0 && getReceiveLineId(p) !== null);
     if (returnable.length === 0) {
       Toast.show({ type: 'info', text1: 'No returnable parts', text2: 'Only issued parts can be returned.' });
       return;
@@ -1534,6 +1536,9 @@ const FaultWorkScreen = ({ route, navigation }) => {
           <Text style={{ color: colors.gray, fontSize: 13, marginTop: 2 }}>
             Work Entry #: {workEntryDocEntry || 'Not created'}
           </Text>
+          <Text style={{ color: colors.gray, fontSize: 13, marginTop: 2 }}>
+            Fault Line: {faultLine ?? fault?.FaultLine ?? fault?.Line ?? fault?.LineNum ?? '—'}
+          </Text>
           {awaitingVerification && (
             <View style={[styles.awaitingStatusPill, { backgroundColor: '#6D28D915' }]}>
               <MaterialIcons name="assignment-turned-in" size={14} color="#6D28D9" />
@@ -1553,13 +1558,13 @@ const FaultWorkScreen = ({ route, navigation }) => {
         </View>
 
         {/* Supervisor-selected parts must be visible before work starts too. */}
-        {approvedParts.length > 0 && step === STEP.START && (
+        {approvedPartsForFaultLine.length > 0 && step === STEP.START && (
           <View style={[styles.card, { backgroundColor: colors.white }]}>
             <Text style={[styles.sectionTitle, { color: colors.dark }]}>Parts selected for this fault</Text>
             <Text style={{ color: colors.gray, fontSize: 12, marginBottom: 6 }}>
               These parts were selected by the Supervisor. Approved parts can be collected after work starts.
             </Text>
-            {approvedParts.map((part, index) => (
+            {approvedPartsForFaultLine.map((part, index) => (
               <Text key={`${part?.ItemCode || part?.Code || 'part'}-${index}`} style={{ color: colors.dark, fontSize: 13, marginTop: 5 }}>
                 • {part?.ItemName || part?.Name || part?.Dscription || part?.ItemCode || part?.Code} — Qty: {getPartQty(part)}{isPartApproved(part) ? ' · Approved' : ' · Awaiting approval'}
               </Text>
@@ -1777,7 +1782,7 @@ const FaultWorkScreen = ({ route, navigation }) => {
                 <Text style={{ color: '#2B7D2B', fontWeight: '600', marginLeft: 4 }}>Add Part</Text>
               </TouchableOpacity>
 
-              {approvedParts.length > 0 && !workEntryLocked && (
+              {approvedPartsForFaultLine.length > 0 && !workEntryLocked && (
                 <TouchableOpacity
                   style={[styles.addLineBtn, { borderColor: '#B45309', marginTop: SPACING.sm }]}
                   onPress={openReturnParts}

@@ -279,6 +279,7 @@ const isInProgressMechanicItem = (item) => [
 const isCompletedMechanicItem = (item) => [
   'C',
   'CM',
+  'L',
   'COMPLETE',
   'COMPLETED',
   'SV',
@@ -438,7 +439,7 @@ const DashboardScreen = ({ navigation }) => {
           const inProgressCount = ownIncidents.filter(i => String(i?.Status || '').trim().toUpperCase() === 'I').length;
           const completedCount = ownIncidents.filter((i) => {
             const status = String(i?.Status || '').trim().toUpperCase();
-            return status === 'C' || status === 'CM' || status === 'COMPLETED';
+            return status === 'C' || status === 'CM' || status === 'L' || status === 'COMPLETED';
           }).length;
 
           setStats({
@@ -599,7 +600,7 @@ const DashboardScreen = ({ navigation }) => {
       const inProgressCount = allIncidents.filter(item => String(item?.Status || '').trim().toUpperCase() === 'I').length;
       const completedCount = allIncidents.filter((item) => {
         const status = String(item?.Status || '').trim().toUpperCase();
-        return status === 'C' || status === 'CM' || status === 'COMPLETED';
+        return status === 'C' || status === 'CM' || status === 'L' || status === 'COMPLETED';
       }).length;
 
       setStats({

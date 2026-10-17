@@ -111,6 +111,17 @@ export const repairService = {
     }
   },
 
+  getRepairJobCards: async (companyDB, depot) => {
+    try {
+      const response = await get(
+        `GetRepairJobCards?CompanyDB=${encodeURIComponent(companyDB)}&Depot=${encodeURIComponent(depot || '')}`,
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   getRepairMechanics: async (companyDB, depot) => {
     try {
       const response = await get(
