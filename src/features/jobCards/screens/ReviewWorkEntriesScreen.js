@@ -19,7 +19,7 @@ import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { dashboardService, jobCardService, masterService, mechanicService, repairService, storeService, teamService, workEntryService } from '../../../api/services';
-import { formatDateTime, getDateTimeTimestamp, formatDurationHMS } from '../../../utils/helpers';
+import { formatDate, formatDateTime, getDateTimeTimestamp, formatDurationHMS } from '../../../utils/helpers';
 import { getLoginUserCode } from '../../../utils/roleAccess';
 
 const isAwaitingVerificationStatus = (value) => {
@@ -303,26 +303,41 @@ const parseDateTimeToken = (dateValue, timeValue) => {
   const timeRaw = String(timeValue || '').trim();
   if (!dateRaw) return null;
 
+  const odataMatch = dateRaw.match(/^\/Date\((-?\d+)/i);
+  const isoMatch = dateRaw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const dmyMatch = dateRaw.match(/^(\d{1,2})[-.](\d{1,2})[-.](\d{4})/);
   let hours = 0;
   let minutes = 0;
-  if (/^\d{3,4}$/.test(timeRaw)) {
-    const normalized = timeRaw.padStart(4, '0');
+  let seconds = 0;
+  if (/^\d{3,6}$/.test(timeRaw)) {
+    const normalized = timeRaw.length > 4 ? timeRaw.padStart(6, '0') : timeRaw.padStart(4, '0');
     hours = Math.max(0, Math.min(23, Number(normalized.slice(0, 2))));
     minutes = Math.max(0, Math.min(59, Number(normalized.slice(2, 4))));
+    if (normalized.length === 6) seconds = Math.max(0, Math.min(59, Number(normalized.slice(4, 6))));
   } else if (/^\d{1,2}$/.test(timeRaw)) {
     hours = Math.max(0, Math.min(23, Number(timeRaw)));
-  } else if (/^\d{1,2}:\d{2}$/.test(timeRaw)) {
-    const [h, m] = timeRaw.split(':').map((v) => Number(v));
+  } else if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(timeRaw)) {
+    const [h, m, s = 0] = timeRaw.split(':').map((v) => Number(v));
     if (Number.isFinite(h)) hours = Math.max(0, Math.min(23, h));
     if (Number.isFinite(m)) minutes = Math.max(0, Math.min(59, m));
+    if (Number.isFinite(s)) seconds = Math.max(0, Math.min(59, s));
+  }
+
+  if (isoMatch && /T\d{2}:\d{2}/i.test(dateRaw)) {
+    const dt = new Date(dateRaw);
+    if (!Number.isNaN(dt.getTime()) && timeRaw) dt.setHours(hours, minutes, seconds, 0);
+    return Number.isNaN(dt.getTime()) ? null : dt;
   }
 
   const mdy = dateRaw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (mdy) {
-    const month = Number(mdy[1]);
-    const day = Number(mdy[2]);
-    const year = Number(mdy[3]);
-    const dt = new Date(year, month - 1, day, hours, minutes, 0, 0);
+  if (mdy || dmyMatch || isoMatch || odataMatch) {
+    const month = Number(mdy?.[1] || (dmyMatch ? dmyMatch[2] : isoMatch?.[2]));
+    const day = Number(mdy?.[2] || (dmyMatch ? dmyMatch[1] : isoMatch?.[3]));
+    const year = Number(mdy?.[3] || dmyMatch?.[3] || isoMatch?.[1]);
+    const dt = odataMatch
+      ? new Date(Number(odataMatch[1]))
+      : new Date(year, month - 1, day, hours, minutes, seconds, 0);
+    if (odataMatch && timeRaw) dt.setHours(hours, minutes, seconds, 0);
     return Number.isNaN(dt.getTime()) ? null : dt;
   }
 
@@ -331,16 +346,64 @@ const parseDateTimeToken = (dateValue, timeValue) => {
 };
 
 const resolveLabourHours = (entry) => {
-  const direct = Number(entry?.LabourHours);
-  if (Number.isFinite(direct) && direct > 0) return direct;
+  // The review endpoint can return a non-duration numeric LabourHours value
+  // (for example 1111510.28) while the accepted and completed timestamps are
+  // valid. Prefer the actual elapsed time whenever both timestamps exist.
+  // Keep each date paired with its own time: StartDate may be empty while
+  // StartTime is "0", in which case acceptance date/time is the real start.
+  const startDateCandidates = [
+    [entry?.StartDate, entry?.StartTime],
+    [entry?.StartDt, entry?.StartTm],
+    [entry?.MechanicStartDt, entry?.MechanicStartTm],
+    [entry?.StartDateTime, entry?.StartTime],
+    [entry?.CreateDate, entry?.CreateTime],
+    [entry?.CreatedDate, entry?.CreatedTime],
+    [entry?.EntryDate, entry?.EntryTime],
+    [entry?.DocDate, entry?.DocTime],
+    [entry?.Date, entry?.Time],
+    [entry?.AcceptDate, entry?.AcceptTime],
+    [entry?.AcceptDt, entry?.AcceptTm],
+  ];
+  const usableStart = startDateCandidates.find(([dateValue]) => String(dateValue || '').trim());
+  const start = parseDateTimeToken(
+    usableStart?.[0],
+    usableStart?.[1],
+  );
+  const end = parseDateTimeToken(
+    entry?.CompleteDate || entry?.CompleteDt || entry?.CompletedDate || entry?.EndDate || entry?.EndDt,
+    entry?.CompleteTime || entry?.CompleteTm || entry?.CompletedTime || entry?.EndTime || entry?.EndTm,
+  );
+  if (start && end) {
+    const diffMs = end.getTime() - start.getTime();
+    if (Number.isFinite(diffMs) && diffMs > 0) return diffMs / 1000;
+  }
 
-  const start = parseDateTimeToken(entry?.StartDate || entry?.StartDt, entry?.StartTime || entry?.StartTm);
-  const end = parseDateTimeToken(entry?.CompleteDate || entry?.CompleteDt || entry?.EndDt, entry?.CompleteTime || entry?.CompleteTm || entry?.EndTm);
-  if (!start || !end) return null;
+  const durationValue = [
+    entry?.LabourHours,
+    entry?.LabourHrs,
+    entry?.MechanicsTotalHrs,
+    entry?.TotalLabourHours,
+    entry?.LaborHours,
+    entry?.TotalHrs,
+    entry?.TotalHours,
+    entry?.Hours,
+    entry?.Duration,
+  ].find((value) => value !== null && value !== undefined && String(value).trim() !== '');
+  if (durationValue !== null && durationValue !== undefined && String(durationValue).trim() !== '') {
+    const durationText = String(durationValue).trim();
+    const clockDuration = durationText.match(/^(\d+):([0-5]?\d)(?::([0-5]?\d))?$/);
+    if (clockDuration) {
+      return (Number(clockDuration[1]) * 3600) + (Number(clockDuration[2]) * 60) + Number(clockDuration[3] || 0);
+    }
+    const direct = Number(durationText);
+    if (Number.isFinite(direct) && direct > 0) {
+      // LabourHours/TotalHrs are hour values for normal work entries; values
+      // above one shift are treated as already being seconds for old records.
+      return direct <= 24 ? direct * 3600 : direct;
+    }
+  }
 
-  const diffMs = end.getTime() - start.getTime();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
-  return diffMs / 1000;
+  return null;
 };
 
 const resolveNotificationCandidates = (user) => {
@@ -365,7 +428,6 @@ const extractPendingWorkEntryIdsFromNotifications = (notifications = []) => {
   rows.forEach((item) => {
     const type = String(item?.Type || item?.type || '').trim().toUpperCase();
     const text = `${item?.Message || item?.message || ''} ${item?.Title || item?.title || ''}`.toLowerCase();
-    const isTowNotification = type === 'TOW' || text.includes('tow');
     const isWorkEntryVerificationText = text.includes('work entry') && (
       text.includes('verify')
       || text.includes('approve')
@@ -373,9 +435,10 @@ const extractPendingWorkEntryIdsFromNotifications = (notifications = []) => {
       || text.includes('inspection is required')
     );
     // LBWE (Line Breakdown Work Entry) is verified through the same queue as
-    // WE. Keep the raw backend type here because stored notifications retain
-    // their original Type even when the UI normalizes it to V.
-    const isVerificationItem = ['WE', 'LBWE', 'V'].includes(type) || isWorkEntryVerificationText || isTowNotification;
+    // WE. Do not treat every WE/LBWE notification as a review request: these
+    // types also include tow completions and part/tool notifications. The
+    // notification message identifies actual supervisor verification work.
+    const isVerificationItem = type === 'V' || isWorkEntryVerificationText;
     if (!isVerificationItem) return;
 
     const candidates = [
@@ -542,8 +605,8 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '', dedupeAssemblyD
     workDetails,
     status: entry?.Status || entry?.WorkStatus || fallbackItem?.Status || fallbackItem?.WorkStatus || '',
     completed: isWorkEntryCompleted(entry) || (dedupeAssemblyDetails && ['L', 'CL', 'SV'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase())),
-    date: entry?.CreateDate || entry?.Date || entry?.DocDate || fallbackItem?.UpdateDate || fallbackItem?.AssignDt || '',
-    time: entry?.CreateTime || entry?.Time || entry?.DocTime || fallbackItem?.UpdateTime || '',
+    date: entry?.CreateDate || entry?.CreatedDate || entry?.EntryDate || entry?.DocDate || entry?.Date || entry?.AcceptDate || entry?.AcceptDt || fallbackItem?.UpdateDate || fallbackItem?.AssignDt || '',
+    time: entry?.CreateTime || entry?.CreatedTime || entry?.EntryTime || entry?.DocTime || entry?.Time || entry?.AcceptTime || entry?.AcceptTm || fallbackItem?.UpdateTime || '',
     images,
     docNum: entry?.DocNum || entry?.WorkEntryDocNum || entry?.WorkEntryNo || '',
     jobCardDocEntry: entry?.JobCardDocEntry || entry?.JobCard || fallbackItem?.JobCardDocEntry || fallbackItem?.DocEntry || '',
@@ -558,8 +621,8 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '', dedupeAssemblyD
     incidentNo: fallbackItem?.IncidentNum || fallbackItem?.IncidentEntry || '',
     labourHours: labourHoursValue,
     labourHoursDisplay: labourHoursValue === null ? '-' : formatDurationHMS(labourHoursValue),
-    startDate: entry?.StartDate || entry?.StartDt || '',
-    startTime: entry?.StartTime || entry?.StartTm || '',
+    startDate: entry?.StartDate || entry?.StartDt || entry?.MechanicStartDt || entry?.StartDateTime || entry?.CreateDate || entry?.CreatedDate || entry?.EntryDate || entry?.DocDate || entry?.AcceptDate || entry?.AcceptDt || fallbackItem?.StartDate || fallbackItem?.StartDt || fallbackItem?.MechanicStartDt || fallbackItem?.CreateDate || fallbackItem?.CreatedDate || fallbackItem?.EntryDate || fallbackItem?.DocDate || fallbackItem?.AcceptDate || '',
+    startTime: entry?.StartTime || entry?.StartTm || entry?.MechanicStartTm || entry?.CreateTime || entry?.CreatedTime || entry?.EntryTime || entry?.DocTime || entry?.AcceptTime || entry?.AcceptTm || fallbackItem?.StartTime || fallbackItem?.StartTm || fallbackItem?.MechanicStartTm || fallbackItem?.CreateTime || fallbackItem?.CreatedTime || fallbackItem?.EntryTime || fallbackItem?.DocTime || fallbackItem?.AcceptTime || '',
     acceptDate: entry?.AcceptDate || entry?.AcceptDt || fallbackItem?.Incident?.SupervisorResponseDt || '',
     acceptTime: entry?.AcceptTime || entry?.AcceptTm || fallbackItem?.Incident?.SupervisorResponseTm || '',
     completeDate: entry?.CompleteDate || entry?.CompleteDt || entry?.EndDt || '',
@@ -1626,8 +1689,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
 
         <Text style={[styles.metaText, { color: colors.gray }]}>Mechanic: {entry.mechanicName}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Fault: {entry.faultName}</Text>
-        <Text style={[styles.metaText, { color: colors.gray }]}>Date: {formatDateTime(entry.date, entry.time) || '-'}</Text>
-        <Text style={[styles.metaText, { color: colors.gray }]}>Start: {formatDateTimeToken(entry.startDate, entry.startTime)}</Text>
+        <Text style={[styles.metaText, { color: colors.gray }]}>Start: {formatDateTimeToken(entry.date, entry.time)}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>End: {formatDateTimeToken(entry.completeDate, entry.completeTime)}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Labour: {entry.labourHoursDisplay || '-'}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Remarks: {entry.finalRemarks || '-'}</Text>
@@ -1822,8 +1884,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
               ];
 
               const timelineRows = [
-                { label: 'Accepted', value: formatDateTimeToken(entry?.acceptDate, entry?.acceptTime) },
-                { label: 'Started', value: formatDateTimeToken(entry?.startDate, entry?.startTime) },
+                { label: 'Start', value: formatDateTimeToken(entry?.date, entry?.time) },
                 { label: 'Ended', value: formatDateTimeToken(entry?.completeDate, entry?.completeTime) },
                 { label: 'Verified', value: formatDateTimeToken(entry?.verifyDate, entry?.verifyTime) },
                 { label: 'Total Labour', value: entry?.labourHoursDisplay || '-' },

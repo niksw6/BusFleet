@@ -98,12 +98,18 @@ const getFirstRequestValue = (item, keys) => keys
   .find((value) => value !== undefined && value !== null && String(value).trim() !== '') ?? '';
 const getRequestDate = (item) => getFirstRequestValue(item, [
   'ReqDate', 'RequestDate', 'RequestedDate', 'RequestDateTime', 'RequestedAt',
-  'CreatedDate', 'CreateDate', 'Date',
+  'CreatedDate', 'CreateDate', 'DocDate', 'Date',
 ]);
-const getRequestTime = (item) => getFirstRequestValue(item, [
+const getRequestTime = (item) => [
   'ReqTime', 'RequestTime', 'RequestedTime', 'RequestTm', 'ReqTm',
-  'CreatedTime', 'CreateTime', 'Time',
-]);
+  'CreatedTime', 'CreateTime', 'CreateTm', 'DocTime', 'U_RTime', 'Time',
+]
+  .map((key) => item?.[key])
+  .find((value) => (
+    value !== undefined
+    && value !== null
+    && !/^(?:0+|0{1,2}:0{2}(?::0{2})?)$/.test(String(value).trim())
+  )) ?? '';
 
 const groupByWorkEntry = (items) => {
   const map = new Map();
@@ -160,7 +166,10 @@ const formatRequestDateTime = (dateValue, timeValue) => {
 
   const embeddedTime = dateText.match(/[T ](\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?)/i)?.[1] || '';
   const rawTime = timeText || embeddedTime;
-  const numericTime = /^\d{1,4}$/.test(rawTime) ? rawTime.padStart(4, '0') : '';
+  const digitTime = /^\d{1,6}$/.test(rawTime) ? rawTime : '';
+  const numericTime = digitTime
+    ? (digitTime.length > 4 ? digitTime.padStart(6, '0') : digitTime.padStart(4, '0'))
+    : '';
   const clockMatch = rawTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?$/i);
   let hours = numericTime
     ? Number(numericTime.slice(0, 2))
@@ -172,7 +181,7 @@ const formatRequestDateTime = (dateValue, timeValue) => {
     : clockMatch
       ? Number(clockMatch[2])
       : (odataMatch || (!isoMatch && !slashMatch && !embeddedTime) ? parsedDate.getMinutes() : 0);
-  const seconds = Number(clockMatch?.[3] ?? (odataMatch ? parsedDate.getSeconds() : 0));
+  const seconds = Number(clockMatch?.[3] ?? (numericTime.length === 6 ? numericTime.slice(4, 6) : (odataMatch ? parsedDate.getSeconds() : 0)));
   const meridiem = clockMatch?.[4]?.toLowerCase();
   if (meridiem === 'pm' && hours < 12) hours += 12;
   if (meridiem === 'am' && hours === 12) hours = 0;
@@ -191,7 +200,9 @@ const formatRequestDateTime = (dateValue, timeValue) => {
       : `${String(requestedAt.getDate()).padStart(2, '0')}/${String(requestedAt.getMonth() + 1).padStart(2, '0')}/${requestedAt.getFullYear()}`;
   const hour12 = requestedAt.getHours() % 12 || 12;
   const timeLabel = `${String(hour12).padStart(2, '0')}:${String(requestedAt.getMinutes()).padStart(2, '0')}:${String(requestedAt.getSeconds()).padStart(2, '0')} ${requestedAt.getHours() >= 12 ? 'pm' : 'am'}`;
-  return `Requested: ${dateLabel} ${timeLabel}`;
+  const hasRequestTime = Boolean(rawTime)
+    || (odataMatch && (parsedDate.getHours() !== 0 || parsedDate.getMinutes() !== 0 || parsedDate.getSeconds() !== 0));
+  return `Requested: ${dateLabel}${hasRequestTime ? ` ${timeLabel}` : ''}`;
 };
 
 const PartsApprovalScreen = ({ navigation, route }) => {
@@ -248,8 +259,8 @@ const PartsApprovalScreen = ({ navigation, route }) => {
           mechanicCode: tool?.MechanicCode || tool?.UserCode || tool?.EmpCode || '',
           mechanicName: tool?.MechanicName || tool?.RequestedBy || tool?.UserName || '',
           vehicle: tool?.Vehicle || tool?.BusNo || tool?.VehicleNo || '',
-          requestedDate: tool?.ReqDate || tool?.RequestDate || tool?.Date || '',
-          requestedTime: tool?.ReqTime || tool?.RequestTime || tool?.Time || '',
+          requestedDate: getRequestDate(tool),
+          requestedTime: getRequestTime(tool),
           requestRemarks: tool?.Remarks || '',
           approved: null,
           remarks: '',
@@ -592,7 +603,7 @@ const PartsApprovalScreen = ({ navigation, route }) => {
                       {tool.vehicle ? <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>Vehicle: {tool.vehicle}</Text> : null}
                       {(tool.requestedDate || tool.requestedTime) ? (
                         <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>
-                          Requested: {tool.requestedDate ? parseODataDate(tool.requestedDate) : '-'}{tool.requestedTime ? ` ${tool.requestedTime}` : ''}
+                          {formatRequestDateTime(tool.requestedDate, tool.requestedTime)}
                         </Text>
                       ) : null}
                       {tool.requestRemarks ? <Text style={{ color: colors.gray, fontSize: 12, marginTop: 2 }}>Remarks: {tool.requestRemarks}</Text> : null}
