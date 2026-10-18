@@ -19,7 +19,7 @@ import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { dashboardService, jobCardService, masterService, mechanicService, repairService, storeService, teamService, workEntryService } from '../../../api/services';
-import { formatDate, formatDateTime, getDateTimeTimestamp, formatDurationHMS } from '../../../utils/helpers';
+import { formatDate, getDateTimeTimestamp, formatDurationHMS } from '../../../utils/helpers';
 import { getLoginUserCode } from '../../../utils/roleAccess';
 
 const isAwaitingVerificationStatus = (value) => {
@@ -306,6 +306,25 @@ const getStatusTone = (statusValue) => {
 const formatDateToken = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return '-';
+  const isoDate = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoDate) {
+    const [, year, month, day] = isoDate;
+    return `${day.padStart(2, '0')}-${month.padStart(2, '0')}-${year}`;
+  }
+  const slashDate = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slashDate) {
+    const [, first, second, year] = slashDate;
+    // API slash dates are M/D/YYYY (for example 10/17/2026); format them
+    // explicitly as the UI's required DD-MM-YYYY.
+    const month = Number(first) > 12 ? second : first;
+    const day = Number(first) > 12 ? first : second;
+    return `${String(day).padStart(2, '0')}-${String(month).padStart(2, '0')}-${year}`;
+  }
+  const dmyDate = raw.match(/^(\d{1,2})[-.](\d{1,2})[-.](\d{4})/);
+  if (dmyDate) {
+    const [, day, month, year] = dmyDate;
+    return `${day.padStart(2, '0')}-${month.padStart(2, '0')}-${year}`;
+  }
   const formatted = formatDate(raw);
   return String(formatted || '').trim() || raw;
 };
@@ -319,15 +338,36 @@ const formatDateTimeToken = (dateValue, timeValue) => {
     || /^(?:0{1,2}|12):00(?::00)?\s*AM$/i.test(rawTime)
     || /^0{1,2}:00(?::00)?$/i.test(rawTime)
   );
-  const hasEmbeddedTime = /(?:T|\s)\d{1,2}:\d{2}/i.test(rawDate);
-  const embeddedMidnight = /(?:T|\s)(?:00:00(?::00)?|12:00(?::00)?\s*AM)/i.test(rawDate);
-  if ((!rawTime || zeroTime) && (!hasEmbeddedTime || embeddedMidnight)) return formatDateToken(rawDate) || '-';
-  return formatDateTime(rawDate, zeroTime ? '' : rawTime) || formatDateToken(rawDate) || '-';
+  const embeddedTimeMatch = rawDate.match(/(?:T|\s)(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)/i);
+  const embeddedTime = embeddedTimeMatch?.[1] || '';
+  const embeddedMidnight = /^(?:00:00(?::00)?|12:00(?::00)?\s*AM)$/i.test(embeddedTime.trim());
+  const dateOnly = rawDate.includes('T') ? rawDate.split('T')[0] : rawDate.split(/\s+/)[0];
+  const dateLabel = formatDateToken(dateOnly);
+  const selectedTime = rawTime && !zeroTime ? rawTime : (!rawTime && !embeddedMidnight ? embeddedTime : '');
+  const timeLabel = formatApiTimeToken(selectedTime);
+  if (dateLabel !== '-' && timeLabel !== '-') return `${dateLabel} ${timeLabel}`;
+  return dateLabel !== '-' ? dateLabel : (timeLabel !== '-' ? timeLabel : '-');
 };
 
 const formatApiTimeToken = (value) => {
   const raw = String(value ?? '').trim();
   if (!raw || /^0+$/.test(raw)) return '-';
+  const ampmMatch = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i);
+  if (ampmMatch) {
+    const hours = Number(ampmMatch[1]);
+    const minutes = Number(ampmMatch[2]);
+    if (hours >= 1 && hours <= 12 && minutes <= 59) {
+      return `${hours}:${String(minutes).padStart(2, '0')} ${ampmMatch[3].toUpperCase()}`;
+    }
+  }
+  const clockMatch = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (clockMatch) {
+    const hours = Number(clockMatch[1]);
+    const minutes = Number(clockMatch[2]);
+    if (hours <= 23 && minutes <= 59) {
+      return `${hours % 12 || 12}:${String(minutes).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`;
+    }
+  }
   const match = raw.match(/^(\d{3,4})$/);
   if (!match) return raw;
   const token = match[1].padStart(4, '0');
@@ -2019,13 +2059,19 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
               ).trim().toUpperCase();
               const jobCardClosed = ['C', 'L', 'CL', 'CLOSED'].includes(jobCardStatus);
               const workEntryStatus = String(entry?.status || '').trim().toUpperCase();
+              const assemblyRepairReview = Boolean(
+                route?.params?.assemblyRepair
+                || route?.params?.assemblyRepairQueue
+                || String(selectedWorkEntry?.parentItem?.complaintType || '').trim().toUpperCase() === 'ASSEMBLY REPAIR'
+              );
+              const assemblyEntryRejected = assemblyRepairReview && ['W', 'RW'].includes(workEntryStatus);
               const workEntryVerified = Boolean(
                 toCleanString(entry?.verifyBy)
                 || toCleanString(entry?.verifyDate)
                 || toCleanString(entry?.verifyTime)
-                || ['SV', 'L', 'CL', 'CM', 'C', 'COMPLETE', 'COMPLETED', 'CLOSED'].includes(workEntryStatus)
+                || ['SV', 'L', 'CL', 'VERIFIED', 'APPROVED', 'CLOSED'].includes(workEntryStatus)
               );
-              const reviewActionsDisabled = jobCardClosed || workEntryVerified;
+              const reviewActionsDisabled = jobCardClosed || workEntryVerified || assemblyEntryRejected;
               const statusTone = getStatusTone(entry?.status);
               const overviewRows = [
                 { label: 'Mechanic', value: entry?.mechanicName && entry.mechanicName !== '-' ? entry.mechanicName : entry?.mechanicCode ? `Code ${entry.mechanicCode}` : '-' },
@@ -2052,7 +2098,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                   entry?.sourceData?.CompleteDate || entry?.completeDate,
                   entry?.sourceData?.CompleteTime || entry?.completeTime,
                 ) },
-                { label: 'Verified', value: formatDateTimeToken(entry?.verifyDate, entry?.verifyTime) },
+                { label: 'Verified', value: formatApiDateTimePair(entry?.verifyDate, entry?.verifyTime) },
                 { label: 'Total Labour', value: entry?.labourHoursDisplay || '-' },
               ];
 
@@ -2080,7 +2126,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                 { label: 'Due Hours', value: source?.DueHours },
                 { label: 'Status', value: getStatusLabel(source?.Status) },
                 { label: 'Start', value: formatApiDateTimePair(entry?.date, entry?.time) },
-                { label: 'Accepted', value: formatDateTimeToken(source?.AcceptDate, source?.AcceptTime) },
+                { label: 'Accepted', value: formatApiDateTimePair(source?.AcceptDate, source?.AcceptTime) },
                 { label: 'Completed', value: formatApiDateTimePair(source?.CompleteDate, source?.CompleteTime) },
                 { label: 'Labour Hours', value: entry?.labourHoursDisplay || '-' },
                 { label: 'Repair Type', value: source?.RepairType },
@@ -2245,7 +2291,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                         {detail.remarks ? <Text style={[styles.metaText, { color: colors.gray }]}>Remarks: {detail.remarks}</Text> : null}
                         <View style={[styles.entryTimeRow, { borderTopColor: colors.border || '#E5E7EB' }]}>
                           <MaterialIcons name="schedule" size={14} color={colors.gray} />
-                          <Text style={[styles.entryTimeText, { color: colors.gray }]}>Logged At: {formatDateTimeToken(detail.entryDate, detail.entryTime)}</Text>
+                          <Text style={[styles.entryTimeText, { color: colors.gray }]}>Logged At: {formatApiDateTimePair(detail.entryDate, detail.entryTime)}</Text>
                         </View>
                       </View>
                     ))
@@ -2271,7 +2317,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                               {img.imgType === 'BF' ? 'Before image' : img.imgType === 'AF' ? 'After image' : 'Work image'}
                             </Text>
                             <Text style={[styles.imageFileName, { color: colors.gray }]} numberOfLines={1}>{img.fileName || '-'}</Text>
-                            <Text style={[styles.imageFileName, { color: colors.gray }]}>Captured: {formatDateTimeToken(img.captureDate, img.captureTime)}</Text>
+                            <Text style={[styles.imageFileName, { color: colors.gray }]}>Captured: {formatApiDateTimePair(img.captureDate, img.captureTime)}</Text>
                             <Text style={[styles.imageFileName, { color: colors.gray }]}>Remarks: {img.remarks || '-'}</Text>
                           </View>
                         </View>

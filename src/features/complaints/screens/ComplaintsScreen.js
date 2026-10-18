@@ -15,6 +15,7 @@ import MaterialIcons from '../../../shared/components/AppIcon.js';
 import { PriorityBadge } from '../../../shared/components/Badge';
 import FAB from '../../../shared/components/FAB';
 import StandardListCard from '../../../shared/components/StandardListCard';
+import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { formatDateTime, getDateTimeTimestamp, truncateText, getStatusName, getComplaintTypeBadge } from '../../../utils/helpers';
@@ -466,6 +467,8 @@ const ComplaintsScreen = ({ navigation, route }) => {
     { key: 'I', label: 'In Progress' },
     { key: 'CM', label: 'Completed' },
   ];
+
+  if (initialLoading) return <Loader />;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>

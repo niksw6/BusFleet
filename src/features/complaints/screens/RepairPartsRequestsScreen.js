@@ -7,6 +7,7 @@ import Toast from 'react-native-toast-message';
 
 import { dashboardService, repairService } from '../../../api/services';
 import ScreenHeader from '../../../components/ScreenHeader';
+import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING } from '../../../constants/theme';
 import { getLoginUserCode, isStoreUser } from '../../../utils/roleAccess';
 
@@ -291,6 +292,8 @@ const RepairPartsRequestsScreen = ({ navigation, route = { params: {} } }) => {
       setWorkingKey('');
     }
   };
+
+  if (loading) return <Loader />;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>

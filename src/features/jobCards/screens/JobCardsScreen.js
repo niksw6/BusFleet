@@ -13,6 +13,7 @@ import MaterialIcons from '../../../components/AppIcon.js';
 
 import ScreenHeader from '../../../components/ScreenHeader';
 import StandardListCard from '../../../shared/components/StandardListCard';
+import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { jobCardService, repairService } from '../../../api/services';
 import { getStatusName, formatDateTime, getDateTimeTimestamp, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
@@ -70,6 +71,7 @@ const JobCardsScreen = ({ navigation, route }) => {
 
   const [jobCards, setJobCards] = useState([]);
   const [filteredJobCards, setFilteredJobCards] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState(normalizeJobCardFilter(route?.params?.initialFilter));
@@ -104,6 +106,7 @@ const JobCardsScreen = ({ navigation, route }) => {
   }, [route?.params?.initialFilter, route?.params?.focusDocEntry]);
 
   const fetchJobCards = async () => {
+    setLoading(true);
     try {
       const depot = user?.Depot || user?.depot || '';
       const companyDb = dbName || 'MUTSPL_TEST';
@@ -111,8 +114,8 @@ const JobCardsScreen = ({ navigation, route }) => {
         jobCardService.getJobCards(companyDb, null, depot),
         repairService.getRepairJobCards(companyDb, depot),
       ]);
-      console.log('📋 Job cards response:', response);
       const response = jobCardResult.status === 'fulfilled' ? jobCardResult.value : null;
+      console.log('📋 Job cards response:', response);
       const regularCards = jobCardResult.status === 'fulfilled'
         && jobCardResult.value?.Success
         && Array.isArray(jobCardResult.value?.Data)
@@ -127,6 +130,8 @@ const JobCardsScreen = ({ navigation, route }) => {
     } catch (error) {
       console.error('Error fetching job cards:', error);
       setJobCards([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -400,6 +405,8 @@ const JobCardsScreen = ({ navigation, route }) => {
       </View>
     </StandardListCard>
   );
+
+  if (loading) return <Loader />;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>

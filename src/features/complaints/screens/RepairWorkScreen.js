@@ -113,7 +113,8 @@ const RepairWorkScreen = ({ route }) => {
   const [displayWorkEntry, setDisplayWorkEntry] = useState(String(route.params?.workEntryDocEntry || ''));
   const [displayJobCardStatus, setDisplayJobCardStatus] = useState('');
   const [jobCardDetails, setJobCardDetails] = useState(null);
-  const [entryLoading, setEntryLoading] = useState(!route.params?.workEntryDocEntry);
+  const [entryLoading, setEntryLoading] = useState(true);
+  const [jobCardLoading, setJobCardLoading] = useState(Boolean(jobCardEntry));
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState('W');
@@ -156,7 +157,11 @@ const RepairWorkScreen = ({ route }) => {
     || remarks !== savedRemarks;
 
   const loadRepairJobCard = useCallback(async () => {
-    if (!jobCardEntry) return;
+    if (!jobCardEntry) {
+      setJobCardLoading(false);
+      return;
+    }
+    setJobCardLoading(true);
     try {
       const response = await repairService.getRepairJobCard(dbName, jobCardEntry);
       const record = getRepairJobCardRecord(response);
@@ -166,6 +171,8 @@ const RepairWorkScreen = ({ route }) => {
       setDisplayJobCardStatus(String(getRepairJobCardValue(record, ['JobCardStatus', 'Status', 'AssemblyStatus']) || ''));
     } catch (error) {
       console.warn('[RepairWork] Repair job card details unavailable:', error?.message || error);
+    } finally {
+      setJobCardLoading(false);
     }
   }, [dbName, jobCardEntry]);
 
@@ -1020,7 +1027,7 @@ const RepairWorkScreen = ({ route }) => {
     name: getImageName(image, fallback),
   });
 
-  if (entryLoading) return <Loader />;
+  if (entryLoading || jobCardLoading) return <Loader />;
 
   if (!workEntryDocEntry) {
     return (

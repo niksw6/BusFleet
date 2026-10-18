@@ -20,7 +20,7 @@ import Loader from '../../../shared/components/Loader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { complaintService, jobCardService, masterService, workEntryService, storeService, teamService, mechanicService, lineBreakdownService } from '../../../api/services';
 import ModalSelector from '../../../shared/components/ModalSelector';
-import { formatDate, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
+import { formatDate, formatDateTime, getStatusName, formatJobCardDisplayNo, getJobTypeCode } from '../../../utils/helpers';
 import { getUserDepot, getUserRole, getUserTeamCode, isDriverUser, isFieldStaffUser, isSupervisorUser, isTeamLeaderUser } from '../../../utils/roleAccess';
 import { renderTabContent as renderRichTabContent, buildTheme as buildRichTheme } from './WorkOrderRenderers.js';
 
@@ -404,18 +404,34 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     }
 
     if (value && typeof value === 'object') {
-      const fields = Object.entries(value).filter(([, childValue]) => hasResponseValue(childValue));
+      const fields = Object.entries(value).filter(([childKey, childValue]) => (
+        hasResponseValue(childValue)
+        && (!/(?:Time|Tm)$/i.test(childKey) || Boolean(getPreferredWorkEntryTime(childValue)))
+      ));
       if (fields.length === 0) return null;
       return (
         <View style={styles.workEntryResponseGrid}>
-          {fields.map(([childKey, childValue]) => (
-            <View key={`${key || 'object'}-${childKey}`} style={styles.workEntryResponseCell}>
-              <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>
-                {formatWorkEntryResponseLabel(childKey)}
-              </Text>
-              {renderWorkEntryResponseValue(childValue, childKey, depth + 1)}
-            </View>
-          ))}
+          {fields.map(([childKey, childValue]) => {
+            const dateMatch = childKey.match(/^(.*?)(Date|Dt)$/i);
+            const companionTime = dateMatch
+              ? getPreferredWorkEntryTime(value[`${dateMatch[1]}Time`], value[`${dateMatch[1]}Tm`])
+              : undefined;
+            const isDateField = Boolean(dateMatch);
+            const isTimeField = /(?:Time|Tm)$/i.test(childKey);
+            const displayedChildValue = isDateField
+              ? formatWorkEntryDateTime(childValue, companionTime)
+              : isTimeField ? formatMechanicTime(childValue) : null;
+            return (
+              <View key={`${key || 'object'}-${childKey}`} style={styles.workEntryResponseCell}>
+                <Text style={[styles.workEntryResponseLabel, { color: colors.gray }]}>
+                  {formatWorkEntryResponseLabel(childKey)}
+                </Text>
+                {isDateField || isTimeField
+                  ? <Text style={[styles.workEntryResponseValue, { color: colors.dark }]}>{displayedChildValue || '-'}</Text>
+                  : renderWorkEntryResponseValue(childValue, childKey, depth + 1)}
+              </View>
+            );
+          })}
         </View>
       );
     }
@@ -485,10 +501,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       { label: 'Depot', value: response.Depot },
       { label: 'Job Card', value: response.JobCardDocEntry },
       { label: 'Work Entry No', value: response.DocNum || response.DocEntry },
-      { label: 'Start Date', value: overviewSource.StartDate || overviewSource.StartDt },
-      { label: 'Start Time', value: overviewSource.StartTime || overviewSource.StartTm },
-      { label: 'Complete Date', value: overviewSource.CompleteDate },
-      { label: 'Complete Time', value: overviewSource.CompleteTime },
+      { label: 'Start', value: formatWorkEntryDateTime(overviewSource.StartDate || overviewSource.StartDt || overviewSource.MechanicStartDt || overviewSource.AcceptDate || overviewSource.AcceptDt, getPreferredWorkEntryTime(overviewSource.StartTime, overviewSource.StartTm, overviewSource.MechanicStartTm, overviewSource.AcceptTime, overviewSource.AcceptTm)) },
+      { label: 'Completed', value: formatWorkEntryDateTime(overviewSource.CompleteDate || overviewSource.CompleteDt || overviewSource.EndDate || overviewSource.EndDt, getPreferredWorkEntryTime(overviewSource.CompleteTime, overviewSource.CompleteTm, overviewSource.EndTime, overviewSource.EndTm, overviewSource.MechanicEndTm)) },
       { label: 'Total Hours', value: overviewSource.LabourHours ?? overviewSource.TotalHrs },
     ].filter(({ value }) => (
       value !== null
@@ -568,10 +582,10 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         ], 'fault'))}
 
         {renderCard('Timeline', renderRows([
-          { label: 'Accepted', value: `${responseValue(response.AcceptDate)} ${responseValue(response.AcceptTime)}` },
-          { label: 'Started', value: `${responseValue(response.StartDate)} ${responseValue(response.StartTime)}` },
-          { label: 'Completed', value: `${responseValue(response.CompleteDate)} ${responseValue(response.CompleteTime)}` },
-          { label: 'Verified', value: `${responseValue(response.VerifyDate)} ${responseValue(response.VerifyTime)}` },
+          { label: 'Accepted', value: formatWorkEntryDateTime(response.AcceptDate || response.AcceptDt, getPreferredWorkEntryTime(response.AcceptTime, response.AcceptTm)) },
+          { label: 'Started', value: formatWorkEntryDateTime(response.StartDate || response.StartDt || response.AcceptDate || response.AcceptDt, getPreferredWorkEntryTime(response.StartTime, response.StartTm, response.AcceptTime, response.AcceptTm)) },
+          { label: 'Completed', value: formatWorkEntryDateTime(response.CompleteDate || response.CompleteDt || response.EndDate || response.EndDt, getPreferredWorkEntryTime(response.CompleteTime, response.CompleteTm, response.EndTime, response.EndTm, response.MechanicEndTm)) },
+          { label: 'Verified', value: formatWorkEntryDateTime(response.VerifyDate || response.VerifyDt, getPreferredWorkEntryTime(response.VerifyTime, response.VerifyTm)) },
         ], 'timeline'))}
 
         {renderCard('Verification', renderRows(verificationRows, 'verification'))}
@@ -672,8 +686,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       ...entry,
       __rawWorkEntry: entry,
       AssignedMechanics: entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-',
-      MechanicStartDt: entry?.StartDate || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
-      MechanicStartTm: entry?.StartTime || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
+      MechanicStartDt: entry?.StartDate || entry?.StartDt || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || entry?.AcceptDate || entry?.AcceptDt || null,
+      MechanicStartTm: entry?.StartTime || entry?.StartTm || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || entry?.AcceptTime || entry?.AcceptTm || null,
       MechanicsTotalHrs: entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours ?? null,
       WorkDoneDetails: getDisplayText(entry?.WorkDone, entry?.FinalRemarks, entry?.Remarks, entry?.Description),
       DetailedFaults: Array.isArray(entry?.DetailedFaults) && entry.DetailedFaults.length > 0
@@ -954,8 +968,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
         ...entry,
         WorkEntryDocEntry: asWorkEntryId(entry),
         AssignedMechanics: String(entry?.MechanicName || entry?.MechName || entry?.UserName || entry?.UserCode || '-').trim(),
-        MechanicStartDt: entry?.StartDate || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || null,
-        MechanicStartTm: entry?.StartTime || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || null,
+        MechanicStartDt: entry?.StartDate || entry?.StartDt || entry?.CreateDate || entry?.EntryDate || entry?.DocDate || entry?.AcceptDate || entry?.AcceptDt || null,
+        MechanicStartTm: entry?.StartTime || entry?.StartTm || entry?.CreateTime || entry?.EntryTime || entry?.DocTime || entry?.AcceptTime || entry?.AcceptTm || null,
         MechanicsTotalHrs: entry?.LabourHours ?? entry?.TotalHrs ?? entry?.Hours ?? null,
         WorkDoneDetails: getDisplayText(entry?.WorkDone, entry?.FinalRemarks, entry?.Remarks, entry?.Description),
         DetailedFaults: Array.isArray(entry?.Faults) && entry.Faults.length > 0
@@ -1088,23 +1102,89 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       })
       .filter(Boolean)
   ).values());
-  const mechanicsFromSources = Array.isArray(workOrder?.Mechanics) && workOrder.Mechanics.length > 0
-    ? (transferAccepted && availableMechanics.length > 0 ? availableMechanics : workOrder.Mechanics)
-    : (availableMechanics.length > 0 ? availableMechanics : derivedMechanics);
   const isTransferredJobCard = isTransferFlagSet(workOrder?.IsTransfer);
+  const mergeSplitMechanicIdentity = (rows) => {
+    const cleanIdentity = (value) => {
+      const identity = String(value || '').trim();
+      return identity === '-' ? '' : identity;
+    };
+    const mechanics = (Array.isArray(rows) ? rows : []).filter((row) => (
+      cleanIdentity(row?.MechanicCode || row?.MechCode || row?.EmpCode || row?.UserCode || row?.Code)
+      || cleanIdentity(row?.MechanicName || row?.MechName || row?.EmployeeName || row?.UserName || row?.Name)
+      || (cleanIdentity(row?.Mechanic) && !/^\d+$/.test(cleanIdentity(row?.Mechanic)))
+      || /^\d+$/.test(cleanIdentity(row?.Mechanic))
+    ));
+    const getExplicitName = (row) => cleanIdentity(row?.MechanicName || row?.MechName || row?.EmployeeName || row?.UserName || row?.Name);
+    const getCode = (row) => {
+      const code = cleanIdentity(row?.MechanicCode || row?.MechCode || row?.EmpCode || row?.UserCode || row?.Code);
+      const mechanicValue = cleanIdentity(row?.Mechanic);
+      return code || (!getExplicitName(row) && /^\d+$/.test(mechanicValue) ? mechanicValue : '');
+    };
+    const getName = (row) => {
+      const name = getExplicitName(row);
+      if (name) return name;
+      const mechanicValue = cleanIdentity(row?.Mechanic);
+      return /^\d+$/.test(mechanicValue) ? '' : mechanicValue;
+    };
+    const codeOnly = mechanics.filter((row) => getCode(row) && !getName(row));
+    const nameOnly = mechanics.filter((row) => getName(row) && !getCode(row));
+    if (codeOnly.length !== 1 || nameOnly.length !== 1 || mechanics.length !== 2) return mechanics;
+    const combined = { ...codeOnly[0], ...nameOnly[0], MechanicCode: getCode(codeOnly[0]), MechanicName: getName(nameOnly[0]) };
+    return [combined];
+  };
+  const mechanicsFromSourcesRaw = Array.isArray(workOrder?.Mechanics) && workOrder.Mechanics.length > 0
+    ? (isTransferredJobCard && transferAccepted && availableMechanics.length > 0 ? availableMechanics : workOrder.Mechanics)
+    : (availableMechanics.length > 0 ? availableMechanics : derivedMechanics);
+  const mechanicsEnrichedFromEntries = mechanicsFromSourcesRaw.map((mechanic) => {
+    const directCode = String(mechanic?.MechanicCode || mechanic?.MechCode || mechanic?.EmpCode || mechanic?.UserCode || mechanic?.Code || '').trim();
+    const legacyCode = String(mechanic?.Mechanic || '').trim();
+    const code = directCode || (/^\d+$/.test(legacyCode) ? legacyCode : '');
+    if (!code) return mechanic;
+    const matchingEntry = (Array.isArray(workOrderEntries) ? workOrderEntries : []).find((entry) => (
+      String(entry?.MechanicCode || entry?.MechCode || entry?.UserCode || '').trim() === code
+    ));
+    const mechanicName = String(matchingEntry?.MechanicName || matchingEntry?.MechName || matchingEntry?.AssignedMechanics || matchingEntry?.UserName || '').trim();
+    return mechanicName && (!mechanic?.MechanicName || String(mechanic.MechanicName).trim() === '-')
+      ? { ...mechanic, MechanicCode: code, MechanicName: mechanicName }
+      : mechanic;
+  });
+  const mechanicsFromSources = Array.from(mergeSplitMechanicIdentity(mechanicsEnrichedFromEntries).reduce((unique, mechanic) => {
+    const directCode = String(mechanic?.MechanicCode || mechanic?.MechCode || mechanic?.EmpCode || mechanic?.UserCode || mechanic?.Code || '').trim();
+    const legacyValue = String(mechanic?.Mechanic || '').trim();
+    const code = (directCode || (/^\d+$/.test(legacyValue) ? legacyValue : '')).toLowerCase();
+    const name = String(mechanic?.MechanicName || mechanic?.MechName || mechanic?.EmployeeName || mechanic?.UserName || mechanic?.Name || '').trim().toLowerCase();
+    const key = code && code !== '-' ? `code:${code}` : (name && name !== '-' ? `name:${name}` : `row:${unique.size}`);
+    const existing = unique.get(key);
+    const combined = existing ? { ...existing, ...mechanic } : { ...mechanic };
+    if (code && code !== '-') combined.MechanicCode = directCode || legacyValue;
+    if (name && name !== '-') combined.MechanicName = mechanic?.MechanicName || mechanic?.MechName || mechanic?.EmployeeName || mechanic?.UserName || mechanic?.Name;
+    else if (existing?.MechanicName) combined.MechanicName = existing.MechanicName;
+    unique.set(key, combined);
+    return unique;
+  }, new Map()).values());
   const workEntryMechanicCodes = new Set((Array.isArray(workOrderEntries) ? workOrderEntries : [])
     .map((entry) => String(entry?.MechanicCode || entry?.MechCode || entry?.UserCode || '').trim().toLowerCase())
     .filter(Boolean));
   const workEntryMechanicNames = new Set((Array.isArray(workOrderEntries) ? workOrderEntries : [])
     .map((entry) => String(entry?.MechanicName || entry?.MechName || entry?.AssignedMechanics || entry?.UserName || '').trim().toLowerCase())
     .filter(Boolean));
+  const hasMechanicIdentity = (mechanic) => {
+    const identityValues = [
+      mechanic?.MechanicCode, mechanic?.MechCode, mechanic?.EmpCode, mechanic?.UserCode, mechanic?.Code,
+      mechanic?.MechanicName, mechanic?.MechName, mechanic?.EmployeeName, mechanic?.UserName, mechanic?.Name,
+      mechanic?.AssignedMechanics, mechanic?.mechanicName,
+    ].map((value) => String(value || '').trim()).filter((value) => value && value !== '-');
+    const legacyMechanic = String(mechanic?.Mechanic || '').trim();
+    return identityValues.length > 0 || (legacyMechanic && legacyMechanic !== '-');
+  };
+  const mechanicsWithIdentity = mechanicsFromSources.filter(hasMechanicIdentity);
   const mechanicsForDisplay = isTransferredJobCard
-    ? mechanicsFromSources.filter((mechanic) => {
+    ? mechanicsWithIdentity.filter((mechanic) => {
       const code = String(mechanic?.MechanicCode || mechanic?.MechCode || mechanic?.Code || mechanic?.UserCode || '').trim().toLowerCase();
       const name = String(mechanic?.MechanicName || mechanic?.MechName || mechanic?.EmployeeName || mechanic?.UserName || mechanic?.Name || '').trim().toLowerCase();
       return (code && workEntryMechanicCodes.has(code)) || (name && workEntryMechanicNames.has(name));
     })
-    : mechanicsFromSources;
+    : mechanicsWithIdentity;
   const mechanicCount = mechanicsForDisplay.length;
   const partCount = Array.isArray(workOrder?.Parts) ? workOrder.Parts.length : 0;
 
@@ -1416,20 +1496,41 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
     if (!raw && raw !== 0) return '-';
     const value = String(raw).trim();
     if (!value) return '-';
-    if (/^\d{3,4}$/.test(value)) {
+    if (/^12:?00(?::00)?\s*AM$/i.test(value) || /^0+$/.test(value.replace(/\D/g, ''))) return '-';
+    if (/^\d{1,4}$/.test(value)) {
       const normalized = value.padStart(4, '0');
-      return `${normalized.slice(0, 2)}:${normalized.slice(2)}`;
+      const hours = Number(normalized.slice(0, 2));
+      const minutes = Number(normalized.slice(2));
+      if (hours <= 23 && minutes <= 59) return `${normalized.slice(0, 2)}:${normalized.slice(2)}`;
     }
     const hhMmMatch = value.match(/^(\d{2}):(\d{2})/);
     if (hhMmMatch) return `${hhMmMatch[1]}:${hhMmMatch[2]}`;
     return value;
   };
 
+  const getPreferredWorkEntryTime = (...values) => values
+    .map((value) => String(value ?? '').trim())
+    .find((value) => value
+      && !/^0+$/.test(value.replace(/\D/g, ''))
+      && !/^12:?00(?::00)?\s*AM$/i.test(value)) || '';
+
+  const formatWorkEntryDateTime = (dateValue, timeValue) => {
+    const rawTime = String(timeValue ?? '').trim();
+    const numericTime = rawTime.replace(/\D/g, '');
+    const isPlaceholderMidnight = /^12:?00(?::00)?\s*AM$/i.test(rawTime);
+    const hasUsableTime = Boolean(rawTime) && !/^0+$/.test(numericTime) && !isPlaceholderMidnight;
+    if (!dateValue) return hasUsableTime ? formatMechanicTime(rawTime) : '-';
+    const formattedDate = formatDate(dateValue);
+    if (!hasUsableTime) return formattedDate || '-';
+    const normalizedTime = formatMechanicTime(rawTime);
+    return formatDateTime(dateValue, normalizedTime) || `${formattedDate} ${normalizedTime}`.trim() || '-';
+  };
+
   const getMechanicSummaryFromCurrentWO = () => {
     const mechanics = Array.isArray(workOrder?.Mechanics) ? workOrder.Mechanics : [];
     const workEntries = Array.isArray(workOrder?.WorkEntries) ? workOrder.WorkEntries : [];
     const firstWithStart = workEntries.find(entry => (
-      entry?.StartDate || entry?.StartDt || entry?.StartTime || entry?.StartTm
+      entry?.StartDate || entry?.StartDt || entry?.StartTime || entry?.StartTm || entry?.AcceptDate || entry?.AcceptDt || entry?.AcceptTime || entry?.AcceptTm
     )) || mechanics.find(mechanic => mechanic?.StartDt || mechanic?.StartTm)
       || workEntries[0]
       || mechanics[0]
@@ -1452,8 +1553,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
       : mechanicHours.length > 0
         ? mechanicHours.reduce((sum, value) => sum + Number(value), 0)
         : workOrder?.TotalHrs ?? '-';
-    const startDate = firstWithStart?.StartDate || firstWithStart?.StartDt || firstWithStart?.CreateDate || firstWithStart?.EntryDate || firstWithStart?.DocDate;
-    const startTime = firstWithStart?.StartTime || firstWithStart?.StartTm || firstWithStart?.CreateTime || firstWithStart?.EntryTime || firstWithStart?.DocTime;
+    const startDate = firstWithStart?.StartDate || firstWithStart?.StartDt || firstWithStart?.CreateDate || firstWithStart?.EntryDate || firstWithStart?.DocDate || firstWithStart?.AcceptDate || firstWithStart?.AcceptDt;
+    const startTime = firstWithStart?.StartTime || firstWithStart?.StartTm || firstWithStart?.CreateTime || firstWithStart?.EntryTime || firstWithStart?.DocTime || firstWithStart?.AcceptTime || firstWithStart?.AcceptTm;
 
     return {
       startDt: startDate ? formatDate(startDate) : '-',
@@ -2037,13 +2138,13 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
   };
 
   const getMechanicName = (mechanic) => (
-    mechanic?.Mechanic
-    || mechanic?.MechanicName
+    mechanic?.MechanicName
     || mechanic?.EmployeeName
     || mechanic?.UserName
     || mechanic?.FirstName
     || mechanic?.Name
     || mechanic?.Mech
+    || mechanic?.Mechanic
     || '-'
   );
 
@@ -2742,7 +2843,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                 color={selectedMechanics.includes(getMechanicName(mechanic)) ? colors.primary : colors.primary}
               />
               <Text style={[styles.mechanicName, { color: colors.dark }]}>
-                {getMechanicName(mechanic)}
+                {getMechanicName(mechanic)}{getMechanicCode(mechanic) ? ` (${getMechanicCode(mechanic)})` : ''}
               </Text>
               {isMechanicAssigned(mechanic) && (
                 <Text style={{ color: '#2B7D2B', fontWeight: '700', marginLeft: 'auto' }}>Assigned</Text>
@@ -2773,7 +2874,7 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
             return (
               <View key={`${getMechanicName(mechanic)}-${getMechanicCode(mechanic) || index}`} style={styles.mappingRow}>
                 <Text style={[styles.mappingMechanicName, { color: colors.dark }]} numberOfLines={1}>
-                  {getMechanicName(mechanic)}
+                  {getMechanicName(mechanic)}{getMechanicCode(mechanic) ? ` (${getMechanicCode(mechanic)})` : ''}
                 </Text>
                 {faultLabels.length > 0 ? (
                   <View style={styles.mappingFaultsWrap}>
@@ -2894,13 +2995,15 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
                       <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.AssignedMechanics || '-'}</Text>
                     </View>
                     <View style={styles.workOrderEntryRow}>
-                      <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>StartDt:</Text>
-                      <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.MechanicStartDt ? formatDate(entry.MechanicStartDt) : '-'}</Text>
+                      <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Start:</Text>
+                      <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{formatWorkEntryDateTime(entry?.StartDate || entry?.StartDt || entry?.MechanicStartDt || entry?.AcceptDate || entry?.AcceptDt, getPreferredWorkEntryTime(entry?.StartTime, entry?.StartTm, entry?.MechanicStartTm, entry?.AcceptTime, entry?.AcceptTm))}</Text>
                     </View>
-                    <View style={styles.workOrderEntryRow}>
-                      <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>StartTm:</Text>
-                      <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{formatMechanicTime(entry?.MechanicStartTm)}</Text>
-                    </View>
+                    {(entry?.CompleteDate || entry?.CompleteDt || entry?.CompletedDate || entry?.EndDate || entry?.EndDt) && (
+                      <View style={styles.workOrderEntryRow}>
+                        <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>Completed:</Text>
+                        <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{formatWorkEntryDateTime(entry?.CompleteDate || entry?.CompleteDt || entry?.CompletedDate || entry?.EndDate || entry?.EndDt, getPreferredWorkEntryTime(entry?.CompleteTime, entry?.CompleteTm, entry?.CompletedTime, entry?.EndTime, entry?.EndTm, entry?.MechanicEndTm))}</Text>
+                      </View>
+                    )}
                     <View style={styles.workOrderEntryRow}>
                       <Text style={[styles.workOrderEntryLabel, { color: colors.gray }]}>TotalHrs:</Text>
                       <Text style={[styles.workOrderEntryValue, { color: colors.dark }]}>{entry?.MechanicsTotalHrs ?? '-'}</Text>
@@ -3351,8 +3454,8 @@ const WorkOrderDetailScreen = ({ route, navigation }) => {
 
               {[
                 ['Assigned', selectedWorkEntry?.AssignedMechanics],
-                ['Start Date', selectedWorkEntry?.MechanicStartDt ? formatDate(selectedWorkEntry.MechanicStartDt) : null],
-                ['Start Time', formatMechanicTime(selectedWorkEntry?.MechanicStartTm)],
+                ['Start', formatWorkEntryDateTime(selectedWorkEntry?.StartDate || selectedWorkEntry?.StartDt || selectedWorkEntry?.MechanicStartDt || selectedWorkEntry?.AcceptDate || selectedWorkEntry?.AcceptDt, getPreferredWorkEntryTime(selectedWorkEntry?.StartTime, selectedWorkEntry?.StartTm, selectedWorkEntry?.MechanicStartTm, selectedWorkEntry?.AcceptTime, selectedWorkEntry?.AcceptTm))],
+                ['Completed', formatWorkEntryDateTime(selectedWorkEntry?.CompleteDate || selectedWorkEntry?.CompleteDt || selectedWorkEntry?.CompletedDate || selectedWorkEntry?.EndDate || selectedWorkEntry?.EndDt, getPreferredWorkEntryTime(selectedWorkEntry?.CompleteTime, selectedWorkEntry?.CompleteTm, selectedWorkEntry?.CompletedTime, selectedWorkEntry?.EndTime, selectedWorkEntry?.EndTm, selectedWorkEntry?.MechanicEndTm))],
                 ['Total Hours', selectedWorkEntry?.MechanicsTotalHrs],
                 ['Vehicle', selectedWorkEntry?.Vehicle],
                 ['Work Done', getDisplayText(selectedWorkEntry?.WorkDoneDetails, selectedWorkEntry?.WorkDone, selectedWorkEntry?.WorkDesc, selectedWorkEntry?.Remarks, selectedWorkEntry?.Description, selectedWorkEntry?.FaultDesc)],

@@ -732,6 +732,8 @@ const CreateJobCardScreen = ({ route, navigation }) => {
   };
 
 
+  if (loadingData || loadingMechanics) return <Loader />;
+
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.light }]}

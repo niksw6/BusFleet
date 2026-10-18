@@ -14,6 +14,7 @@ import { Text, IconButton, ActivityIndicator } from 'react-native-paper';
 import { useSelector, useDispatch } from 'react-redux';
 import { useFocusEffect } from '@react-navigation/native';
 import MaterialIcons from '../../../shared/components/AppIcon.js';
+import Loader from '../../../shared/components/Loader';
 import Toast from 'react-native-toast-message';
 import { getLogs, clearLogs } from '../../../utils/logger';
 
@@ -258,7 +259,7 @@ const NotificationsScreen = ({ navigation }) => {
 
   async function fetchNotifications() {
     try {
-      if (notifications.length === 0) setInitialLoading(true);
+      setInitialLoading(true);
       const companyDb = dbName || 'MUTSPL_TEST';
       const identityCandidates = resolveUserIdCandidates();
       const primaryIdentity = identityCandidates[0] || '';
@@ -381,6 +382,11 @@ const NotificationsScreen = ({ navigation }) => {
 
   const handleNotificationPress = async (item) => {
     const notificationType = String(item?.Type || item?.type || '').trim().toUpperCase();
+    const notificationTypeFields = [item?.NotificationType, item?.notificationType, item?.NotificationCode, item?.notificationCode]
+      .map(value => String(value || '').trim().toUpperCase());
+    if (['PRT', 'STISS'].includes(notificationType) || notificationTypeFields.some(value => ['PRT', 'STISS'].includes(value))) {
+      return;
+    }
     if ((isMechanicUser(user) || isFieldStaffUser(user)) && notificationType === 'WETC') {
       return;
     }
@@ -400,8 +406,6 @@ const NotificationsScreen = ({ navigation }) => {
     const issuedAssemblyText = notificationText.includes('issued assembly')
       || notificationText.includes('assembly issued')
       || notificationText.includes('receive assembly');
-    const notificationTypeFields = [item?.NotificationType, item?.notificationType, item?.NotificationCode, item?.notificationCode]
-      .map(value => String(value || '').trim().toUpperCase());
     const isRepairJobCardDetailsNotification = rawNotificationType === 'JR'
       || type === 'JR'
       || notificationTypeFields.includes('JR');
@@ -568,6 +572,43 @@ const NotificationsScreen = ({ navigation }) => {
         || type === 'JCT'
         || Boolean(item?.JobCardDocEntry || item?.jobCardDocEntry || item?.ComplaintNo || item?.complaintNo || item?.BreakdownNo || item?.BreakdownDocEntry || item?.BreakdownId)
       );
+
+    if ((isMechanicUser(user) || isFieldStaffUser(user)) && (
+      rawNotificationType === 'RWER'
+      || type === 'RWER'
+      || notificationTypeFields.includes('RWER')
+    )) {
+      const repairWorkEntryDocEntry = item?.WorkEntryDocEntry
+        || item?.workEntryDocEntry
+        || item?.WorkEntryEntry
+        || item?.WorkEntryNo
+        || item?.workEntryNo
+        || item?.ReferenceDocEntry
+        || item?.RefDocEntry
+        || '';
+      const repairJobCardEntry = item?.JobCardEntry
+        || item?.jobCardEntry
+        || item?.JobCardDocEntry
+        || item?.jobCardDocEntry
+        || item?.RepairJobCardEntry
+        || item?.repairJobCardEntry
+        || item?.JobCardNo
+        || item?.jobCardNo
+        || jobCardReference
+        || '';
+
+      navigation.navigate('RepairWork', {
+        jobCardEntry: repairJobCardEntry,
+        jobCardNo: item?.JobCardNo || item?.jobCardNo || item?.JobCardDocNum || repairJobCardEntry,
+        incidentEntry: item?.IncidentEntry || item?.IncidentDocEntry || item?.IncidentNo || '',
+        assemblyCode: item?.AssemblyCode || item?.assemblyCode || item?.Assembly || item?.AssemblyNo || '',
+        assemblyName: item?.AssemblyName || item?.assemblyName || item?.AssemblyDescription || 'Assembly',
+        workEntryDocEntry: repairWorkEntryDocEntry || null,
+        notification: item,
+        dbName: dbName || 'MUTSPL_TEST',
+      });
+      return;
+    }
 
     if ((isMechanicUser(user) || isFieldStaffUser(user)) && (rawNotificationType === 'WER' || type === 'WER')) {
       const workEntryDocEntry = item?.WorkEntryDocEntry
@@ -923,6 +964,7 @@ const NotificationsScreen = ({ navigation }) => {
         return 'inventory';
       case 'R':
       case 'RI':
+      case 'RWER':
         return 'build';
       case 'RI':
         return 'build';
@@ -949,6 +991,7 @@ const NotificationsScreen = ({ navigation }) => {
         return '#EA580C'; // Parts request orange
       case 'R':
       case 'RI':
+      case 'RWER':
         return '#9333EA'; // Repair incident
       case 'RI':
         return '#9333EA'; // Repair incident
@@ -1110,6 +1153,7 @@ const NotificationsScreen = ({ navigation }) => {
       W: 'Work Entry',
       WE: 'Work Entry',
       WER: 'Work Entry Rework',
+      RWER: 'Repair Work Entry Rework',
       WERQ: 'Work Entry Request',
       AWERQ: 'Assembly Work Entry Request',
       STREQ: 'Special Tool Request',
@@ -1285,6 +1329,8 @@ const NotificationsScreen = ({ navigation }) => {
       </TouchableOpacity>
     );
   };
+
+  if (initialLoading) return <Loader />;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>

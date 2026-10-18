@@ -14,6 +14,7 @@ import MaterialIcons from '../../../shared/components/AppIcon.js';
 import Toast from 'react-native-toast-message';
 
 import StandardListCard from '../../../shared/components/StandardListCard';
+import Loader from '../../../shared/components/Loader';
 import ScreenHeader from '../../../components/ScreenHeader';
 import { COLORS, DARK_COLORS, SPACING, BORDER_RADIUS } from '../../../constants/theme';
 import { jobCardService } from '../../../api/services';
@@ -393,6 +394,8 @@ const WorkOrdersDashboardScreen = ({ navigation }) => {
       )}
     </StandardListCard>
   );
+
+  if (loading) return <Loader />;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.light }]}>
