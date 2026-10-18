@@ -50,17 +50,33 @@ const extractSingleRecord = (response) => {
 };
 
 const toCleanString = (value) => String(value ?? '').trim();
+const firstUsableTime = (...values) => values
+  .map(toCleanString)
+  .find((value) => value && !/^0+$/.test(value.replace(/[^\d]/g, '')) && !/^0{1,2}:00(?::00)?$/i.test(value)) || '';
 const isValidWorkEntryId = (value) => /^\d+$/.test(toCleanString(value));
 
-const resolveWorkEntryIdentifier = (entry) => toCleanString(
-  entry?.WorkEntryDocEntry
-  ?? entry?.WorkEntryNo
-  ?? entry?.WorkEntry
-  ?? entry?.DocEntry
-  ?? entry?.Code
-  ?? entry?.EntryNo
-  ?? ''
-);
+const resolveWorkEntryIdentifier = (entry) => {
+  const candidates = [
+    entry?.WorkEntryDocEntry,
+    entry?.WorkEntryNo,
+    entry?.WorkEntry,
+    entry?.DocEntry,
+    entry?.Code,
+    entry?.EntryNo,
+  ].map(toCleanString);
+  return candidates.find((value) => /^\d+$/.test(value) && Number(value) > 0) || '';
+};
+
+const resolveWorkEntryNumber = (entry) => {
+  const candidates = [
+    entry?.DocNum,
+    entry?.WorkEntryDocNum,
+    entry?.WorkEntryNo,
+    entry?.DocEntry,
+    entry?.WorkEntryDocEntry,
+  ].map(toCleanString);
+  return candidates.find((value) => value && value !== '0') || '';
+};
 
 const resolveFaultIdentifier = (entry, fallbackItem) => toCleanString(
   entry?.FaultLine
@@ -295,7 +311,44 @@ const formatDateToken = (value) => {
 };
 
 const formatDateTimeToken = (dateValue, timeValue) => {
-  return formatDateTime(dateValue, timeValue) || '-';
+  const rawDate = String(dateValue ?? '').trim();
+  const rawTime = String(timeValue ?? '').trim();
+  if (!rawDate && !rawTime) return '-';
+  const zeroTime = rawTime !== '' && (
+    (/^0+$/.test(rawTime.replace(/[^\d]/g, '')) && rawTime.replace(/[^\d]/g, '').length <= 4)
+    || /^(?:0{1,2}|12):00(?::00)?\s*AM$/i.test(rawTime)
+    || /^0{1,2}:00(?::00)?$/i.test(rawTime)
+  );
+  const hasEmbeddedTime = /(?:T|\s)\d{1,2}:\d{2}/i.test(rawDate);
+  const embeddedMidnight = /(?:T|\s)(?:00:00(?::00)?|12:00(?::00)?\s*AM)/i.test(rawDate);
+  if ((!rawTime || zeroTime) && (!hasEmbeddedTime || embeddedMidnight)) return formatDateToken(rawDate) || '-';
+  return formatDateTime(rawDate, zeroTime ? '' : rawTime) || formatDateToken(rawDate) || '-';
+};
+
+const formatApiTimeToken = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!raw || /^0+$/.test(raw)) return '-';
+  const match = raw.match(/^(\d{3,4})$/);
+  if (!match) return raw;
+  const token = match[1].padStart(4, '0');
+  const hours = Number(token.slice(0, 2));
+  const minutes = Number(token.slice(2));
+  if (hours > 23 || minutes > 59) return raw;
+  return `${hours % 12 || 12}:${String(minutes).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`;
+};
+
+const formatApiDateTimePair = (dateValue, timeValue) => {
+  const rawDate = String(dateValue ?? '').trim();
+  const rawTime = String(timeValue ?? '').trim();
+  if (!rawDate) return formatDateTimeToken(dateValue, timeValue);
+
+  // CompleteDate contains a placeholder midnight; CompleteTime is the actual
+  // completion clock value (for example, 2216 means 10:16 PM).
+  const dateOnly = rawDate.includes('T') ? rawDate : rawDate.split(/\s+/)[0];
+  const dateLabel = formatDateToken(dateOnly);
+  const timeLabel = formatApiTimeToken(rawTime);
+  if (dateLabel !== '-' && timeLabel !== '-') return `${dateLabel} ${timeLabel}`;
+  return dateLabel !== '-' ? dateLabel : formatDateTimeToken(dateValue, timeValue);
 };
 
 const parseDateTimeToken = (dateValue, timeValue) => {
@@ -605,10 +658,15 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '', dedupeAssemblyD
     workDetails,
     status: entry?.Status || entry?.WorkStatus || fallbackItem?.Status || fallbackItem?.WorkStatus || '',
     completed: isWorkEntryCompleted(entry) || (dedupeAssemblyDetails && ['L', 'CL', 'SV'].includes(String(entry?.Status || entry?.WorkStatus || '').trim().toUpperCase())),
-    date: entry?.CreateDate || entry?.CreatedDate || entry?.EntryDate || entry?.DocDate || entry?.Date || entry?.AcceptDate || entry?.AcceptDt || fallbackItem?.UpdateDate || fallbackItem?.AssignDt || '',
-    time: entry?.CreateTime || entry?.CreatedTime || entry?.EntryTime || entry?.DocTime || entry?.Time || entry?.AcceptTime || entry?.AcceptTm || fallbackItem?.UpdateTime || '',
+    date: entry?.StartDate || entry?.StartDt || entry?.MechanicStartDt || entry?.StartDateTime || entry?.AcceptDate || entry?.AcceptDt || entry?.CreateDate || entry?.CreatedDate || entry?.EntryDate || entry?.DocDate || entry?.Date || fallbackItem?.StartDate || fallbackItem?.StartDt || fallbackItem?.AcceptDate || fallbackItem?.UpdateDate || fallbackItem?.AssignDt || '',
+    time: firstUsableTime(
+      entry?.StartTime, entry?.StartTm, entry?.MechanicStartTm,
+      entry?.AcceptTime, entry?.AcceptTm,
+      entry?.CreateTime, entry?.CreatedTime, entry?.EntryTime, entry?.DocTime, entry?.Time,
+      fallbackItem?.StartTime, fallbackItem?.StartTm, fallbackItem?.AcceptTime, fallbackItem?.UpdateTime,
+    ),
     images,
-    docNum: entry?.DocNum || entry?.WorkEntryDocNum || entry?.WorkEntryNo || '',
+    docNum: resolveWorkEntryNumber(entry),
     jobCardDocEntry: entry?.JobCardDocEntry || entry?.JobCard || fallbackItem?.JobCardDocEntry || fallbackItem?.DocEntry || '',
     faultLine: entry?.FaultLine || fallbackItem?.FaultLine || '',
     faultCode: entry?.FaultCode || fallbackItem?.FaultCode || '',
@@ -621,8 +679,14 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '', dedupeAssemblyD
     incidentNo: fallbackItem?.IncidentNum || fallbackItem?.IncidentEntry || '',
     labourHours: labourHoursValue,
     labourHoursDisplay: labourHoursValue === null ? '-' : formatDurationHMS(labourHoursValue),
-    startDate: entry?.StartDate || entry?.StartDt || entry?.MechanicStartDt || entry?.StartDateTime || entry?.CreateDate || entry?.CreatedDate || entry?.EntryDate || entry?.DocDate || entry?.AcceptDate || entry?.AcceptDt || fallbackItem?.StartDate || fallbackItem?.StartDt || fallbackItem?.MechanicStartDt || fallbackItem?.CreateDate || fallbackItem?.CreatedDate || fallbackItem?.EntryDate || fallbackItem?.DocDate || fallbackItem?.AcceptDate || '',
-    startTime: entry?.StartTime || entry?.StartTm || entry?.MechanicStartTm || entry?.CreateTime || entry?.CreatedTime || entry?.EntryTime || entry?.DocTime || entry?.AcceptTime || entry?.AcceptTm || fallbackItem?.StartTime || fallbackItem?.StartTm || fallbackItem?.MechanicStartTm || fallbackItem?.CreateTime || fallbackItem?.CreatedTime || fallbackItem?.EntryTime || fallbackItem?.DocTime || fallbackItem?.AcceptTime || '',
+    startDate: entry?.StartDate || entry?.StartDt || entry?.MechanicStartDt || entry?.StartDateTime || entry?.AcceptDate || entry?.AcceptDt || entry?.CreateDate || entry?.CreatedDate || entry?.EntryDate || entry?.DocDate || fallbackItem?.StartDate || fallbackItem?.StartDt || fallbackItem?.MechanicStartDt || fallbackItem?.AcceptDate || fallbackItem?.CreateDate || fallbackItem?.CreatedDate || fallbackItem?.EntryDate || fallbackItem?.DocDate || '',
+    startTime: firstUsableTime(
+      entry?.StartTime, entry?.StartTm, entry?.MechanicStartTm,
+      entry?.AcceptTime, entry?.AcceptTm,
+      entry?.CreateTime, entry?.CreatedTime, entry?.EntryTime, entry?.DocTime,
+      fallbackItem?.StartTime, fallbackItem?.StartTm, fallbackItem?.MechanicStartTm,
+      fallbackItem?.AcceptTime, fallbackItem?.CreateTime, fallbackItem?.CreatedTime, fallbackItem?.EntryTime, fallbackItem?.DocTime,
+    ),
     acceptDate: entry?.AcceptDate || entry?.AcceptDt || fallbackItem?.Incident?.SupervisorResponseDt || '',
     acceptTime: entry?.AcceptTime || entry?.AcceptTm || fallbackItem?.Incident?.SupervisorResponseTm || '',
     completeDate: entry?.CompleteDate || entry?.CompleteDt || entry?.EndDt || '',
@@ -631,6 +695,14 @@ const buildWorkEntryView = (entry, fallbackItem, keyPrefix = '', dedupeAssemblyD
     verifyDate: entry?.VerifyDate || entry?.VerifyDt || entry?.ApprovedDate || '',
     verifyTime: entry?.VerifyTime || entry?.VerifyTm || entry?.ApprovedTime || '',
     verifyRemarks: entry?.VerifyRemarks || entry?.ApprovalRemarks || '',
+    complaintType: entry?.ComplaintType || entry?.JobType || entry?.FormType || fallbackItem?.ComplaintType || '',
+    driver: entry?.Driver || entry?.DriverName || fallbackItem?.Driver || fallbackItem?.DriverName || '',
+    supervisor: entry?.Supervisor || entry?.SupervisorName || fallbackItem?.Supervisor || '',
+    repairType: entry?.RepairType || fallbackItem?.RepairType || '',
+    towRequired: entry?.TowReq || entry?.TowRequired || fallbackItem?.TowReq || fallbackItem?.TowRequired || '',
+    towDestinationType: entry?.TowDestType || entry?.TowDestinationType || fallbackItem?.TowDestType || '',
+    towDepot: entry?.TowDepot || fallbackItem?.TowDepot || '',
+    sourceData: entry,
     parts: dedupeRepairPartsByItem(entryParts.length > 0 ? entryParts : fallbackParts),
     specialTools,
   };
@@ -809,6 +881,86 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         }
         return;
       }
+
+      if (!route?.params?.legacyNotificationQueue) {
+      // GetWorkEntriesWC already returns the supervisor review queue with the
+      // complete work-entry fields. Use it directly instead of fan-out calls
+      // to notifications, job cards, work history, and individual entries.
+      const userCode = getLoginUserCode(user);
+      if (!userCode) throw new Error('Unable to determine the logged-in supervisor code.');
+      const workEntriesResponse = await workEntryService.getWorkEntriesWC(companyDb, userCode);
+      const workEntryRows = extractRows(workEntriesResponse);
+      const cardsByJobCard = new Map();
+
+      const seenWorkEntryIds = new Set();
+      workEntryRows.forEach((jobCardRow, rowIndex) => {
+        const nestedWorkEntries = Array.isArray(jobCardRow?.WorkEntries) ? jobCardRow.WorkEntries : [];
+        nestedWorkEntries.forEach((workEntry, entryIndex) => {
+          const entryId = resolveWorkEntryIdentifier(workEntry);
+          if (!isValidWorkEntryId(entryId) || seenWorkEntryIds.has(entryId)) return;
+          // This endpoint may also include active fault rows with no completed
+          // entry. Only show the nested work entries awaiting supervisor review.
+          if (String(workEntry?.Status || '').trim().toUpperCase() !== 'WC') return;
+          seenWorkEntryIds.add(entryId);
+
+          const jobCardEntry = toCleanString(workEntry?.JobCardDocEntry || jobCardRow?.DocEntry);
+          const record = {
+            ...jobCardRow,
+            ...workEntry,
+            DocEntry: workEntry?.DocEntry,
+            DocNum: resolveWorkEntryNumber(workEntry) || workEntry?.DocEntry,
+            JobCardDocEntry: jobCardEntry,
+            JobCardDocNum: jobCardRow?.DocNum || jobCardRow?.DocEntry,
+            ComplaintType: jobCardRow?.ComplaintType || jobCardRow?.JobType || workEntry?.ComplaintType || '',
+            Driver: jobCardRow?.Driver || workEntry?.Driver || '',
+            Depot: workEntry?.Depot || jobCardRow?.Depot || '',
+            Vehicle: workEntry?.Vehicle || jobCardRow?.Vehicle || '',
+            DueHours: jobCardRow?.DueHours,
+            ParentParts: jobCardRow?.Parts,
+          };
+          const viewEntry = buildWorkEntryView(record, jobCardRow, `wc-${entryId}-${rowIndex}-${entryIndex}-`);
+          const groupKey = jobCardEntry || `work-entry-${entryId}`;
+          const card = cardsByJobCard.get(groupKey) || {
+            key: `wc-${groupKey}`,
+            jobCardDocEntry: jobCardEntry,
+            jobCardNo: jobCardRow?.DocNum || jobCardRow?.DocEntry || jobCardEntry,
+            busNo: jobCardRow?.Vehicle || workEntry?.Vehicle || '',
+            complaintType: jobCardRow?.ComplaintType || jobCardRow?.JobType || '',
+            driverCode: jobCardRow?.DriverCode || '',
+            driverName: jobCardRow?.Driver || jobCardRow?.DriverName || '',
+            status: workEntry?.Status || '',
+            complaintNo: jobCardRow?.ComplaintNo || jobCardRow?.IncidentNo || '',
+            workEntries: [],
+            allWorkEntriesCompleted: false,
+          };
+          card.workEntries.push(viewEntry);
+          card.allWorkEntriesCompleted = card.workEntries.length > 0 && card.workEntries.every((entry) => entry.completed);
+          cardsByJobCard.set(groupKey, card);
+        });
+      });
+
+      const workEntryCards = Array.from(cardsByJobCard.values())
+        .sort((a, b) => Number(b?.jobCardDocEntry || 0) - Number(a?.jobCardDocEntry || 0));
+      setReviewCards(workEntryCards);
+
+      if (focusWorkEntry && consumedFocusEntryRef.current !== focusWorkEntry) {
+        for (const card of workEntryCards) {
+          const entry = card.workEntries.find((item) => toCleanString(item?.workEntryDocEntry) === focusWorkEntry);
+          if (entry) {
+            consumedFocusEntryRef.current = focusWorkEntry;
+            setSelectedWorkEntry({ entry, parentItem: card });
+            navigation.setParams({
+              focusWorkEntryDocEntry: null,
+              focusJobCardDocEntry: null,
+              workEntryDocEntry: null,
+            });
+            break;
+          }
+        }
+      }
+      return;
+      }
+
       const identityCandidates = resolveNotificationCandidates(user);
       const notificationBucket = new Map();
       let partRequestsByWorkEntry = new Map();
@@ -1151,7 +1303,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dbName, focusJobCard, focusWorkEntry, route?.params?.assemblyRepair, route?.params?.assemblyRepairQueue, storedNotifications, user]);
+  }, [dbName, focusJobCard, focusWorkEntry, route?.params?.assemblyRepair, route?.params?.assemblyRepairQueue, route?.params?.assemblyRepairQueue ? storedNotifications : null, user]);
 
   useEffect(() => {
     fetchData();
@@ -1681,16 +1833,19 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
         activeOpacity={0.85}
       >
         <View style={styles.rowBetween}>
-          <Text style={[styles.workEntryTitle, { color: colors.dark }]}>Work Entry #{entry.workEntryDocEntry || '-'}</Text>
+          <Text style={[styles.workEntryTitle, { color: colors.dark }]}>Work Entry #{entry.docNum || entry.workEntryDocEntry || '-'}</Text>
           <View style={[styles.statusPill, { backgroundColor: statusTone.bg }]}>
             <Text style={[styles.statusPillText, { color: statusTone.fg }]}>{getStatusLabel(entry.status)}</Text>
           </View>
         </View>
 
-        <Text style={[styles.metaText, { color: colors.gray }]}>Mechanic: {entry.mechanicName}</Text>
+        <Text style={[styles.metaText, { color: colors.gray }]}>Mechanic: {entry.mechanicName && entry.mechanicName !== '-' ? entry.mechanicName : entry.mechanicCode ? `Code ${entry.mechanicCode}` : '-'}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Fault: {entry.faultName}</Text>
-        <Text style={[styles.metaText, { color: colors.gray }]}>Start: {formatDateTimeToken(entry.date, entry.time)}</Text>
-        <Text style={[styles.metaText, { color: colors.gray }]}>End: {formatDateTimeToken(entry.completeDate, entry.completeTime)}</Text>
+        <Text style={[styles.metaText, { color: colors.gray }]}>Start: {formatApiDateTimePair(entry.date, entry.time)}</Text>
+        <Text style={[styles.metaText, { color: colors.gray }]}>End: {formatApiDateTimePair(
+          entry?.sourceData?.CompleteDate || entry.completeDate,
+          entry?.sourceData?.CompleteTime || entry.completeTime,
+        )}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Labour: {entry.labourHoursDisplay || '-'}</Text>
         <Text style={[styles.metaText, { color: colors.gray }]}>Remarks: {entry.finalRemarks || '-'}</Text>
         <View style={styles.quickStatsRow}>
@@ -1847,7 +2002,7 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
           <View style={[styles.detailModal, { backgroundColor: colors.white }]}> 
             <View style={styles.previewHeader}>
               <Text style={[styles.previewTitle, { color: colors.dark }]} numberOfLines={1}>
-                Work Entry #{selectedWorkEntry?.entry?.workEntryDocEntry || '-'}
+                Work Entry #{selectedWorkEntry?.entry?.docNum || selectedWorkEntry?.entry?.workEntryDocEntry || '-'}
               </Text>
               <TouchableOpacity onPress={() => setSelectedWorkEntry(null)}>
                 <MaterialIcons name="close" size={22} color={colors.dark} />
@@ -1863,9 +2018,17 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                 || '',
               ).trim().toUpperCase();
               const jobCardClosed = ['C', 'L', 'CL', 'CLOSED'].includes(jobCardStatus);
+              const workEntryStatus = String(entry?.status || '').trim().toUpperCase();
+              const workEntryVerified = Boolean(
+                toCleanString(entry?.verifyBy)
+                || toCleanString(entry?.verifyDate)
+                || toCleanString(entry?.verifyTime)
+                || ['SV', 'L', 'CL', 'CM', 'C', 'COMPLETE', 'COMPLETED', 'CLOSED'].includes(workEntryStatus)
+              );
+              const reviewActionsDisabled = jobCardClosed || workEntryVerified;
               const statusTone = getStatusTone(entry?.status);
               const overviewRows = [
-                { label: 'Mechanic', value: entry?.mechanicName || '-' },
+                { label: 'Mechanic', value: entry?.mechanicName && entry.mechanicName !== '-' ? entry.mechanicName : entry?.mechanicCode ? `Code ${entry.mechanicCode}` : '-' },
                 { label: 'Mechanic Code', value: entry?.mechanicCode || '-' },
                 { label: 'Vehicle', value: entry?.vehicle || '-' },
                 { label: 'Depot', value: entry?.depot || '-' },
@@ -1884,8 +2047,11 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
               ];
 
               const timelineRows = [
-                { label: 'Start', value: formatDateTimeToken(entry?.date, entry?.time) },
-                { label: 'Ended', value: formatDateTimeToken(entry?.completeDate, entry?.completeTime) },
+                { label: 'Start', value: formatApiDateTimePair(entry?.date, entry?.time) },
+                { label: 'Ended', value: formatApiDateTimePair(
+                  entry?.sourceData?.CompleteDate || entry?.completeDate,
+                  entry?.sourceData?.CompleteTime || entry?.completeTime,
+                ) },
                 { label: 'Verified', value: formatDateTimeToken(entry?.verifyDate, entry?.verifyTime) },
                 { label: 'Total Labour', value: entry?.labourHoursDisplay || '-' },
               ];
@@ -1896,6 +2062,32 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                 { label: 'Verify Remarks', value: entry?.verifyRemarks || '-' },
                 { label: 'Final Remarks', value: entry?.finalRemarks || '-' },
               ];
+              const source = entry?.sourceData || {};
+              const responseRows = [
+                { label: 'Work Entry DocEntry', value: source?.DocEntry },
+                { label: 'Work Entry DocNum', value: source?.DocNum },
+                { label: 'Job Card DocEntry', value: source?.JobCardDocEntry },
+                { label: 'Complaint Type', value: source?.ComplaintType },
+                { label: 'Driver', value: source?.Driver },
+                { label: 'Fault Code', value: source?.FaultCode },
+                { label: 'Fault Line', value: source?.FaultLine },
+                { label: 'Fault Name', value: source?.FaultName },
+                { label: 'Final Remarks', value: source?.FinalRemarks },
+                { label: 'Depot', value: source?.Depot },
+                { label: 'Vehicle', value: source?.Vehicle },
+                { label: 'Mechanic Code', value: source?.MechanicCode },
+                { label: 'Supervisor', value: source?.Supervisor },
+                { label: 'Due Hours', value: source?.DueHours },
+                { label: 'Status', value: getStatusLabel(source?.Status) },
+                { label: 'Start', value: formatApiDateTimePair(entry?.date, entry?.time) },
+                { label: 'Accepted', value: formatDateTimeToken(source?.AcceptDate, source?.AcceptTime) },
+                { label: 'Completed', value: formatApiDateTimePair(source?.CompleteDate, source?.CompleteTime) },
+                { label: 'Labour Hours', value: entry?.labourHoursDisplay || '-' },
+                { label: 'Repair Type', value: source?.RepairType },
+                { label: 'Tow Required', value: source?.TowReq },
+                { label: 'Tow Destination Type', value: source?.TowDestType },
+                { label: 'Tow Depot', value: source?.TowDepot },
+              ].filter((row) => row.value !== undefined && row.value !== null && String(row.value).trim() !== '');
               const towState = getTowWorkflowState(entry);
               const towCompleted = Boolean(towWorkflowByEntry[toCleanString(entry?.workEntryDocEntry)]?.towCompleted);
 
@@ -2004,6 +2196,41 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       </View>
                     ))}
                   </View>
+
+                  {responseRows.length > 0 && (
+                    <View style={[styles.infoCard, { borderColor: colors.border || '#E5E7EB' }]}>
+                      <Text style={[styles.infoCardTitle, { color: colors.dark }]}>Work Entry Data</Text>
+                      {responseRows.map((row) => {
+                        const rawValue = row.value;
+                        const isTowFlag = row.label === 'Tow Required';
+                        const isStatus = row.label === 'Status';
+                        const isRepairType = row.label === 'Repair Type';
+                        const repairTypeCode = String(rawValue || '').trim().toUpperCase();
+                        const displayValue = isTowFlag
+                          ? (String(rawValue).trim().toUpperCase() === 'Y' ? 'Required' : String(rawValue).trim().toUpperCase() === 'N' ? 'Not required' : String(rawValue))
+                          : isStatus ? getStatusLabel(rawValue)
+                            : isRepairType ? ({ P: 'Permanent Repair', T: 'Temporary Repair' }[repairTypeCode] || String(rawValue))
+                              : String(rawValue);
+                        const badgeTone = isTowFlag
+                          ? (String(rawValue).trim().toUpperCase() === 'Y' ? { bg: '#FEF3C7', fg: '#92400E' } : { bg: '#E5E7EB', fg: '#4B5563' })
+                          : isRepairType
+                            ? (repairTypeCode === 'P' ? { bg: '#DCFCE7', fg: '#166534' } : { bg: '#FFEDD5', fg: '#9A3412' })
+                            : getStatusTone(rawValue);
+                        return (
+                          <View key={`response-${row.label}`} style={styles.infoRow}>
+                            <Text style={[styles.infoRowLabel, { color: colors.gray }]}>{row.label}</Text>
+                            {isTowFlag || isStatus || isRepairType ? (
+                              <View style={[styles.statusPill, { backgroundColor: badgeTone.bg }]}>
+                                <Text style={[styles.statusPillText, { color: badgeTone.fg }]}>{displayValue}</Text>
+                              </View>
+                            ) : (
+                              <Text style={[styles.infoRowValue, { color: colors.dark }]}>{displayValue || '-'}</Text>
+                            )}
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
 
                 <View style={{ marginTop: 12 }}>
                   <Text style={[styles.imageLabel, { color: colors.dark }]}>Work Details ({(Array.isArray(entry?.workDetails) ? entry.workDetails : []).length})</Text>
@@ -2157,11 +2384,11 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       styles.actionBtn,
                       {
                         backgroundColor: '#2B7D2B',
-                        opacity: jobCardClosed ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
+                        opacity: reviewActionsDisabled ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
                       },
                     ]}
                     onPress={handleApproveWorkEntry}
-                    disabled={!!actioningWorkEntry || jobCardClosed}
+                    disabled={!!actioningWorkEntry || reviewActionsDisabled}
                     activeOpacity={0.85}
                   >
                     <MaterialIcons name="check-circle" size={16} color="#FFFFFF" />
@@ -2173,11 +2400,11 @@ const ReviewWorkEntriesScreen = ({ navigation, route }) => {
                       styles.actionBtn,
                       {
                         backgroundColor: '#B91C1C',
-                        opacity: jobCardClosed ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
+                        opacity: reviewActionsDisabled ? 0.45 : actioningWorkEntry && toCleanString(entry?.workEntryDocEntry) === actioningWorkEntry ? 0.7 : 1,
                       },
                     ]}
                     onPress={openDenyFlow}
-                    disabled={!!actioningWorkEntry || jobCardClosed}
+                    disabled={!!actioningWorkEntry || reviewActionsDisabled}
                     activeOpacity={0.85}
                   >
                     <MaterialIcons name="cancel" size={16} color="#FFFFFF" />

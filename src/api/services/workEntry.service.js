@@ -16,6 +16,17 @@ const extractXmlValue = (xml, tagName) => {
  *   SAP STORE issues → Mechanic clicks "Part Received" → Mechanic completes work
  */
 export const workEntryService = {
+  getWorkEntriesWC: async (companyDB, userCode) => {
+    try {
+      const response = await get(
+        `GetWorkEntriesWC?CompanyDB=${encodeURIComponent(companyDB)}&UserCode=${encodeURIComponent(userCode)}`
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(handleApiError(error));
+    }
+  },
+
   getWorkEntry: async (companyDB, workEntryDocEntry) => {
     try {
       const response = await get(
